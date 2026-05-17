@@ -19,13 +19,13 @@
 //!   cargo test --test real_full_lifecycle -- --ignored --nocapture
 //!
 //! For GitLab:
-//!   E2E_PLATFORM=gitlab E2E_GITLAB_PROJECT=user/repo cargo test --test real_full_lifecycle -- --ignored --nocapture
+//!   E2E_PLATFORM=gitlab TEST_REPO_NAME=owner/repo GITLAB_TOKEN=xxx cargo test --test real_full_lifecycle -- --ignored --nocapture
 
 mod common;
 
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -36,6 +36,97 @@ use common::git_host::{create_git_host, GitHost};
 
 const TIMEOUT_SECS: u64 = 300;
 
+fn build_music_file_name(timestamp_ms: u128, process_id: u32) -> String {
+    format!("music-{}-{}.txt", timestamp_ms, process_id)
+}
+
+#[test]
+fn music_file_name_includes_timestamp() {
+    let file_name = build_music_file_name(1_779_000_000_123, 42);
+
+    assert_eq!(file_name, "music-1779000000123-42.txt");
+}
+
+fn unique_music_file_name() -> String {
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be after UNIX_EPOCH")
+        .as_millis();
+
+    build_music_file_name(timestamp_ms, std::process::id())
+}
+
+fn extract_codex_error_message(message: &Value) -> Option<String> {
+    message
+        .pointer("/params/error/message")
+        .or_else(|| message.pointer("/params/error"))
+        .or_else(|| message.pointer("/error/message"))
+        .or_else(|| message.pointer("/error"))
+        .and_then(|value| match value {
+            Value::String(message) => Some(message.clone()),
+            Value::Object(_) => Some(value.to_string()),
+            _ => None,
+        })
+}
+
+fn extract_failed_turn_error(message: &Value) -> Option<String> {
+    let turn = message.pointer("/params/turn")?;
+    let status = turn.get("status").and_then(|value| value.as_str());
+    let error = turn.get("error");
+
+    if status != Some("failed") && error.is_none_or(|value| value.is_null()) {
+        return None;
+    }
+
+    error
+        .and_then(|value| {
+            value
+                .get("message")
+                .and_then(|message| message.as_str())
+                .map(|message| message.to_string())
+                .or_else(|| Some(value.to_string()))
+        })
+        .or_else(|| status.map(|status| format!("turn status: {}", status)))
+}
+
+#[test]
+fn codex_error_event_message_is_extracted() {
+    let message = json!({
+        "method": "error",
+        "params": {
+            "error": {
+                "message": "Missing environment variable: `AZURE_OPENAI_API_KEY`."
+            },
+            "willRetry": false
+        }
+    });
+
+    assert_eq!(
+        extract_codex_error_message(&message).as_deref(),
+        Some("Missing environment variable: `AZURE_OPENAI_API_KEY`.")
+    );
+}
+
+#[test]
+fn failed_turn_completed_error_is_extracted() {
+    let message = json!({
+        "method": "turn/completed",
+        "params": {
+            "turn": {
+                "status": "failed",
+                "error": {
+                    "message": "request failed"
+                }
+            }
+        }
+    });
+
+    assert_eq!(
+        extract_failed_turn_error(&message).as_deref(),
+        Some("request failed")
+    );
+}
+
 fn sanitize_url_credentials(text: &str) -> String {
     let re = regex::Regex::new(r"://[^@]+@").unwrap();
     re.replace_all(text, "://***@").to_string()
@@ -44,8 +135,8 @@ fn sanitize_url_credentials(text: &str) -> String {
 // ─── Workspace Helpers ──────────────────────────────────────────────────────
 
 async fn setup_workspace(host: &dyn GitHost) -> TempDir {
-    let workspace = TempDir::with_prefix("symphony_e2e_")
-        .expect("failed to create temp workspace dir");
+    let workspace =
+        TempDir::with_prefix("symphony_e2e_").expect("failed to create temp workspace dir");
 
     let clone_url = host.clone_url();
     let output = Command::new("git")
@@ -103,8 +194,8 @@ async fn run_codex_session(workspace_dir: &PathBuf, prompt: &str) -> CodexSessio
     let workspace_str = workspace_dir.to_str().unwrap();
 
     eprintln!("[E2E] Starting codex app-server...");
-    let mut child = Command::new("bash")
-        .args(["-lc", "codex app-server"])
+    let mut child = Command::new("zsh")
+        .args(["-lc", "source ~/.zshrc && codex app-server"])
         .current_dir(workspace_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -136,7 +227,10 @@ async fn run_codex_session(workspace_dir: &PathBuf, prompt: &str) -> CodexSessio
         eprintln!("[E2E] Sent: {} (id={})", method, id);
     }
 
-    async fn read_message(reader: &mut BufReader<tokio::process::ChildStdout>, buf: &mut String) -> Option<Value> {
+    async fn read_message(
+        reader: &mut BufReader<tokio::process::ChildStdout>,
+        buf: &mut String,
+    ) -> Option<Value> {
         buf.clear();
         match reader.read_line(buf).await {
             Ok(0) => None,
@@ -146,9 +240,15 @@ async fn run_codex_session(workspace_dir: &PathBuf, prompt: &str) -> CodexSessio
     }
 
     // Initialize
-    send_request(&mut stdin, 0, "initialize", json!({
-        "clientInfo": { "name": "symphony-e2e-test", "version": "0.1.0" }
-    })).await;
+    send_request(
+        &mut stdin,
+        0,
+        "initialize",
+        json!({
+            "clientInfo": { "name": "symphony-e2e-test", "version": "0.1.0" }
+        }),
+    )
+    .await;
 
     let mut line_buf = String::new();
     let init_timeout = tokio::time::sleep(Duration::from_secs(10));
@@ -179,11 +279,17 @@ async fn run_codex_session(workspace_dir: &PathBuf, prompt: &str) -> CodexSessio
     }
 
     // Thread start
-    send_request(&mut stdin, 1, "thread/start", json!({
-        "cwd": workspace_str,
-        "approvalPolicy": "never",
-        "sandbox": "danger-full-access"
-    })).await;
+    send_request(
+        &mut stdin,
+        1,
+        "thread/start",
+        json!({
+            "cwd": workspace_str,
+            "approvalPolicy": "never",
+            "sandbox": "danger-full-access"
+        }),
+    )
+    .await;
 
     #[allow(unused_assignments)]
     let mut thread_id: Option<String> = None;
@@ -240,12 +346,18 @@ async fn run_codex_session(workspace_dir: &PathBuf, prompt: &str) -> CodexSessio
     result.thread_id = Some(thread_id.clone());
 
     // Turn start
-    send_request(&mut stdin, 2, "turn/start", json!({
-        "threadId": thread_id,
-        "input": [{"type": "text", "text": prompt}],
-        "cwd": workspace_str,
-        "sandboxPolicy": {"type": "dangerFullAccess"}
-    })).await;
+    send_request(
+        &mut stdin,
+        2,
+        "turn/start",
+        json!({
+            "threadId": thread_id,
+            "input": [{"type": "text", "text": prompt}],
+            "cwd": workspace_str,
+            "sandboxPolicy": {"type": "dangerFullAccess"}
+        }),
+    )
+    .await;
 
     // Stream events
     let turn_timeout = tokio::time::sleep(Duration::from_secs(TIMEOUT_SECS));
@@ -267,6 +379,13 @@ async fn run_codex_session(workspace_dir: &PathBuf, prompt: &str) -> CodexSessio
                                 eprintln!("[E2E] Turn started: {}", turn_id);
                             }
                             "turn/completed" => {
+                                if let Some(error) = extract_failed_turn_error(&m) {
+                                    result.turn_completed = Some(false);
+                                    result.error = Some(format!("turn/completed failed: {}", error));
+                                    eprintln!("[E2E] Turn completed with failure: {}", error);
+                                    break;
+                                }
+
                                 result.turn_completed = Some(true);
                                 eprintln!("[E2E] Turn completed successfully!");
                                 if let Some(usage) = m.pointer("/params/turn/usage") {
@@ -287,6 +406,18 @@ async fn run_codex_session(workspace_dir: &PathBuf, prompt: &str) -> CodexSessio
                                 result.error = Some(format!("{}: {}", method, reason));
                                 eprintln!("[E2E] {}: {}", method, reason);
                                 break;
+                            }
+                            "error" => {
+                                let error = extract_codex_error_message(&m)
+                                    .unwrap_or_else(|| "unknown codex error".to_string());
+                                result.error = Some(format!("codex error event: {}", error));
+                                eprintln!("[E2E] Codex error event: {}", error);
+                                let will_retry = m.pointer("/params/willRetry")
+                                    .and_then(|value| value.as_bool())
+                                    .unwrap_or(false);
+                                if !will_retry {
+                                    break;
+                                }
                             }
                             "thread/tokenUsage/updated" => {
                                 if let Some(usage) = m.get("params") {
@@ -382,7 +513,9 @@ async fn test_full_lifecycle_with_real_codex() {
     let hello_path = workspace_dir.join("hello.txt");
     let has_output = hello_path.exists();
     if has_output {
-        let content = tokio::fs::read_to_string(&hello_path).await.unwrap_or_default();
+        let content = tokio::fs::read_to_string(&hello_path)
+            .await
+            .unwrap_or_default();
         eprintln!("[E2E] hello.txt content: {:?}", content);
     }
 
@@ -394,12 +527,27 @@ async fn test_full_lifecycle_with_real_codex() {
     drop(workspace);
 
     // Assertions
-    assert!(result.thread_id.is_some(), "Should have received a thread_id");
-    assert_eq!(result.turn_completed, Some(true), "Turn should complete. Error: {:?}", result.error);
+    assert!(
+        result.thread_id.is_some(),
+        "Should have received a thread_id"
+    );
+    assert_eq!(
+        result.turn_completed,
+        Some(true),
+        "Turn should complete. Error: {:?}",
+        result.error
+    );
     assert!(has_output, "Agent should have created hello.txt");
-    assert!(result.error.is_none(), "No errors expected. Got: {:?}", result.error);
+    assert!(
+        result.error.is_none(),
+        "No errors expected. Got: {:?}",
+        result.error
+    );
 
-    eprintln!("\n[E2E] ✓ FULL LIFECYCLE TEST PASSED! ({})", host.platform_name());
+    eprintln!(
+        "\n[E2E] ✓ FULL LIFECYCLE TEST PASSED! ({})",
+        host.platform_name()
+    );
 }
 
 /// Full lifecycle with PR: issue → agent creates file → push via API → create PR/MR
@@ -408,6 +556,7 @@ async fn test_full_lifecycle_with_real_codex() {
 async fn test_create_musical_notes_file() {
     let host = create_git_host();
     let branch_name = format!("feature/musical-notes-{}", std::process::id());
+    let music_file_name = unique_music_file_name();
     eprintln!("[E2E-MUSIC] Platform: {}", host.platform_name());
 
     eprintln!("\n============================================================");
@@ -416,11 +565,14 @@ async fn test_create_musical_notes_file() {
     let issue = host
         .create_issue(
             "[Feature] Create a joyful musical notes text art",
-            "Create `music.txt` with beautiful musical notes text art.\n\n\
+            &format!(
+                "Create `{}` with beautiful musical notes text art.\n\n\
              Requirements:\n\
              - Use musical symbols like ♩ ♪ ♫ ♬ 🎵 🎶 🎼\n\
              - Include a short uplifting melody visualization\n\
              - Keep it under 20 lines",
+                music_file_name
+            ),
             &["e2e-test", "feature"],
         )
         .await
@@ -438,12 +590,12 @@ async fn test_create_musical_notes_file() {
     eprintln!("============================================================");
     let prompt = format!(
         "You are working on issue #{}.\n\n\
-         Task: Create a file called `music.txt` in the root of this repository.\n\
+         Task: Create a file called `{}` in the root of this repository.\n\
          The file should contain a beautiful, joyful musical notes text art that makes people smile.\n\
          Use musical symbols like ♩ ♪ ♫ ♬ 🎵 🎶 🎼 and create a short uplifting melody visualization.\n\
          Keep it under 20 lines. Be creative and make it feel happy!\n\n\
          Just create the file, nothing else. Do not run any git commands.",
-        issue.number
+        issue.number, music_file_name
     );
 
     let result = run_codex_session(&workspace_dir, &prompt).await;
@@ -452,43 +604,77 @@ async fn test_create_musical_notes_file() {
     eprintln!("[E2E-MUSIC] STEP 4: Verifying agent output...");
     eprintln!("============================================================");
 
-    let music_path = workspace_dir.join("music.txt");
+    let music_path = workspace_dir.join(&music_file_name);
     let music_exists = music_path.exists();
     let music_content = if music_exists {
-        let content = tokio::fs::read_to_string(&music_path).await.unwrap_or_default();
-        eprintln!("[E2E-MUSIC] music.txt content:\n{}", content);
+        let content = tokio::fs::read_to_string(&music_path)
+            .await
+            .unwrap_or_default();
+        eprintln!("[E2E-MUSIC] {} content:\n{}", music_file_name, content);
         content
     } else {
-        eprintln!("[E2E-MUSIC] music.txt was NOT created!");
+        eprintln!("[E2E-MUSIC] {} was NOT created!", music_file_name);
         String::new()
     };
 
-    assert_eq!(result.turn_completed, Some(true), "Turn should complete. Error: {:?}", result.error);
-    assert!(music_exists, "Agent should have created music.txt");
-    assert!(!music_content.is_empty(), "music.txt should not be empty");
+    assert_eq!(
+        result.turn_completed,
+        Some(true),
+        "Turn should complete. Error: {:?}",
+        result.error
+    );
+    assert!(
+        music_exists,
+        "Agent should have created {}",
+        music_file_name
+    );
+    assert!(
+        !music_content.is_empty(),
+        "{} should not be empty",
+        music_file_name
+    );
 
     eprintln!("\n============================================================");
-    eprintln!("[E2E-MUSIC] STEP 5: Pushing to {} and creating PR/MR...", host.platform_name());
+    eprintln!(
+        "[E2E-MUSIC] STEP 5: Pushing to {} and creating PR/MR...",
+        host.platform_name()
+    );
     eprintln!("============================================================");
 
-    let main_sha = host.get_branch_sha("main").await.expect("Failed to get main SHA");
+    let main_sha = host
+        .get_branch_sha("main")
+        .await
+        .expect("Failed to get main SHA");
     eprintln!("[E2E-MUSIC] main HEAD SHA: {}", main_sha);
 
-    host.create_branch(&branch_name, &main_sha).await.expect("Failed to create branch");
+    host.create_branch(&branch_name, &main_sha)
+        .await
+        .expect("Failed to create branch");
     eprintln!("[E2E-MUSIC] Created branch: {}", branch_name);
 
-    let commit_msg = format!("feat: add joyful musical notes text art (closes #{})", issue.number);
-    host.push_file(&branch_name, "music.txt", music_content.as_bytes(), &commit_msg)
-        .await
-        .expect("Failed to push file");
-    eprintln!("[E2E-MUSIC] ✓ Pushed music.txt to branch");
+    let commit_msg = format!(
+        "feat: add joyful musical notes text art (closes #{})",
+        issue.number
+    );
+    host.push_file(
+        &branch_name,
+        &music_file_name,
+        music_content.as_bytes(),
+        &commit_msg,
+    )
+    .await
+    .expect("Failed to push file");
+    eprintln!("[E2E-MUSIC] ✓ Pushed {} to branch", music_file_name);
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     let pr = host
         .create_pr(
             "feat: add joyful musical notes text art",
-            &format!("Closes #{}\n\nAdds a `music.txt` file with beautiful musical note text art.", issue.number),
+            &format!(
+                "Closes #{}\n\nAdds a `{}` file with beautiful musical note text art.",
+                issue.number, music_file_name
+            ),
             &branch_name,
             "main",
         )
@@ -501,7 +687,10 @@ async fn test_create_musical_notes_file() {
     eprintln!("============================================================");
     host.close_issue(issue.number).await.ok();
     host.delete_branch(&branch_name).await.ok();
-    eprintln!("[E2E-MUSIC] Closed issue #{}, deleted branch {}", issue.number, branch_name);
+    eprintln!(
+        "[E2E-MUSIC] Closed issue #{}, deleted branch {}",
+        issue.number, branch_name
+    );
     drop(workspace);
 
     eprintln!("\n============================================================");
@@ -512,12 +701,19 @@ async fn test_create_musical_notes_file() {
     eprintln!("  Turn ID: {:?}", result.turn_id);
     eprintln!("  Turn completed: {:?}", result.turn_completed);
     eprintln!("  Events received: {}", result.events.len());
-    eprintln!("  music.txt: {} bytes", music_content.len());
+    eprintln!("  {}: {} bytes", music_file_name, music_content.len());
     eprintln!("  PR/MR: #{} - {}", pr.number, pr.url);
 
-    assert!(result.error.is_none(), "No errors expected. Got: {:?}", result.error);
+    assert!(
+        result.error.is_none(),
+        "No errors expected. Got: {:?}",
+        result.error
+    );
 
-    eprintln!("\n[E2E-MUSIC] ✓ FULL LIFECYCLE WITH PR TEST PASSED! ({})", host.platform_name());
+    eprintln!(
+        "\n[E2E-MUSIC] ✓ FULL LIFECYCLE WITH PR TEST PASSED! ({})",
+        host.platform_name()
+    );
 }
 
 /// Minimal smoke test: codex app-server starts and responds
@@ -527,8 +723,8 @@ async fn test_codex_app_server_starts() {
     let workspace = std::env::temp_dir().join("symphony_e2e_smoke");
     tokio::fs::create_dir_all(&workspace).await.unwrap();
 
-    let mut child = Command::new("bash")
-        .args(["-lc", "codex app-server"])
+    let mut child = Command::new("zsh")
+        .args(["-lc", "source ~/.zshrc && codex app-server"])
         .current_dir(&workspace)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -558,6 +754,14 @@ async fn test_platform_api_access() {
     eprintln!("[E2E] Testing {} API access...", host.platform_name());
 
     let sha = host.get_branch_sha("main").await;
-    assert!(sha.is_ok(), "Should be able to read main branch. Error: {:?}", sha.err());
-    eprintln!("[E2E] ✓ {} API access confirmed. main SHA: {}", host.platform_name(), sha.unwrap());
+    assert!(
+        sha.is_ok(),
+        "Should be able to read main branch. Error: {:?}",
+        sha.err()
+    );
+    eprintln!(
+        "[E2E] ✓ {} API access confirmed. main SHA: {}",
+        host.platform_name(),
+        sha.unwrap()
+    );
 }
