@@ -5,14 +5,15 @@
 
 #![allow(dead_code)]
 
-pub mod mock_tracker;
-pub mod mock_codex;
 pub mod git_host;
 pub mod github_host;
 pub mod gitlab_host;
+pub mod mock_codex;
+pub mod mock_tracker;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Once;
 
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
@@ -20,6 +21,15 @@ use tempfile::TempDir;
 
 use symphony_platform::config::{Config, PlatformConfig, PollingConfig, WorkflowConfig};
 use symphony_platform::platform::{Issue, IssueId};
+
+static INIT_ENV: Once = Once::new();
+
+/// Load .env file once for all tests. Call at the start of tests that need env vars.
+pub fn load_env() {
+    INIT_ENV.call_once(|| {
+        dotenvy::dotenv().ok();
+    });
+}
 
 // ─── Test Issue Helpers ───────────────────────────────────────────────────────
 
@@ -111,8 +121,14 @@ pub fn create_test_config() -> Config {
     let mut states = HashMap::new();
     states.insert("backlog".to_string(), "workflow::backlog".to_string());
     states.insert("todo".to_string(), "workflow::todo".to_string());
-    states.insert("in_progress".to_string(), "workflow::in-progress".to_string());
-    states.insert("human_review".to_string(), "workflow::human-review".to_string());
+    states.insert(
+        "in_progress".to_string(),
+        "workflow::in-progress".to_string(),
+    );
+    states.insert(
+        "human_review".to_string(),
+        "workflow::human-review".to_string(),
+    );
     states.insert("rework".to_string(), "workflow::rework".to_string());
     states.insert("done".to_string(), "workflow::done".to_string());
 

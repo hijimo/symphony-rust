@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use base64::Engine;
-use reqwest::{Client, header};
+use reqwest::{header, Client};
 use serde_json::{json, Value};
 
 use super::git_host::{GitHost, GitHostError, IssueInfo, PrInfo, Result};
@@ -15,11 +15,10 @@ pub struct GithubHost {
 
 impl GithubHost {
     pub fn from_env() -> Self {
-        let token = std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN_SYMPHONEY")
-            .or_else(|_| std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN"))
-            .expect("GITHUB_PERSONAL_ACCESS_TOKEN_SYMPHONEY or GITHUB_PERSONAL_ACCESS_TOKEN must be set");
-        let repo = std::env::var("E2E_GITHUB_REPO")
-            .expect("E2E_GITHUB_REPO must be set (e.g., 'owner/repo')");
+        super::load_env();
+        let token = std::env::var("GITHUB_TOKEN").expect("GITHUB_TOKEN must be set");
+        let repo = std::env::var("TEST_REPO_NAME")
+            .expect("TEST_REPO_NAME must be set (e.g., 'owner/repo')");
 
         let mut headers = header::HeaderMap::new();
         headers.insert(
@@ -35,12 +34,13 @@ impl GithubHost {
             header::HeaderValue::from_static("application/vnd.github+json"),
         );
 
-        let client = Client::builder()
-            .default_headers(headers)
-            .build()
-            .unwrap();
+        let client = Client::builder().default_headers(headers).build().unwrap();
 
-        Self { token, repo, client }
+        Self {
+            token,
+            repo,
+            client,
+        }
     }
 
     fn api_url(&self, path: &str) -> String {
@@ -50,7 +50,10 @@ impl GithubHost {
     async fn check_response(&self, resp: reqwest::Response) -> Result<Value> {
         let status = resp.status();
         if status.is_success() {
-            let body: Value = resp.json().await.map_err(|e| GitHostError::Http(e.to_string()))?;
+            let body: Value = resp
+                .json()
+                .await
+                .map_err(|e| GitHostError::Http(e.to_string()))?;
             Ok(body)
         } else {
             let body = resp.text().await.unwrap_or_default();
@@ -175,13 +178,7 @@ impl GitHost for GithubHost {
         Ok(())
     }
 
-    async fn create_pr(
-        &self,
-        title: &str,
-        body: &str,
-        head: &str,
-        base: &str,
-    ) -> Result<PrInfo> {
+    async fn create_pr(&self, title: &str, body: &str, head: &str, base: &str) -> Result<PrInfo> {
         let resp = self
             .client
             .post(self.api_url("/pulls"))

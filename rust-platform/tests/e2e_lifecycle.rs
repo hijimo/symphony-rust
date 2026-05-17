@@ -9,6 +9,7 @@
 //!
 //! Run with: `cargo test --test e2e_lifecycle`
 
+#[allow(dead_code, unused_imports)]
 #[path = "e2e/harness/mod.rs"]
 mod harness;
 
@@ -17,8 +18,8 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use symphony_platform::models::Issue;
-use symphony_platform::orchestrator::Orchestrator;
 use symphony_platform::orchestrator::scheduler::DispatchConfig;
+use symphony_platform::orchestrator::Orchestrator;
 
 use harness::fake_codex::{CodexBehavior, FakeCodexProcess};
 
@@ -197,7 +198,10 @@ async fn e2e_lifecycle_priority_ordering() {
     // so 1 more slot is available — the highest priority gets it
     // But should_dispatch doesn't re-check slots after each claim...
     // Let's just verify the sort order is correct by checking that issue 2 is claimed
-    assert!(orchestrator.state.claimed.contains("2"), "highest priority issue should be claimed");
+    assert!(
+        orchestrator.state.claimed.contains("2"),
+        "highest priority issue should be claimed"
+    );
 }
 
 // ============================================================================
@@ -262,9 +266,7 @@ async fn e2e_lifecycle_fake_codex_emits_events() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let process = FakeCodexProcess::new(behavior).with_event_observer(tx);
 
-    let handle = tokio::spawn(async move {
-        process.run().await
-    });
+    let handle = tokio::spawn(async move { process.run().await });
 
     // Collect events
     let mut events = Vec::new();
@@ -287,9 +289,7 @@ async fn e2e_lifecycle_stall_detection_kills_process() {
     let behavior = CodexBehavior::stalling(Duration::from_millis(10));
     let process = FakeCodexProcess::new(behavior);
 
-    let handle = tokio::spawn(async move {
-        process.run().await
-    });
+    let handle = tokio::spawn(async move { process.run().await });
 
     // Simulate stall detection timeout
     tokio::time::sleep(Duration::from_millis(100)).await;

@@ -16,21 +16,17 @@ pub struct GitlabHost {
 
 impl GitlabHost {
     pub fn from_env() -> Self {
-        let token = std::env::var("GITLAB_PERSONAL_ACCESS_TOKEN_SYMPHONEY")
-            .or_else(|_| std::env::var("GITLAB_PERSONAL_ACCESS_TOKEN"))
-            .expect("GITLAB_PERSONAL_ACCESS_TOKEN_SYMPHONEY or GITLAB_PERSONAL_ACCESS_TOKEN must be set");
-        let project_path = std::env::var("E2E_GITLAB_PROJECT")
-            .expect("E2E_GITLAB_PROJECT must be set (e.g., 'username/project')");
-        let base_url = std::env::var("E2E_GITLAB_URL")
-            .expect("E2E_GITLAB_URL must be set (e.g., 'https://gitlab.example.com')");
+        super::load_env();
+        let token = std::env::var("GITLAB_TOKEN").expect("GITLAB_TOKEN must be set");
+        let project_path = std::env::var("TEST_REPO_NAME")
+            .expect("TEST_REPO_NAME must be set (e.g., 'owner/repo')");
+        let base_url =
+            std::env::var("GITLAB_BASE_URL").unwrap_or_else(|_| "https://gitlab.com".to_string());
         Self {
             token,
             project_path,
             base_url,
-            client: Client::builder()
-                .no_proxy()
-                .build()
-                .unwrap(),
+            client: Client::builder().no_proxy().build().unwrap(),
         }
     }
 
@@ -50,7 +46,10 @@ impl GitlabHost {
     async fn check_response(&self, resp: reqwest::Response) -> Result<Value> {
         let status = resp.status();
         if status.is_success() {
-            let body: Value = resp.json().await.map_err(|e| GitHostError::Http(e.to_string()))?;
+            let body: Value = resp
+                .json()
+                .await
+                .map_err(|e| GitHostError::Http(e.to_string()))?;
             Ok(body)
         } else {
             let body = resp.text().await.unwrap_or_default();
@@ -186,13 +185,7 @@ impl GitHost for GitlabHost {
         Ok(())
     }
 
-    async fn create_pr(
-        &self,
-        title: &str,
-        body: &str,
-        head: &str,
-        base: &str,
-    ) -> Result<PrInfo> {
+    async fn create_pr(&self, title: &str, body: &str, head: &str, base: &str) -> Result<PrInfo> {
         let resp = self
             .client
             .post(self.api_url("/merge_requests"))
@@ -216,14 +209,96 @@ impl GitHost for GitlabHost {
 
     fn clone_url(&self) -> String {
         let url_with_auth = if self.base_url.starts_with("https://") {
-            self.base_url.replace("https://", &format!("https://oauth2:{}@", self.token))
+            self.base_url
+                .replace("https://", &format!("https://oauth2:{}@", self.token))
         } else {
-            self.base_url.replace("http://", &format!("http://oauth2:{}@", self.token))
+            self.base_url
+                .replace("http://", &format!("http://oauth2:{}@", self.token))
         };
         format!("{}/{}.git", url_with_auth, self.project_path)
     }
 
     fn platform_name(&self) -> &'static str {
         "GitLab"
+    }
+}
+
+// ─── Extended GitLab operations (not part of GitHost trait) ─────────────────
+
+impl GitlabHost {
+    pub async fn get_issue_labels(&self, iid: u64) -> super::git_host::Result<Vec<String>> {
+        let resp = self
+            .client
+            .get(self.api_url(&format!("/issues/{}", iid)))
+            .header("PRIVATE-TOKEN", &self.token)
+            .send()
+            .await
+            .map_err(|e| super::git_host::GitHostError::Http(e.to_string()))?;
+
+        let data = self.check_response(resp).await?;
+        let labels = data["labels"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(labels)
+    }
+
+    pub async fn add_label(&self, iid: u64, label: &str) -> super::git_host::Result<()> {
+        let current_labels = self.get_issue_labels(iid).await?;
+        let mut all_labels = current_labels;
+        if !all_labels.iter().any(|l| l == label) {
+            all_labels.push(label.to_string());
+        }
+
+        let resp = self
+            .client
+            .put(self.api_url(&format!("/issues/{}", iid)))
+            .header("PRIVATE-TOKEN", &self.token)
+            .json(&serde_json::json!({
+                "labels": all_labels.join(",")
+            }))
+            .send()
+            .await
+            .map_err(|e| super::git_host::GitHostError::Http(e.to_string()))?;
+
+        self.check_response(resp).await?;
+        Ok(())
+    }
+
+    pub async fn get_issue_notes(
+        &self,
+        iid: u64,
+    ) -> super::git_host::Result<Vec<serde_json::Value>> {
+        let resp = self
+            .client
+            .get(self.api_url(&format!("/issues/{}/notes?per_page=100", iid)))
+            .header("PRIVATE-TOKEN", &self.token)
+            .send()
+            .await
+            .map_err(|e| super::git_host::GitHostError::Http(e.to_string()))?;
+
+        let data = self.check_response(resp).await?;
+        let notes = data
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter(|n| !n["system"].as_bool().unwrap_or(false))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(notes)
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    pub fn project_path(&self) -> &str {
+        &self.project_path
     }
 }

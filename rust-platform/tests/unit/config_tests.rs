@@ -10,12 +10,12 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
+use symphony_platform::config::service_config::{
+    resolve_path, resolve_value, sanitize_workspace_key, CodexConfig, HooksConfig, ServiceConfig,
+    ServiceConfigError, TrackerKind,
+};
 use symphony_platform::config::{
     load_workflow, parse_workflow, WorkflowDefinition, WorkflowLoadError,
-};
-use symphony_platform::config::service_config::{
-    CodexConfig, HooksConfig, ServiceConfig, ServiceConfigError, TrackerKind,
-    resolve_value, resolve_path, sanitize_workspace_key,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -94,7 +94,8 @@ mod workflow_loader {
 
     #[test]
     fn test_no_front_matter() {
-        let content = "This is just a prompt template with no YAML config.\n\nIt has multiple lines.\n";
+        let content =
+            "This is just a prompt template with no YAML config.\n\nIt has multiple lines.\n";
 
         let result = parse_workflow(content).unwrap();
 
@@ -259,10 +260,7 @@ mod service_config_tests {
     #[test]
     fn test_resolve_path_absolute() {
         let result = resolve_path("/var/symphony/workspaces").unwrap();
-        assert_eq!(
-            result,
-            std::path::PathBuf::from("/var/symphony/workspaces")
-        );
+        assert_eq!(result, std::path::PathBuf::from("/var/symphony/workspaces"));
     }
 
     #[test]
@@ -276,10 +274,7 @@ mod service_config_tests {
     fn test_resolve_path_env_var() {
         std::env::set_var("SYMPHONY_TEST_PATH", "/custom/workspace");
         let result = resolve_path("$SYMPHONY_TEST_PATH").unwrap();
-        assert_eq!(
-            result,
-            std::path::PathBuf::from("/custom/workspace")
-        );
+        assert_eq!(result, std::path::PathBuf::from("/custom/workspace"));
         std::env::remove_var("SYMPHONY_TEST_PATH");
     }
 }
@@ -293,26 +288,25 @@ mod sanitize_workspace_key_tests {
 
     #[test]
     fn test_special_chars_replaced() {
-        assert_eq!(sanitize_workspace_key("hello world!"), "hello_world");
+        // SPEC: [^a-zA-Z0-9._-] → '_', no merging, no trimming
+        assert_eq!(sanitize_workspace_key("hello world!"), "hello_world_");
         assert_eq!(sanitize_workspace_key("foo/bar/baz"), "foo_bar_baz");
         assert_eq!(sanitize_workspace_key("a@b#c$d"), "a_b_c_d");
-        assert_eq!(sanitize_workspace_key("issue (1)"), "issue_1");
+        assert_eq!(sanitize_workspace_key("issue (1)"), "issue__1_");
     }
 
     #[test]
     fn test_dotdot_path_traversal_prevented() {
-        // ".." should not allow path traversal
+        // ".." is rejected as unsafe → returns "_default"
         let result = sanitize_workspace_key("..");
-        assert!(!result.contains(".."));
         assert_eq!(result, "_default");
     }
 
     #[test]
     fn test_dotdot_in_path() {
+        // "../etc/passwd" → ".._etc_passwd" (dots preserved, slashes replaced)
         let result = sanitize_workspace_key("../etc/passwd");
-        assert!(!result.contains(".."));
-        // ".." becomes "__" which collapses to "_", then "etc_passwd"
-        assert_eq!(result, "etc_passwd");
+        assert_eq!(result, ".._etc_passwd");
     }
 
     #[test]
@@ -323,9 +317,9 @@ mod sanitize_workspace_key_tests {
 
     #[test]
     fn test_dot_prefix() {
+        // ".hidden" → ".hidden" (dots are preserved per SPEC)
         let result = sanitize_workspace_key(".hidden");
-        // "." becomes "_", then "hidden" → "_hidden" → trimmed to "hidden"
-        assert_eq!(result, "hidden");
+        assert_eq!(result, ".hidden");
     }
 
     #[test]
@@ -342,30 +336,34 @@ mod sanitize_workspace_key_tests {
     }
 
     #[test]
-    fn test_consecutive_special_chars_collapse() {
-        // Multiple special chars should collapse to single underscore
-        assert_eq!(sanitize_workspace_key("a///b"), "a_b");
-        assert_eq!(sanitize_workspace_key("a   b"), "a_b");
-        assert_eq!(sanitize_workspace_key("a@#$b"), "a_b");
+    fn test_consecutive_special_chars_no_collapse() {
+        // SPEC: no merging of consecutive underscores
+        assert_eq!(sanitize_workspace_key("a///b"), "a___b");
+        assert_eq!(sanitize_workspace_key("a   b"), "a___b");
+        assert_eq!(sanitize_workspace_key("a@#$b"), "a___b");
     }
 
     #[test]
-    fn test_leading_trailing_special_chars_stripped() {
-        assert_eq!(sanitize_workspace_key("___hello___"), "hello");
-        assert_eq!(sanitize_workspace_key("///hello///"), "hello");
-        assert_eq!(sanitize_workspace_key("@hello@"), "hello");
+    fn test_leading_trailing_special_chars_not_stripped() {
+        // SPEC: no trimming
+        assert_eq!(sanitize_workspace_key("___hello___"), "___hello___");
+        assert_eq!(sanitize_workspace_key("///hello///"), "___hello___");
+        assert_eq!(sanitize_workspace_key("@hello@"), "_hello_");
     }
 
     #[test]
     fn test_unicode_chars_replaced() {
         // Non-ASCII alphanumeric chars should be replaced
         assert_eq!(sanitize_workspace_key("héllo"), "h_llo");
-        assert_eq!(sanitize_workspace_key("日本語"), "_default");
+        // All-underscore result from unicode is valid (not all-dots)
+        assert_eq!(sanitize_workspace_key("日本語"), "___");
     }
 
     #[test]
-    fn test_all_special_chars_returns_default() {
-        assert_eq!(sanitize_workspace_key("@#$%^&*"), "_default");
+    fn test_all_special_chars_returns_result() {
+        // "@#$%^&*" → all underscores, which is valid
+        assert_eq!(sanitize_workspace_key("@#$%^&*"), "_______");
+        // "..." is all-dots → unsafe → _default
         assert_eq!(sanitize_workspace_key("..."), "_default");
     }
 

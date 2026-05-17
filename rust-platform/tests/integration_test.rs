@@ -3,9 +3,7 @@
 //! These tests are marked `#[ignore]` by default and require environment variables:
 //! - `GITHUB_TOKEN` — for GitHub integration tests
 //! - `GITLAB_TOKEN` — for GitLab integration tests
-//! - `GITHUB_TEST_OWNER` — GitHub org/user for test repo
-//! - `GITHUB_TEST_REPO` — GitHub repo name for tests
-//! - `GITLAB_TEST_PROJECT_ID` — GitLab project ID for tests
+//! - `TEST_REPO_NAME` — repository name (e.g., "owner/repo"), shared by GitHub and GitLab
 //!
 //! Run with: `cargo test --test integration_test -- --include-ignored`
 
@@ -30,11 +28,10 @@ fn setup_memory_platform() -> Arc<MemoryAdapter> {
 #[ignore]
 async fn integration_github_full_workflow() {
     // This test requires a real GitHub token and test repository.
+    dotenvy::dotenv().ok();
     let _token = std::env::var("GITHUB_TOKEN").expect("GITHUB_TOKEN required for integration test");
-    let _owner = std::env::var("GITHUB_TEST_OWNER")
-        .unwrap_or_else(|_| "symphony-test-org".to_string());
-    let _repo =
-        std::env::var("GITHUB_TEST_REPO").unwrap_or_else(|_| "integration-test-repo".to_string());
+    let _repo = std::env::var("TEST_REPO_NAME")
+        .unwrap_or_else(|_| "symphony-test-org/integration-test-repo".to_string());
 
     // In a real integration test, we would:
     // 1. Create a GithubAdapter with real credentials
@@ -97,9 +94,10 @@ async fn integration_github_full_workflow() {
 #[tokio::test]
 #[ignore]
 async fn integration_gitlab_full_workflow() {
+    dotenvy::dotenv().ok();
     let _token = std::env::var("GITLAB_TOKEN").expect("GITLAB_TOKEN required for integration test");
-    let _project_id = std::env::var("GITLAB_TEST_PROJECT_ID")
-        .expect("GITLAB_TEST_PROJECT_ID required for integration test");
+    let _repo =
+        std::env::var("TEST_REPO_NAME").expect("TEST_REPO_NAME required for integration test");
 
     // Same workflow pattern as GitHub, using MemoryAdapter for demonstration
     let adapter = setup_memory_platform();
@@ -163,7 +161,10 @@ async fn integration_idempotent_state_transition() {
 
     // Should have exactly one workflow label
     let labels = adapter.get_issue_labels(IssueId(50)).await.unwrap();
-    let workflow_labels: Vec<&String> = labels.iter().filter(|l| l.starts_with("workflow::")).collect();
+    let workflow_labels: Vec<&String> = labels
+        .iter()
+        .filter(|l| l.starts_with("workflow::"))
+        .collect();
     assert_eq!(
         workflow_labels.len(),
         1,

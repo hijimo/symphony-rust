@@ -5,12 +5,18 @@
 //! - GET /api/v1/{identifier} returns issue details
 //! - GET /api/v1/{identifier} returns 404 for unknown
 //! - POST /api/v1/refresh triggers poll cycle
+//! - Response serialization correctness
+//! - Concurrent request handling
+//! - WebSocket/SSE event streaming (conceptual)
+
+#![allow(unused_imports)]
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use symphony_platform::platform::{make_test_issue, IssueId, MemoryAdapter};
@@ -73,6 +79,7 @@ struct TestHttpApi {
     retry_queue: Vec<RetryQueueEntry>,
     token_totals: TokenTotals,
     poll_triggered: bool,
+    refresh_count: u32,
 }
 
 impl TestHttpApi {
@@ -86,6 +93,7 @@ impl TestHttpApi {
                 total_tokens: 0,
             },
             poll_triggered: false,
+            refresh_count: 0,
         }
     }
 
@@ -155,7 +163,13 @@ impl TestHttpApi {
     /// POST /api/v1/refresh
     fn post_refresh(&mut self) -> u16 {
         self.poll_triggered = true;
+        self.refresh_count += 1;
         202 // Accepted
+    }
+
+    /// GET /workers (returns running worker details)
+    fn get_workers(&self) -> Vec<RunningEntry> {
+        self.running_issues.values().cloned().collect()
     }
 }
 
@@ -261,9 +275,7 @@ fn test_get_issue_returns_404_for_unknown() {
 
 #[test]
 fn test_get_issue_404_for_completed_issue() {
-    let mut api = TestHttpApi::new();
-    // Issue was running but is now completed (removed from state)
-    // It should return 404
+    let api = TestHttpApi::new();
 
     let result = api.get_issue("PROJ-DONE");
     assert!(result.is_err());
@@ -295,6 +307,28 @@ fn test_post_refresh_idempotent() {
 
     // Multiple refreshes should all succeed
     assert!(api.poll_triggered);
+    assert_eq!(api.refresh_count, 3);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GET /workers Tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_get_workers_returns_running_workers() {
+    let mut api = TestHttpApi::new();
+    api.add_running("PROJ-1", "In Progress", 3);
+    api.add_running("PROJ-2", "Todo", 1);
+
+    let workers = api.get_workers();
+    assert_eq!(workers.len(), 2);
+}
+
+#[test]
+fn test_get_workers_empty_when_idle() {
+    let api = TestHttpApi::new();
+    let workers = api.get_workers();
+    assert!(workers.is_empty());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -349,4 +383,92 @@ fn test_issue_detail_serializes_correctly() {
     assert_eq!(json["status"], "running");
     assert_eq!(json["current_turn"], 5);
     assert_eq!(json["tokens"]["total_tokens"], 3000);
+}
+
+#[test]
+fn test_state_response_roundtrip_serialization() {
+    let state = StateResponse {
+        running: vec![RunningEntry {
+            identifier: "PROJ-1".to_string(),
+            state: "In Progress".to_string(),
+            started_at: "2025-01-15T10:00:00Z".to_string(),
+            turn_count: 3,
+        }],
+        retry_queue: vec![RetryQueueEntry {
+            identifier: "PROJ-2".to_string(),
+            attempt: 2,
+            due_at: "2025-01-15T10:01:00Z".to_string(),
+            error: Some("timeout".to_string()),
+        }],
+        token_totals: TokenTotals {
+            input_tokens: 1000,
+            output_tokens: 500,
+            total_tokens: 1500,
+        },
+        uptime_seconds: 3600.0,
+    };
+
+    // Serialize and deserialize
+    let json_str = serde_json::to_string(&state).unwrap();
+    let deserialized: StateResponse = serde_json::from_str(&json_str).unwrap();
+
+    assert_eq!(deserialized.running.len(), 1);
+    assert_eq!(deserialized.retry_queue.len(), 1);
+    assert_eq!(deserialized.token_totals.total_tokens, 1500);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Concurrent Request Handling Tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_concurrent_state_reads() {
+    let api = Arc::new(Mutex::new(TestHttpApi::new()));
+
+    // Seed some data
+    {
+        let mut api = api.lock().await;
+        api.add_running("PROJ-1", "In Progress", 3);
+        api.add_running("PROJ-2", "Todo", 1);
+    }
+
+    // Spawn 10 concurrent readers
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        let api = api.clone();
+        handles.push(tokio::spawn(async move {
+            let api = api.lock().await;
+            api.get_state()
+        }));
+    }
+
+    // All should succeed with consistent data
+    for handle in handles {
+        let state = handle.await.unwrap();
+        assert_eq!(state.running.len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn test_concurrent_refresh_requests() {
+    let api = Arc::new(Mutex::new(TestHttpApi::new()));
+
+    // Spawn 5 concurrent refresh requests
+    let mut handles = Vec::new();
+    for _ in 0..5 {
+        let api = api.clone();
+        handles.push(tokio::spawn(async move {
+            let mut api = api.lock().await;
+            api.post_refresh()
+        }));
+    }
+
+    for handle in handles {
+        let status = handle.await.unwrap();
+        assert_eq!(status, 202);
+    }
+
+    // All 5 refreshes should have been counted
+    let api = api.lock().await;
+    assert_eq!(api.refresh_count, 5);
 }

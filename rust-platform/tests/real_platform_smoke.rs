@@ -1,13 +1,12 @@
 //! Real Integration Tests — GitHub/Platform API smoke tests.
 //!
-//! These tests require a valid GITHUB_PERSONAL_ACCESS_TOKEN_SYMPHONEY environment
-//! variable and network access to the GitHub API. They are marked with #[ignore]
-//! and should be run explicitly with `cargo test --test real_platform_smoke -- --ignored`.
+//! These tests require a valid GITHUB_TOKEN environment variable and network
+//! access to the GitHub API. They are marked with #[ignore] and should be run
+//! explicitly with `cargo test --test real_platform_smoke -- --ignored`.
 //!
 //! Required environment:
-//! - GITHUB_PERSONAL_ACCESS_TOKEN_SYMPHONEY: Valid GitHub token with repo access
-//! - GITHUB_TEST_OWNER (optional): GitHub org/user to test against
-//! - GITHUB_TEST_REPO (optional): Repository name to test against
+//! - GITHUB_TOKEN: Valid GitHub token with repo access
+//! - TEST_REPO_NAME: Repository in "owner/repo" format
 //!
 //! Run with: `cargo test --test real_platform_smoke -- --ignored`
 
@@ -15,26 +14,28 @@ use std::time::Duration;
 
 /// Helper to get the GitHub token from environment.
 fn get_github_token() -> Option<String> {
-    std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN_SYMPHONEY")
-        .or_else(|_| std::env::var("GITHUB_TOKEN"))
-        .ok()
+    dotenvy::dotenv().ok();
+    std::env::var("GITHUB_TOKEN").ok()
 }
 
-/// Helper to get the test owner.
-fn get_test_owner() -> String {
-    std::env::var("GITHUB_TEST_OWNER").unwrap_or_else(|_| "anthropics".to_string())
-}
-
-/// Helper to get the test repo.
+/// Helper to get the test repo (owner/repo format).
 fn get_test_repo() -> String {
-    std::env::var("GITHUB_TEST_REPO").unwrap_or_else(|_| "symphony".to_string())
+    std::env::var("TEST_REPO_NAME").unwrap_or_else(|_| "anthropics/symphony".to_string())
+}
+
+/// Helper to split TEST_REPO_NAME into (owner, repo).
+fn get_owner_and_repo() -> (String, String) {
+    let full = get_test_repo();
+    let parts: Vec<&str> = full.splitn(2, '/').collect();
+    if parts.len() == 2 {
+        (parts[0].to_string(), parts[1].to_string())
+    } else {
+        ("anthropics".to_string(), full)
+    }
 }
 
 /// Helper to make a GitHub API request.
-async fn github_api_request(
-    token: &str,
-    endpoint: &str,
-) -> Result<serde_json::Value, String> {
+async fn github_api_request(token: &str, endpoint: &str) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
@@ -69,11 +70,8 @@ async fn github_api_request(
 #[tokio::test]
 #[ignore]
 async fn real_github_fetch_issues() {
-    let token = get_github_token().expect(
-        "GITHUB_PERSONAL_ACCESS_TOKEN_SYMPHONEY or GITHUB_TOKEN required",
-    );
-    let owner = get_test_owner();
-    let repo = get_test_repo();
+    let token = get_github_token().expect("GITHUB_TOKEN required");
+    let (owner, repo) = get_owner_and_repo();
 
     let endpoint = format!("/repos/{}/{}/issues?state=open&per_page=10", owner, repo);
     let result = github_api_request(&token, &endpoint).await;
@@ -81,7 +79,12 @@ async fn real_github_fetch_issues() {
     match result {
         Ok(data) => {
             let issues = data.as_array().expect("Expected array of issues");
-            println!("Fetched {} open issues from {}/{}", issues.len(), owner, repo);
+            println!(
+                "Fetched {} open issues from {}/{}",
+                issues.len(),
+                owner,
+                repo
+            );
 
             for issue in issues.iter().take(5) {
                 let number = issue["number"].as_u64().unwrap_or(0);
@@ -104,11 +107,8 @@ async fn real_github_fetch_issues() {
 #[tokio::test]
 #[ignore]
 async fn real_github_label_based_state_detection() {
-    let token = get_github_token().expect(
-        "GITHUB_PERSONAL_ACCESS_TOKEN_SYMPHONEY or GITHUB_TOKEN required",
-    );
-    let owner = get_test_owner();
-    let repo = get_test_repo();
+    let token = get_github_token().expect("GITHUB_TOKEN required");
+    let (owner, repo) = get_owner_and_repo();
 
     let endpoint = format!("/repos/{}/{}/issues?state=open&per_page=50", owner, repo);
     let result = github_api_request(&token, &endpoint)
@@ -151,11 +151,8 @@ async fn real_github_label_based_state_detection() {
 #[tokio::test]
 #[ignore]
 async fn real_github_issue_normalization() {
-    let token = get_github_token().expect(
-        "GITHUB_PERSONAL_ACCESS_TOKEN_SYMPHONEY or GITHUB_TOKEN required",
-    );
-    let owner = get_test_owner();
-    let repo = get_test_repo();
+    let token = get_github_token().expect("GITHUB_TOKEN required");
+    let (owner, repo) = get_owner_and_repo();
 
     let endpoint = format!("/repos/{}/{}/issues?state=open&per_page=5", owner, repo);
     let result = github_api_request(&token, &endpoint)
@@ -204,7 +201,10 @@ async fn real_github_issue_normalization() {
                 .trim_end_matches('-')
         );
 
-        println!("  #{}: title={}, state={:?}, branch={}", id, title, workflow_state, branch_name);
+        println!(
+            "  #{}: title={}, state={:?}, branch={}",
+            id, title, workflow_state, branch_name
+        );
 
         assert!(!title.is_empty());
         assert!(url.starts_with("https://"));
@@ -219,9 +219,7 @@ async fn real_github_issue_normalization() {
 #[tokio::test]
 #[ignore]
 async fn real_github_token_validation() {
-    let token = get_github_token().expect(
-        "GITHUB_PERSONAL_ACCESS_TOKEN_SYMPHONEY or GITHUB_TOKEN required",
-    );
+    let token = get_github_token().expect("GITHUB_TOKEN required");
 
     let result = github_api_request(&token, "/user").await;
 
@@ -245,9 +243,7 @@ async fn real_github_token_validation() {
 #[tokio::test]
 #[ignore]
 async fn real_github_rate_limit_check() {
-    let token = get_github_token().expect(
-        "GITHUB_PERSONAL_ACCESS_TOKEN_SYMPHONEY or GITHUB_TOKEN required",
-    );
+    let token = get_github_token().expect("GITHUB_TOKEN required");
 
     let result = github_api_request(&token, "/rate_limit").await;
 
@@ -257,7 +253,12 @@ async fn real_github_rate_limit_check() {
             let remaining = core["remaining"].as_u64().unwrap_or(0);
             let limit = core["limit"].as_u64().unwrap_or(0);
             println!("Rate limit: {}/{}", remaining, limit);
-            assert!(remaining > 10, "Rate limit too low: {}/{}", remaining, limit);
+            assert!(
+                remaining > 10,
+                "Rate limit too low: {}/{}",
+                remaining,
+                limit
+            );
         }
         Err(e) => panic!("Rate limit check failed: {}", e),
     }
@@ -270,11 +271,8 @@ async fn real_github_rate_limit_check() {
 #[tokio::test]
 #[ignore]
 async fn real_github_fetch_labels() {
-    let token = get_github_token().expect(
-        "GITHUB_PERSONAL_ACCESS_TOKEN_SYMPHONEY or GITHUB_TOKEN required",
-    );
-    let owner = get_test_owner();
-    let repo = get_test_repo();
+    let token = get_github_token().expect("GITHUB_TOKEN required");
+    let (owner, repo) = get_owner_and_repo();
 
     let endpoint = format!("/repos/{}/{}/labels?per_page=100", owner, repo);
     let result = github_api_request(&token, &endpoint).await;

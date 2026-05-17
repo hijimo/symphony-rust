@@ -16,7 +16,7 @@
 //!
 //! Run modes:
 //! - `cargo test --test e2e_test` — runs with MemoryAdapter (always passes, validates logic)
-//! - `GITHUB_TOKEN=xxx GITHUB_TEST_OWNER=xxx GITHUB_TEST_REPO=xxx cargo test --test e2e_test -- --include-ignored`
+//! - `GITHUB_TOKEN=xxx TEST_REPO_NAME=owner/repo cargo test --test e2e_test -- --include-ignored`
 //!   — runs against real GitHub API
 //!
 //! Required token permissions for real API mode:
@@ -26,10 +26,10 @@
 
 use std::sync::Arc;
 
-use symphony_platform::config::platform::{PlatformConfig, WorkflowConfig, IssueFilter};
+use symphony_platform::config::platform::{IssueFilter, PlatformConfig, WorkflowConfig};
 use symphony_platform::error::PlatformError;
 use symphony_platform::platform::{
-    make_test_issue, FetchOptions, IssueId, CreatePrParams, MemoryAdapter, Platform,
+    make_test_issue, CreatePrParams, FetchOptions, IssueId, MemoryAdapter, Platform,
 };
 
 // ============================================================================
@@ -40,8 +40,14 @@ fn workflow_config() -> WorkflowConfig {
     let mut states = std::collections::HashMap::new();
     states.insert("backlog".to_string(), "workflow::backlog".to_string());
     states.insert("todo".to_string(), "workflow::todo".to_string());
-    states.insert("in_progress".to_string(), "workflow::in-progress".to_string());
-    states.insert("human_review".to_string(), "workflow::human-review".to_string());
+    states.insert(
+        "in_progress".to_string(),
+        "workflow::in-progress".to_string(),
+    );
+    states.insert(
+        "human_review".to_string(),
+        "workflow::human-review".to_string(),
+    );
     states.insert("rework".to_string(), "workflow::rework".to_string());
     states.insert("done".to_string(), "workflow::done".to_string());
 
@@ -94,7 +100,10 @@ async fn e2e_full_workflow_memory_adapter() {
 
     // Verify old label removed
     let labels = adapter.get_issue_labels(issue_id).await.unwrap();
-    let wf_labels: Vec<&String> = labels.iter().filter(|l| l.starts_with("workflow::")).collect();
+    let wf_labels: Vec<&String> = labels
+        .iter()
+        .filter(|l| l.starts_with("workflow::"))
+        .collect();
     assert_eq!(wf_labels.len(), 1);
     assert_eq!(wf_labels[0], "workflow::in-progress");
 
@@ -214,7 +223,10 @@ async fn e2e_rework_cycle_memory_adapter() {
 
     // Verify only one workflow label at the end
     let labels = adapter.get_issue_labels(issue_id).await.unwrap();
-    let wf_labels: Vec<&String> = labels.iter().filter(|l| l.starts_with("workflow::")).collect();
+    let wf_labels: Vec<&String> = labels
+        .iter()
+        .filter(|l| l.starts_with("workflow::"))
+        .collect();
     assert_eq!(wf_labels.len(), 1);
 }
 
@@ -364,19 +376,22 @@ async fn e2e_comment_lifecycle() {
 ///
 /// Requires:
 /// - GITHUB_TOKEN with Issues + PRs read/write
-/// - GITHUB_TEST_OWNER (e.g., "hijimo")
-/// - GITHUB_TEST_REPO (e.g., "symphony-e2e-test")
+/// - TEST_REPO_NAME (e.g., "owner/repo")
 #[tokio::test]
 #[ignore]
 async fn e2e_real_github_full_workflow() {
     use symphony_platform::platform::github::GithubAdapter;
 
-    let token_var = std::env::var("GITHUB_TOKEN")
-        .or_else(|_| std::env::var("GITHUB_PERSONAL_ACCESS_TOKEN_SYMPHONEY"))
-        .expect("GITHUB_TOKEN or GITHUB_PERSONAL_ACCESS_TOKEN_SYMPHONEY required");
-    let owner = std::env::var("GITHUB_TEST_OWNER").unwrap_or_else(|_| "hijimo".to_string());
-    let repo = std::env::var("GITHUB_TEST_REPO")
-        .unwrap_or_else(|_| "symphony-e2e-test".to_string());
+    dotenvy::dotenv().ok();
+    let token_var = std::env::var("GITHUB_TOKEN").expect("GITHUB_TOKEN required");
+    let test_repo =
+        std::env::var("TEST_REPO_NAME").unwrap_or_else(|_| "hijimo/symphony-e2e-test".to_string());
+    let parts: Vec<&str> = test_repo.splitn(2, '/').collect();
+    let (owner, repo) = if parts.len() == 2 {
+        (parts[0].to_string(), parts[1].to_string())
+    } else {
+        ("hijimo".to_string(), test_repo.clone())
+    };
 
     // Build real config — set token in env for resolve_token to find
     std::env::set_var("_E2E_GITHUB_TOKEN", &token_var);
@@ -437,7 +452,10 @@ async fn e2e_real_github_full_workflow() {
 
     // Step 6: Create workpad comment
     let comment_id = adapter
-        .create_comment(issue_id, "## Codex Workpad\n\n### Plan\n- E2E test\n\n### Status\nRunning")
+        .create_comment(
+            issue_id,
+            "## Codex Workpad\n\n### Plan\n- E2E test\n\n### Status\nRunning",
+        )
         .await
         .expect("Failed to create comment");
     println!("✓ Created workpad comment (id={})", comment_id.0);
@@ -452,7 +470,10 @@ async fn e2e_real_github_full_workflow() {
 
     // Step 8: Update workpad
     adapter
-        .update_comment(comment_id, "## Codex Workpad\n\n### Plan\n- E2E test ✓\n\n### Status\nComplete")
+        .update_comment(
+            comment_id,
+            "## Codex Workpad\n\n### Plan\n- E2E test ✓\n\n### Status\nComplete",
+        )
         .await
         .expect("Failed to update comment");
     println!("✓ Updated workpad comment");
@@ -504,7 +525,9 @@ async fn create_test_issue(token: &str, owner: &str, repo: &str) -> u64 {
     );
 
     let body: serde_json::Value = resp.json().await.unwrap();
-    body["number"].as_u64().expect("No issue number in response")
+    body["number"]
+        .as_u64()
+        .expect("No issue number in response")
 }
 
 async fn close_test_issue(token: &str, owner: &str, repo: &str, number: u64) {
