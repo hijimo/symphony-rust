@@ -47,9 +47,11 @@ impl Default for HooksConfig {
 #[derive(Debug, Clone)]
 pub struct CodexConfig {
     pub command: String,
-    pub approval_policy: Option<String>,
+    /// Approval policy: can be a simple string ("never") or a complex map.
+    pub approval_policy: Option<serde_json::Value>,
     pub thread_sandbox: Option<String>,
-    pub turn_sandbox_policy: Option<String>,
+    /// Turn sandbox policy: can be a simple string or a complex map.
+    pub turn_sandbox_policy: Option<serde_json::Value>,
     pub turn_timeout_ms: u64,
     pub read_timeout_ms: u64,
     pub stall_timeout_ms: i64,
@@ -175,8 +177,7 @@ impl ServiceConfig {
             default_endpoint_for_kind(&tracker_kind),
         );
         let tracker_api_key = resolve_tracker_api_key(&tracker, &tracker_kind)?;
-        let tracker_project_slug =
-            get_string_or_default(&tracker, "project_slug", String::new());
+        let tracker_project_slug = get_string_or_default(&tracker, "project_slug", String::new());
         let active_states = get_string_list_or_default(
             &tracker,
             "active_states",
@@ -211,14 +212,10 @@ impl ServiceConfig {
         let max_concurrent_agents =
             get_u64_or_default(&agent, "max_concurrent_agents", 10) as usize;
         let max_turns = get_u64_or_default(&agent, "max_turns", 20) as u32;
-        let max_retry_backoff_ms =
-            get_u64_or_default(&agent, "max_retry_backoff_ms", 300_000);
+        let max_retry_backoff_ms = get_u64_or_default(&agent, "max_retry_backoff_ms", 300_000);
         let max_concurrent_agents_by_state = parse_state_concurrency_map(&agent);
-        let blocker_check_states = get_string_list_or_default(
-            &agent,
-            "blocker_check_states",
-            vec!["todo".to_string()],
-        );
+        let blocker_check_states =
+            get_string_list_or_default(&agent, "blocker_check_states", vec!["todo".to_string()]);
 
         // -- codex section --
         let codex_section = get_section(config, "codex");
@@ -231,12 +228,13 @@ impl ServiceConfig {
         // -- worker/SSH extension --
         let worker = get_section(config, "worker");
         let ssh_hosts = get_string_list_or_default(&worker, "ssh_hosts", Vec::new());
-        let max_concurrent_agents_per_host = worker
-            .get("max_concurrent_agents_per_host")
-            .and_then(|v| match v {
-                YamlValue::Number(n) => n.as_u64().map(|n| n as usize),
-                _ => None,
-            });
+        let max_concurrent_agents_per_host =
+            worker
+                .get("max_concurrent_agents_per_host")
+                .and_then(|v| match v {
+                    YamlValue::Number(n) => n.as_u64().map(|n| n as usize),
+                    _ => None,
+                });
 
         Ok(ServiceConfig {
             tracker_kind,
@@ -283,6 +281,22 @@ impl ServiceConfig {
             return Err(ServiceConfigError::ValidationFailed(
                 "codex.command is empty".to_string(),
             ));
+        }
+
+        // max_turns must be positive
+        if self.max_turns == 0 {
+            return Err(ServiceConfigError::InvalidValue {
+                field: "agent.max_turns".to_string(),
+                detail: "must be a positive integer (> 0)".to_string(),
+            });
+        }
+
+        // hooks.timeout_ms must be positive if specified
+        if self.hooks.timeout_ms == 0 {
+            return Err(ServiceConfigError::InvalidValue {
+                field: "hooks.timeout_ms".to_string(),
+                detail: "must be > 0".to_string(),
+            });
         }
 
         Ok(())
@@ -457,10 +471,7 @@ pub fn resolve_env_var(value: &str) -> Result<String, ServiceConfigError> {
 }
 
 /// Resolve workspace root path with ~ expansion and relative path resolution.
-fn resolve_workspace_root(
-    workspace: &HashMap<String, YamlValue>,
-    workflow_dir: &Path,
-) -> PathBuf {
+fn resolve_workspace_root(workspace: &HashMap<String, YamlValue>, workflow_dir: &Path) -> PathBuf {
     let raw = get_optional_string(workspace, "root");
 
     match raw {
@@ -522,12 +533,49 @@ fn parse_hooks(section: &HashMap<String, YamlValue>) -> HooksConfig {
 fn parse_codex_config(section: &HashMap<String, YamlValue>) -> CodexConfig {
     CodexConfig {
         command: get_string_or_default(section, "command", "codex app-server".to_string()),
-        approval_policy: get_optional_string(section, "approval_policy"),
+        approval_policy: yaml_to_json_value(section.get("approval_policy")),
         thread_sandbox: get_optional_string(section, "thread_sandbox"),
-        turn_sandbox_policy: get_optional_string(section, "turn_sandbox_policy"),
+        turn_sandbox_policy: yaml_to_json_value(section.get("turn_sandbox_policy")),
         turn_timeout_ms: get_u64_or_default(section, "turn_timeout_ms", 3_600_000),
         read_timeout_ms: get_u64_or_default(section, "read_timeout_ms", 5_000),
         stall_timeout_ms: get_i64_or_default(section, "stall_timeout_ms", 300_000),
+    }
+}
+
+/// Convert a YAML value to a serde_json::Value, supporting both strings and maps.
+fn yaml_to_json_value(value: Option<&YamlValue>) -> Option<serde_json::Value> {
+    match value {
+        None | Some(YamlValue::Null) => None,
+        Some(YamlValue::String(s)) => Some(serde_json::Value::String(s.clone())),
+        Some(YamlValue::Bool(b)) => Some(serde_json::Value::Bool(*b)),
+        Some(YamlValue::Number(n)) => {
+            if let Some(i) = n.as_i64() {
+                Some(serde_json::Value::Number(serde_json::Number::from(i)))
+            } else if let Some(f) = n.as_f64() {
+                serde_json::Number::from_f64(f).map(serde_json::Value::Number)
+            } else {
+                None
+            }
+        }
+        Some(YamlValue::Mapping(m)) => {
+            let mut map = serde_json::Map::new();
+            for (k, v) in m {
+                if let YamlValue::String(key) = k {
+                    if let Some(json_val) = yaml_to_json_value(Some(v)) {
+                        map.insert(key.clone(), json_val);
+                    }
+                }
+            }
+            Some(serde_json::Value::Object(map))
+        }
+        Some(YamlValue::Sequence(seq)) => {
+            let arr: Vec<serde_json::Value> = seq
+                .iter()
+                .filter_map(|v| yaml_to_json_value(Some(v)))
+                .collect();
+            Some(serde_json::Value::Array(arr))
+        }
+        _ => None,
     }
 }
 
@@ -580,50 +628,19 @@ pub fn resolve_path(path_str: &str) -> Result<PathBuf, ServiceConfigError> {
 
 /// Sanitize a workspace key from an issue identifier.
 ///
-/// Rules:
-/// - Replace any character that is not ASCII alphanumeric, dash, or underscore with '_'
-/// - Collapse consecutive underscores
-/// - Strip leading/trailing underscores
-/// - ".." becomes "__" then collapses to "_"
-/// - "." becomes "_"
+/// Delegates to the canonical implementation in `crate::workspace::sanitize_workspace_key`.
+/// This wrapper returns a String (never errors) for backward compatibility:
 /// - Empty string returns "_default"
+/// - Unsafe identifiers (., ..) return "_default"
+/// - All other characters not in [A-Za-z0-9._-] are replaced with '_'
 pub fn sanitize_workspace_key(identifier: &str) -> String {
     if identifier.is_empty() {
         return "_default".to_string();
     }
 
-    let sanitized: String = identifier
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-
-    // Collapse consecutive underscores
-    let mut result = String::new();
-    let mut prev_underscore = false;
-    for c in sanitized.chars() {
-        if c == '_' {
-            if !prev_underscore {
-                result.push(c);
-            }
-            prev_underscore = true;
-        } else {
-            result.push(c);
-            prev_underscore = false;
-        }
-    }
-
-    // Strip leading/trailing underscores
-    let trimmed = result.trim_matches('_');
-    if trimmed.is_empty() {
-        "_default".to_string()
-    } else {
-        trimmed.to_string()
+    match crate::workspace::sanitize_workspace_key(identifier) {
+        Ok(key) => key,
+        Err(_) => "_default".to_string(),
     }
 }
 
@@ -705,8 +722,7 @@ Custom prompt.
 
     #[test]
     fn test_validate_for_dispatch_missing_api_key() {
-        let content =
-            "---\ntracker:\n  kind: linear\n  project_slug: slug\n---\nPrompt.\n";
+        let content = "---\ntracker:\n  kind: linear\n  project_slug: slug\n---\nPrompt.\n";
         let workflow = parse_workflow(content).unwrap();
         let config = ServiceConfig::from_workflow(&workflow, Path::new("/tmp")).unwrap();
 
@@ -726,7 +742,8 @@ Custom prompt.
 
     #[test]
     fn test_validate_for_dispatch_success() {
-        let content = "---\ntracker:\n  kind: linear\n  api_key: key\n  project_slug: slug\n---\nPrompt.\n";
+        let content =
+            "---\ntracker:\n  kind: linear\n  api_key: key\n  project_slug: slug\n---\nPrompt.\n";
         let workflow = parse_workflow(content).unwrap();
         let config = ServiceConfig::from_workflow(&workflow, Path::new("/tmp")).unwrap();
 
@@ -769,8 +786,7 @@ Custom prompt.
     fn test_workspace_root_relative_path() {
         let content = "---\ntracker:\n  kind: linear\n  api_key: k\n  project_slug: s\nworkspace:\n  root: ./workspaces\n---\nP\n";
         let workflow = parse_workflow(content).unwrap();
-        let config =
-            ServiceConfig::from_workflow(&workflow, Path::new("/project/dir")).unwrap();
+        let config = ServiceConfig::from_workflow(&workflow, Path::new("/project/dir")).unwrap();
 
         assert_eq!(
             config.workspace_root,
@@ -780,8 +796,7 @@ Custom prompt.
 
     #[test]
     fn test_unsupported_tracker_kind() {
-        let content =
-            "---\ntracker:\n  kind: jira\n  api_key: k\n  project_slug: s\n---\nP\n";
+        let content = "---\ntracker:\n  kind: jira\n  api_key: k\n  project_slug: s\n---\nP\n";
         let workflow = parse_workflow(content).unwrap();
         let result = ServiceConfig::from_workflow(&workflow, Path::new("/tmp"));
 

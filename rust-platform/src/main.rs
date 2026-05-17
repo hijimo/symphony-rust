@@ -3,14 +3,20 @@
 //! Startup flow (SPEC Section 17.7):
 //! 1. Parse CLI args
 //! 2. Initialize structured logging
-//! 3. Load workflow / configuration
-//! 4. Validate configuration
-//! 5. Build platform adapter
-//! 6. Start config watcher (hot reload)
-//! 7. Start orchestrator
-//! 8. Optionally start HTTP server
-//! 9. Graceful shutdown on SIGINT/SIGTERM
+//! 3. Load WORKFLOW.md via WorkflowLoader
+//! 4. Construct ServiceConfig from workflow definition
+//! 5. Validate configuration for dispatch readiness
+//! 6. Construct PromptEngine from prompt template
+//! 7. Construct tracker client (LinearClient)
+//! 8. Construct WorkspaceManager + startup cleanup
+//! 9. Activate ConfigHolder with file watcher (hot reload)
+//! 10. Derive DispatchConfig from ServiceConfig
+//! 11. Build Orchestrator with all dependencies
+//! 12. Optionally start HTTP server (wired to orchestrator channels)
+//! 13. Run orchestrator event loop
+//! 14. Graceful shutdown on SIGINT/SIGTERM
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -18,19 +24,24 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use symphony_platform::cli::Cli;
-use symphony_platform::config::{validate_platform_config, Config};
-use symphony_platform::error::PlatformError;
+use symphony_platform::config::service_config::{ServiceConfig, TrackerKind};
+use symphony_platform::config::watcher::{ConfigHolder, EffectiveConfig};
+use symphony_platform::config::workflow_loader::load_workflow;
 use symphony_platform::logging::init_logging;
+use symphony_platform::models::OrchestratorEvent as ModelOrchestratorEvent;
+use symphony_platform::orchestrator::scheduler::DispatchConfig;
 use symphony_platform::orchestrator::Orchestrator;
-use symphony_platform::platform::cooldown_queue::CooldownQueue;
+use symphony_platform::platform::github::GithubAdapter;
 use symphony_platform::platform::gitlab::GitlabAdapter;
-use symphony_platform::platform::Platform;
+use symphony_platform::prompt::PromptEngine;
 use symphony_platform::server;
 use symphony_platform::server::api::{OrchestratorEvent, OrchestratorQuery};
+use symphony_platform::tracker::gitlab::GitlabTrackerAdapter;
+use symphony_platform::tracker::linear::LinearClient;
+use symphony_platform::workspace::WorkspaceManager;
 
-/// Default config file path (legacy mode, used when no CLI workflow path is given
-/// and no WORKFLOW.md exists).
-const DEFAULT_CONFIG_PATH: &str = "workflow.yaml";
+/// Default workflow file name when no path is specified.
+const DEFAULT_WORKFLOW_FILE: &str = "WORKFLOW.md";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -42,31 +53,129 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Symphony Platform Adapter starting");
 
-    // 3. Load configuration
-    //    Try WORKFLOW.md path first (new SPEC-compliant mode),
-    //    fall back to legacy workflow.yaml for backward compatibility.
-    let config = load_config_from_args(&cli)?;
+    // 3. Resolve workflow path: CLI arg > env var > default
+    let workflow_path = resolve_workflow_path(&cli);
+    tracing::info!(path = %workflow_path.display(), "Loading workflow definition");
 
-    // 4. Validate configuration
-    validate_platform_config(&config).map_err(|e| {
+    // 4. Load WORKFLOW.md via WorkflowLoader
+    let workflow = load_workflow(&workflow_path).map_err(|e| {
+        tracing::error!(error = %e, "Failed to load workflow file");
+        e
+    })?;
+
+    // 5. Construct ServiceConfig from workflow definition
+    let workflow_dir = workflow_path.parent().unwrap_or(std::path::Path::new("."));
+    let service_config = ServiceConfig::from_workflow(&workflow, workflow_dir).map_err(|e| {
+        tracing::error!(error = %e, "Failed to parse service configuration");
+        e
+    })?;
+
+    // 6. Validate configuration for dispatch readiness
+    service_config.validate_for_dispatch().map_err(|e| {
         tracing::error!(error = %e, "Configuration validation failed");
         e
     })?;
 
     tracing::info!("Configuration validated successfully");
 
-    // 5. Build the platform adapter based on configured kind
-    let platform: Arc<dyn Platform> = build_adapter(&config).await?;
+    // 7. Construct PromptEngine from prompt template
+    let prompt_template = if workflow.prompt_template.is_empty() {
+        symphony_platform::prompt::DEFAULT_PROMPT.to_string()
+    } else {
+        workflow.prompt_template.clone()
+    };
 
-    // Validate credentials before starting the main loop
-    platform.validate_credentials().await.map_err(|e| {
-        tracing::error!(error = %e, "Credential validation failed — check your API token");
+    let _prompt_engine = PromptEngine::compile(&prompt_template).map_err(|e| {
+        tracing::error!(error = %e, "Failed to compile prompt template");
         e
     })?;
 
-    tracing::info!("Platform credentials validated");
+    tracing::info!("Prompt engine compiled");
 
-    // 6. Set up graceful shutdown
+    // 8. Construct tracker client based on configured kind
+    match service_config.tracker_kind {
+        TrackerKind::Linear => {
+            let _linear_client = LinearClient::new(
+                service_config.tracker_endpoint.clone(),
+                service_config.tracker_api_key.clone(),
+                service_config.tracker_project_slug.clone(),
+            )
+            .map(|client| client.with_active_states(service_config.active_states.clone()))
+            .map_err(|e| {
+                tracing::error!(error = %e, "Failed to initialize Linear client");
+                e
+            })?;
+            tracing::info!(
+                project_slug = %service_config.tracker_project_slug,
+                "Linear tracker client initialized"
+            );
+        }
+        TrackerKind::GitHub => {
+            tracing::info!("GitHub tracker mode — tracker client deferred to platform adapter");
+        }
+        TrackerKind::GitLab => {
+            tracing::info!("GitLab tracker mode — tracker client deferred to platform adapter");
+        }
+    }
+
+    // 9. Construct WorkspaceManager and perform startup cleanup
+    let workspace_manager = WorkspaceManager::new(
+        service_config.workspace_root.clone(),
+        service_config.hooks.clone(),
+    );
+
+    // Ensure workspace root directory exists
+    tokio::fs::create_dir_all(&service_config.workspace_root)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                path = %service_config.workspace_root.display(),
+                error = %e,
+                "Failed to create workspace root directory"
+            );
+            e
+        })?;
+
+    // Startup workspace cleanup (SPEC Section 8.6)
+    // In a full integration, terminal issue identifiers would come from the tracker.
+    // For now, call with empty list to establish the pattern.
+    workspace_manager.cleanup_terminal_workspaces(&[]).await;
+
+    tracing::info!(
+        root = %service_config.workspace_root.display(),
+        "Workspace manager initialized, startup cleanup complete"
+    );
+
+    // 10. Activate ConfigHolder with file watcher (hot reload)
+    let effective_config = EffectiveConfig {
+        service: service_config.clone(),
+        prompt_template: prompt_template.clone(),
+        loaded_at: chrono::Utc::now(),
+    };
+
+    let _config_holder = ConfigHolder::with_watcher(effective_config, workflow_path.clone())
+        .unwrap_or_else(|e| {
+            tracing::warn!(
+                error = %e,
+                "Failed to start config file watcher, hot-reload disabled"
+            );
+            // Fall back to non-watching holder
+            ConfigHolder::new(
+                EffectiveConfig {
+                    service: service_config.clone(),
+                    prompt_template: prompt_template.clone(),
+                    loaded_at: chrono::Utc::now(),
+                },
+                workflow_path.clone(),
+            )
+        });
+
+    tracing::info!("Config watcher activated");
+
+    // 11. Derive DispatchConfig from ServiceConfig
+    let dispatch_config = DispatchConfig::from_service_config(&service_config);
+
+    // 12. Set up graceful shutdown
     let cancel = CancellationToken::new();
     let cancel_clone = cancel.clone();
 
@@ -76,15 +185,122 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cancel_clone.cancel();
     });
 
-    // 7. Build cooldown queue
-    let cooldown_queue = Arc::new(CooldownQueue::new(config.polling.interval()));
-    cooldown_queue.spawn_cleanup_task(cancel.clone());
+    // 13. Build the Orchestrator
+    let stall_timeout_ms = service_config.codex.stall_timeout_ms;
+    let max_retry_backoff_ms = service_config.max_retry_backoff_ms;
+    let mut orchestrator = Orchestrator::new(
+        dispatch_config,
+        stall_timeout_ms,
+        max_retry_backoff_ms,
+        cancel.clone(),
+    );
 
-    // 8. Optionally start HTTP server
-    let effective_port = cli.port;
+    // 14. Wire dependencies into orchestrator
+    let workspace_mgr = Arc::new(workspace_manager);
+    let prompt_engine_arc = Arc::new(_prompt_engine);
+    let config_holder_arc = Arc::new(_config_holder);
+
+    orchestrator.set_workspace_mgr(workspace_mgr.clone());
+    orchestrator.set_prompt_engine(prompt_engine_arc);
+    orchestrator.set_config_holder(config_holder_arc);
+
+    // Wire tracker based on kind
+    match service_config.tracker_kind {
+        TrackerKind::Linear => {
+            match LinearClient::new(
+                service_config.tracker_endpoint.clone(),
+                service_config.tracker_api_key.clone(),
+                service_config.tracker_project_slug.clone(),
+            ) {
+                Ok(client) => {
+                    orchestrator.set_tracker(Arc::new(
+                        client.with_active_states(service_config.active_states.clone()),
+                    ));
+                    tracing::info!("Linear tracker wired into orchestrator");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to create Linear client, dispatch disabled");
+                }
+            }
+        }
+        TrackerKind::GitLab => {
+            let platform_config = build_platform_config(&service_config, "gitlab");
+
+            match GitlabAdapter::new_with_token(platform_config, &service_config.tracker_api_key) {
+                Ok(adapter) => {
+                    let tracker = Arc::new(GitlabTrackerAdapter::new(
+                        Arc::new(adapter),
+                        service_config.active_states.clone(),
+                        service_config.terminal_states.clone(),
+                    ));
+                    orchestrator.set_tracker(tracker);
+                    tracing::info!("GitLab tracker wired into orchestrator");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to create GitLab adapter, dispatch disabled");
+                }
+            }
+        }
+        TrackerKind::GitHub => {
+            let platform_config = build_platform_config(&service_config, "github");
+
+            match GithubAdapter::new_with_token(platform_config, &service_config.tracker_api_key) {
+                Ok(adapter) => {
+                    let tracker = Arc::new(GitlabTrackerAdapter::new(
+                        Arc::new(adapter),
+                        service_config.active_states.clone(),
+                        service_config.terminal_states.clone(),
+                    ));
+                    orchestrator.set_tracker(tracker);
+                    tracing::info!("GitHub tracker wired into orchestrator");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to create GitHub adapter, dispatch disabled");
+                }
+            }
+        }
+    }
+
+    // 15. Optionally start HTTP server (wired to orchestrator channels)
+    //     The server port comes from CLI --port override or WORKFLOW.md config.
+    let effective_port = cli.port.or(service_config.server_port);
+
     if let Some(port) = effective_port {
-        let (query_tx, _query_rx) = mpsc::channel::<OrchestratorQuery>(32);
-        let (event_tx, _event_rx) = mpsc::channel::<OrchestratorEvent>(32);
+        let (query_tx, mut query_rx) = mpsc::channel::<OrchestratorQuery>(32);
+        let (event_tx, mut event_rx) = mpsc::channel::<OrchestratorEvent>(32);
+
+        // Forward HTTP events to the orchestrator's event channel
+        let orch_event_tx = orchestrator.event_sender();
+        tokio::spawn(async move {
+            while let Some(http_event) = event_rx.recv().await {
+                match http_event {
+                    OrchestratorEvent::ForceRefresh => {
+                        let _ = orch_event_tx
+                            .send(ModelOrchestratorEvent::ForceRefresh)
+                            .await;
+                    }
+                }
+            }
+        });
+
+        // Forward HTTP state queries to the orchestrator's serialized event loop.
+        let orch_query_tx = orchestrator.event_sender();
+        tokio::spawn(async move {
+            while let Some(query) = query_rx.recv().await {
+                match query {
+                    OrchestratorQuery::GetState { reply } => {
+                        let _ = orch_query_tx
+                            .send(ModelOrchestratorEvent::QueryState { reply })
+                            .await;
+                    }
+                    OrchestratorQuery::GetIssue { identifier, reply } => {
+                        let _ = orch_query_tx
+                            .send(ModelOrchestratorEvent::QueryIssue { identifier, reply })
+                            .await;
+                    }
+                }
+            }
+        });
 
         let cancel_for_server = cancel.clone();
         tokio::spawn(async move {
@@ -100,11 +316,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!(port, "HTTP server extension enabled");
     }
 
-    // 9. Build and run the Orchestrator
-    let _config = Arc::new(config);
-    let dispatch_config = symphony_platform::orchestrator::scheduler::DispatchConfig::default();
-    let mut orchestrator = Orchestrator::new(dispatch_config, 300_000, 300_000, cancel);
-
+    // 16. Run orchestrator event loop
     tracing::info!("Orchestrator initialized, entering main loop");
     orchestrator.run().await;
 
@@ -112,72 +324,127 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Load configuration, trying the CLI workflow path first, then falling back
-/// to the legacy workflow.yaml format.
-fn load_config_from_args(_cli: &Cli) -> Result<Config, Box<dyn std::error::Error>> {
-    // If a workflow path is explicitly provided via CLI, try to use it
-    // For now, we still use the legacy YAML config format for the platform adapter.
-    // The full SPEC-compliant WORKFLOW.md loading is handled by the config::workflow_loader
-    // module and will be integrated when the full orchestrator rewrite is complete.
-    let config_path = std::env::args()
-        .nth(1)
-        .or_else(|| std::env::var("SYMPHONY_CONFIG").ok())
-        .unwrap_or_else(|| DEFAULT_CONFIG_PATH.to_string());
-
-    load_config(&config_path)
-}
-
-/// Load and parse the YAML configuration file.
-fn load_config(path: &str) -> Result<Config, Box<dyn std::error::Error>> {
-    tracing::info!(path, "Loading configuration");
-
-    let content = std::fs::read_to_string(path).map_err(|e| {
-        tracing::error!(path, error = %e, "Failed to read configuration file");
-        e
-    })?;
-
-    let config: Config = serde_yaml::from_str(&content).map_err(|e| {
-        tracing::error!(path, error = %e, "Failed to parse configuration file");
-        e
-    })?;
-
-    Ok(config)
-}
-
-/// Build the appropriate platform adapter based on the configured `kind`.
+/// Resolve the effective workflow path from CLI args, environment, or default.
 ///
-/// Returns an `Arc<dyn Platform>` for use across multiple tokio tasks.
-async fn build_adapter(config: &Config) -> Result<Arc<dyn Platform>, PlatformError> {
-    let platform_config = config
-        .platform
-        .as_ref()
-        .ok_or_else(|| PlatformError::Unprocessable("No platform configuration found".into()))?;
+/// Priority:
+/// 1. CLI positional argument (WORKFLOW_PATH)
+/// 2. SYMPHONY_WORKFLOW environment variable
+/// 3. Default: ./WORKFLOW.md in current directory
+fn resolve_workflow_path(cli: &Cli) -> PathBuf {
+    // CLI arg takes highest priority
+    if let Some(ref path) = cli.workflow_path {
+        return path.clone();
+    }
 
-    match platform_config.kind.as_str() {
-        "github" => {
-            tracing::info!(
-                owner = %platform_config.owner,
-                repo = %platform_config.repo,
-                "Building GitHub adapter"
-            );
-            Err(PlatformError::Unprocessable(
-                "GitHub adapter not yet available — being implemented by another agent".into(),
-            ))
+    // Environment variable
+    if let Ok(env_path) = std::env::var("SYMPHONY_WORKFLOW") {
+        if !env_path.is_empty() {
+            return PathBuf::from(env_path);
         }
-        "gitlab" => {
-            tracing::info!(
-                project_id = ?platform_config.project_id,
-                owner = %platform_config.owner,
-                repo = %platform_config.repo,
-                "Building GitLab adapter"
-            );
-            let adapter = GitlabAdapter::new(platform_config.clone())?;
-            Ok(Arc::new(adapter))
-        }
-        other => Err(PlatformError::Unprocessable(format!(
-            "Unknown platform kind: '{}'. Expected 'github' or 'gitlab'.",
-            other
-        ))),
+    }
+
+    // Default
+    PathBuf::from(DEFAULT_WORKFLOW_FILE)
+}
+
+fn build_platform_config(
+    service_config: &ServiceConfig,
+    platform_kind: &str,
+) -> symphony_platform::config::platform::PlatformConfig {
+    use symphony_platform::config::platform::{IssueFilter, PlatformConfig, WorkflowConfig};
+
+    let base_url = match platform_kind {
+        "gitlab" => service_config
+            .tracker_endpoint
+            .trim_end_matches("/api/v4")
+            .trim_end_matches('/')
+            .to_string(),
+        _ => service_config
+            .tracker_endpoint
+            .trim_end_matches('/')
+            .to_string(),
+    };
+
+    let (owner, repo, project_id) = if platform_kind == "github" {
+        let mut parts = service_config.tracker_project_slug.splitn(2, '/');
+        let owner = parts.next().unwrap_or_default().to_string();
+        let repo = parts.next().unwrap_or_default().to_string();
+        (owner, repo, None)
+    } else {
+        (
+            String::new(),
+            service_config.tracker_project_slug.clone(),
+            service_config.tracker_project_slug.parse::<u64>().ok(),
+        )
+    };
+
+    PlatformConfig {
+        kind: platform_kind.to_string(),
+        api_token: service_config.tracker_api_key.clone(),
+        base_url,
+        owner,
+        repo,
+        project_id,
+        allow_custom_host: true,
+        issue_filter: IssueFilter {
+            labels: service_config.active_states.clone(),
+            assignee: None,
+            milestone: None,
+        },
+        workflow: WorkflowConfig {
+            states: build_workflow_states(service_config),
+            active_states: service_config.active_states.clone(),
+            terminal_states: service_config.terminal_states.clone(),
+        },
+    }
+}
+
+fn build_workflow_states(
+    service_config: &ServiceConfig,
+) -> std::collections::HashMap<String, String> {
+    let mut states = std::collections::HashMap::new();
+    for s in &service_config.active_states {
+        states.insert(s.to_lowercase().replace(' ', "_"), s.clone());
+    }
+    for s in &service_config.terminal_states {
+        states.insert(s.to_lowercase().replace(' ', "_"), s.clone());
+    }
+    states
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use symphony_platform::config::service_config::{ServiceConfig, TrackerKind};
+
+    #[test]
+    fn platform_config_uses_resolved_tracker_token_value() {
+        let mut service_config = ServiceConfig::default();
+        service_config.tracker_kind = TrackerKind::GitLab;
+        service_config.tracker_endpoint = "https://gitlab.example.com/api/v4".to_string();
+        service_config.tracker_api_key = "resolved-token".to_string();
+        service_config.tracker_project_slug = "123".to_string();
+
+        let platform_config = build_platform_config(&service_config, "gitlab");
+
+        assert_eq!(platform_config.api_token, "resolved-token");
+        assert_eq!(platform_config.base_url, "https://gitlab.example.com");
+        assert_eq!(platform_config.project_id, Some(123));
+    }
+
+    #[test]
+    fn platform_config_preserves_github_owner_and_repo() {
+        let mut service_config = ServiceConfig::default();
+        service_config.tracker_kind = TrackerKind::GitHub;
+        service_config.tracker_endpoint = "https://api.github.com".to_string();
+        service_config.tracker_api_key = "resolved-token".to_string();
+        service_config.tracker_project_slug = "openai/codex".to_string();
+
+        let platform_config = build_platform_config(&service_config, "github");
+
+        assert_eq!(platform_config.owner, "openai");
+        assert_eq!(platform_config.repo, "codex");
+        assert_eq!(platform_config.project_id, None);
     }
 }
 

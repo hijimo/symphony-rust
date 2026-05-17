@@ -3,6 +3,7 @@
 //! Provides the `Tracker` trait for SPEC-compliant tracker operations and the
 //! `LinearClient` implementation for Linear's GraphQL API.
 
+pub mod gitlab;
 pub mod linear;
 
 use async_trait::async_trait;

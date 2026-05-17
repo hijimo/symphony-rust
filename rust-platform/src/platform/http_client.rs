@@ -53,6 +53,23 @@ impl HttpClient {
         })
     }
 
+    /// Constructs a client from an already-resolved token value.
+    ///
+    /// This is used by the WORKFLOW.md runtime path, where ServiceConfig has
+    /// already resolved `$VAR` references during startup validation.
+    pub fn new_with_resolved_token(
+        config: PlatformConfig,
+        token: &str,
+    ) -> Result<Self, PlatformError> {
+        let client = build_client_with_token(&config, token)?;
+        let base_url = config.base_url.trim_end_matches('/').to_string();
+        Ok(Self {
+            client,
+            base_url,
+            config,
+        })
+    }
+
     /// Returns a reference to the underlying platform configuration.
     pub fn config(&self) -> &PlatformConfig {
         &self.config
@@ -272,8 +289,15 @@ impl HttpClient {
 /// - Request timeout: 30 seconds
 /// - Connection timeout: 5 seconds
 fn build_client(config: &PlatformConfig) -> Result<reqwest::Client, PlatformError> {
-    let mut headers = HeaderMap::new();
     let token = resolve_token(&config.api_token)?;
+    build_client_with_token(config, &token)
+}
+
+fn build_client_with_token(
+    config: &PlatformConfig,
+    token: &str,
+) -> Result<reqwest::Client, PlatformError> {
+    let mut headers = HeaderMap::new();
 
     match config.kind.as_str() {
         "github" => {

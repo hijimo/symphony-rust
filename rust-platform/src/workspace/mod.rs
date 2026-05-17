@@ -63,11 +63,15 @@ pub enum WorkspaceError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error("invalid workspace root: {0}")]
+    InvalidRoot(String),
 }
 
 /// Sanitize an issue identifier into a safe workspace directory name (SPEC Section 4.2).
 ///
 /// Replaces any character not in `[A-Za-z0-9._-]` with `_`.
+/// No merging of consecutive underscores, no trimming.
 /// Rejects empty strings, `.`, `..`, and strings consisting entirely of dots.
 pub fn sanitize_workspace_key(identifier: &str) -> Result<String, WorkspaceError> {
     let sanitized: String = identifier
@@ -167,11 +171,16 @@ impl WorkspaceManager {
     /// Uses canonicalize to resolve symlinks and ensure the real path is under root.
     /// Must be called after directory creation so canonicalize can resolve the path.
     pub fn validate_path_containment(&self, path: &Path) -> Result<(), WorkspaceError> {
-        let canonical_root = self.root.canonicalize().map_err(|e| WorkspaceError::Io { source: e })?;
-        let canonical_path = path.canonicalize().map_err(|_| WorkspaceError::PathOutsideRoot {
-            path: path.to_path_buf(),
-            root: canonical_root.clone(),
-        })?;
+        let canonical_root = self
+            .root
+            .canonicalize()
+            .map_err(|e| WorkspaceError::Io { source: e })?;
+        let canonical_path = path
+            .canonicalize()
+            .map_err(|_| WorkspaceError::PathOutsideRoot {
+                path: path.to_path_buf(),
+                root: canonical_root.clone(),
+            })?;
 
         if !canonical_path.starts_with(&canonical_root) {
             return Err(WorkspaceError::PathOutsideRoot {
@@ -320,7 +329,10 @@ mod tests {
     fn test_sanitize_workspace_key_replaces_special_chars() {
         assert_eq!(sanitize_workspace_key("ABC/123").unwrap(), "ABC_123");
         assert_eq!(sanitize_workspace_key("a b c").unwrap(), "a_b_c");
-        assert_eq!(sanitize_workspace_key("foo@bar#baz").unwrap(), "foo_bar_baz");
+        assert_eq!(
+            sanitize_workspace_key("foo@bar#baz").unwrap(),
+            "foo_bar_baz"
+        );
     }
 
     #[test]

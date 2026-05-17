@@ -12,9 +12,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use crate::models::{
-    Issue, OrchestratorEvent, OrchestratorState, normalize_state,
-};
+use crate::models::{normalize_state, Issue, OrchestratorEvent, OrchestratorState};
 
 /// Configuration values needed for dispatch decisions.
 /// Extracted from ServiceConfig to avoid tight coupling.
@@ -26,6 +24,8 @@ pub struct DispatchConfig {
     pub max_concurrent_agents_by_state: HashMap<String, usize>,
     pub blocker_check_states: Vec<String>,
     pub poll_interval_ms: u64,
+    /// Optional assignee filter: only dispatch issues assigned to this worker instance.
+    pub assignee_id: Option<String>,
 }
 
 impl Default for DispatchConfig {
@@ -43,6 +43,25 @@ impl Default for DispatchConfig {
             max_concurrent_agents_by_state: HashMap::new(),
             blocker_check_states: vec!["todo".to_string()],
             poll_interval_ms: 30_000,
+            assignee_id: None,
+        }
+    }
+}
+
+impl DispatchConfig {
+    /// Derive a DispatchConfig from a ServiceConfig.
+    ///
+    /// Maps the typed service configuration values into the dispatch-specific
+    /// subset needed by the scheduler.
+    pub fn from_service_config(sc: &crate::config::service_config::ServiceConfig) -> Self {
+        Self {
+            active_states: sc.active_states.clone(),
+            terminal_states: sc.terminal_states.clone(),
+            max_concurrent_agents: sc.max_concurrent_agents,
+            max_concurrent_agents_by_state: sc.max_concurrent_agents_by_state.clone(),
+            blocker_check_states: sc.blocker_check_states.clone(),
+            poll_interval_ms: sc.poll_interval_ms,
+            assignee_id: None, // Set externally by the caller
         }
     }
 }
@@ -61,7 +80,9 @@ pub fn schedule_next_tick(
 }
 
 /// Schedule an immediate tick (used at startup).
-pub fn schedule_immediate_tick(event_tx: &mpsc::Sender<OrchestratorEvent>) -> tokio::task::JoinHandle<()> {
+pub fn schedule_immediate_tick(
+    event_tx: &mpsc::Sender<OrchestratorEvent>,
+) -> tokio::task::JoinHandle<()> {
     let tx = event_tx.clone();
     tokio::spawn(async move {
         let _ = tx.send(OrchestratorEvent::Tick).await;
@@ -78,13 +99,13 @@ pub fn schedule_immediate_tick(event_tx: &mpsc::Sender<OrchestratorEvent>) -> to
 /// 5. Global concurrency slots are available
 /// 6. Per-state concurrency slots are available
 /// 7. Blocker rule passes (for configured blocker_check_states)
-pub fn should_dispatch(
-    issue: &Issue,
-    state: &OrchestratorState,
-    config: &DispatchConfig,
-) -> bool {
+pub fn should_dispatch(issue: &Issue, state: &OrchestratorState, config: &DispatchConfig) -> bool {
     // 1. Required fields check
-    if issue.id.is_empty() || issue.identifier.is_empty() || issue.title.is_empty() || issue.state.is_empty() {
+    if issue.id.is_empty()
+        || issue.identifier.is_empty()
+        || issue.title.is_empty()
+        || issue.state.is_empty()
+    {
         return false;
     }
 
@@ -128,7 +149,10 @@ pub fn should_dispatch(
     }
 
     // 7. Blocker rule for configured states
-    if config.blocker_check_states.contains(&normalized_issue_state) {
+    if config
+        .blocker_check_states
+        .contains(&normalized_issue_state)
+    {
         let has_active_blocker = issue.blocked_by.iter().any(|b| {
             b.state
                 .as_ref()
@@ -154,7 +178,10 @@ fn available_state_slots(
     state: &OrchestratorState,
     config: &DispatchConfig,
 ) -> bool {
-    if let Some(&limit) = config.max_concurrent_agents_by_state.get(normalized_issue_state) {
+    if let Some(&limit) = config
+        .max_concurrent_agents_by_state
+        .get(normalized_issue_state)
+    {
         let count = state
             .running
             .values()

@@ -88,6 +88,14 @@ impl GitlabAdapter {
         Ok(Self { http, project_id })
     }
 
+    /// Create a new GitLab adapter from a config and already-resolved token.
+    pub fn new_with_token(config: PlatformConfig, token: &str) -> Result<Self, PlatformError> {
+        let project_id = config.project_id.unwrap_or(0);
+        let http = HttpClient::new_with_resolved_token(config, token)?;
+
+        Ok(Self { http, project_id })
+    }
+
     /// API path prefix for project-scoped endpoints.
     fn project_path(&self) -> String {
         format!("/projects/{}", self.project_id)
@@ -148,11 +156,7 @@ impl GitlabAdapter {
     }
 
     /// Perform a PUT request to the given path with a JSON body.
-    async fn put_json(
-        &self,
-        path: &str,
-        body: &serde_json::Value,
-    ) -> Result<(), PlatformError> {
+    async fn put_json(&self, path: &str, body: &serde_json::Value) -> Result<(), PlatformError> {
         let url = format!("{}{}", self.http.base_url(), path);
 
         let response = self
@@ -225,21 +229,15 @@ impl GitlabAdapter {
     ) -> Result<T, PlatformError> {
         let url = format!("{}{}", self.http.base_url(), path);
 
-        let response = self
-            .http
-            .inner()
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    PlatformError::Timeout
-                } else if e.is_connect() {
-                    PlatformError::ConnectionRefused
-                } else {
-                    PlatformError::Network(e)
-                }
-            })?;
+        let response = self.http.inner().get(&url).send().await.map_err(|e| {
+            if e.is_timeout() {
+                PlatformError::Timeout
+            } else if e.is_connect() {
+                PlatformError::ConnectionRefused
+            } else {
+                PlatformError::Network(e)
+            }
+        })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -301,10 +299,7 @@ impl Platform for GitlabAdapter {
         Ok(issues)
     }
 
-    async fn get_workflow_state(
-        &self,
-        issue_id: IssueId,
-    ) -> Result<Option<String>, PlatformError> {
+    async fn get_workflow_state(&self, issue_id: IssueId) -> Result<Option<String>, PlatformError> {
         let issue = self.fetch_issue(issue_id).await?;
         Ok(issue.workflow_state)
     }
@@ -363,11 +358,7 @@ impl Platform for GitlabAdapter {
         Ok(())
     }
 
-    async fn add_labels(
-        &self,
-        issue_id: IssueId,
-        labels: &[String],
-    ) -> Result<(), PlatformError> {
+    async fn add_labels(&self, issue_id: IssueId, labels: &[String]) -> Result<(), PlatformError> {
         if labels.is_empty() {
             return Ok(());
         }
@@ -411,11 +402,7 @@ impl Platform for GitlabAdapter {
         Ok(CommentId(note.id))
     }
 
-    async fn update_comment(
-        &self,
-        comment_id: CommentId,
-        body: &str,
-    ) -> Result<(), PlatformError> {
+    async fn update_comment(&self, comment_id: CommentId, body: &str) -> Result<(), PlatformError> {
         // GitLab's note update API requires the issue IID in the URL path:
         //   PUT /projects/:id/issues/:iid/notes/:note_id
         //

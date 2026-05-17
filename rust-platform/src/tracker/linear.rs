@@ -24,6 +24,8 @@ pub struct LinearClient {
     http: Client,
     page_size: usize,
     timeout: Duration,
+    /// Active states to filter on when fetching candidates (server-side filtering).
+    active_states: Vec<String>,
 }
 
 impl LinearClient {
@@ -52,6 +54,7 @@ impl LinearClient {
             http,
             page_size: DEFAULT_PAGE_SIZE,
             timeout: Duration::from_millis(DEFAULT_TIMEOUT_MS),
+            active_states: Vec::new(),
         })
     }
 
@@ -67,12 +70,14 @@ impl LinearClient {
         self
     }
 
+    /// Set the active states for server-side filtering in fetch_candidate_issues.
+    pub fn with_active_states(mut self, states: Vec<String>) -> Self {
+        self.active_states = states;
+        self
+    }
+
     /// Execute a GraphQL query against the Linear API.
-    async fn execute_graphql(
-        &self,
-        query: &str,
-        variables: Value,
-    ) -> Result<Value, TrackerError> {
+    async fn execute_graphql(&self, query: &str, variables: Value) -> Result<Value, TrackerError> {
         let body = json!({
             "query": query,
             "variables": variables,
@@ -141,11 +146,11 @@ impl LinearClient {
             let response = self.execute_graphql(query, vars).await?;
 
             // Navigate to the data path
-            let mut data = response.get("data").ok_or_else(|| {
-                TrackerError::UnknownPayload {
+            let mut data = response
+                .get("data")
+                .ok_or_else(|| TrackerError::UnknownPayload {
                     detail: "missing 'data' field in response".into(),
-                }
-            })?;
+                })?;
 
             for key in data_path {
                 data = data.get(*key).ok_or_else(|| TrackerError::UnknownPayload {
@@ -168,11 +173,11 @@ impl LinearClient {
             }
 
             // Check pagination
-            let page_info = data.get("pageInfo").ok_or_else(|| {
-                TrackerError::UnknownPayload {
+            let page_info = data
+                .get("pageInfo")
+                .ok_or_else(|| TrackerError::UnknownPayload {
                     detail: "missing 'pageInfo'".into(),
-                }
-            })?;
+                })?;
 
             let has_next = page_info
                 .get("hasNextPage")
@@ -200,6 +205,52 @@ impl LinearClient {
 #[async_trait]
 impl Tracker for LinearClient {
     async fn fetch_candidate_issues(&self) -> Result<Vec<TrackerIssue>, TrackerError> {
+        // If active_states are configured, use server-side state filtering
+        if !self.active_states.is_empty() {
+            let query = r#"
+                query CandidateIssues($projectSlug: String!, $states: [String!]!, $first: Int!, $after: String) {
+                    issues(
+                        filter: {
+                            project: { slugId: { eq: $projectSlug } }
+                            state: { name: { in: $states } }
+                        }
+                        first: $first
+                        after: $after
+                    ) {
+                        nodes {
+                            id
+                            identifier
+                            title
+                            description
+                            priority
+                            state { name }
+                            branchName
+                            url
+                            labels { nodes { name } }
+                            relations { nodes { type relatedIssue { id identifier state { name } } } }
+                            inverseRelations { nodes { type issue { id identifier state { name } } } }
+                            createdAt
+                            updatedAt
+                        }
+                        pageInfo {
+                            hasNextPage
+                            endCursor
+                        }
+                    }
+                }
+            "#;
+
+            let variables = json!({
+                "projectSlug": self.project_slug,
+                "states": self.active_states,
+            });
+
+            return self
+                .fetch_issues_paginated(query, variables, &["issues"])
+                .await;
+        }
+
+        // Fallback: fetch all issues in the project (no state filter)
         let query = r#"
             query CandidateIssues($projectSlug: String!, $first: Int!, $after: String) {
                 issues(
@@ -441,7 +492,10 @@ fn extract_blockers(node: &Value) -> Vec<BlockerRef> {
             if rel_type == "blocks" {
                 if let Some(issue) = rel.get("issue") {
                     blockers.push(BlockerRef {
-                        id: issue.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                        id: issue
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
                         identifier: issue
                             .get("identifier")
                             .and_then(|v| v.as_str())
@@ -469,7 +523,10 @@ fn extract_blockers(node: &Value) -> Vec<BlockerRef> {
             if rel_type == "is_blocked_by" {
                 if let Some(issue) = rel.get("relatedIssue") {
                     blockers.push(BlockerRef {
-                        id: issue.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                        id: issue
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
                         identifier: issue
                             .get("identifier")
                             .and_then(|v| v.as_str())
@@ -548,14 +605,8 @@ mod tests {
         assert_eq!(issue.priority, None);
         assert_eq!(issue.blocked_by.len(), 1);
         assert_eq!(issue.blocked_by[0].id.as_deref(), Some("uuid-789"));
-        assert_eq!(
-            issue.blocked_by[0].identifier.as_deref(),
-            Some("PROJ-40")
-        );
-        assert_eq!(
-            issue.blocked_by[0].state.as_deref(),
-            Some("In Progress")
-        );
+        assert_eq!(issue.blocked_by[0].identifier.as_deref(), Some("PROJ-40"));
+        assert_eq!(issue.blocked_by[0].state.as_deref(), Some("In Progress"));
     }
 
     #[test]

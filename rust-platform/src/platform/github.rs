@@ -96,6 +96,12 @@ impl GithubAdapter {
         Ok(Self { http, config })
     }
 
+    /// Creates a new GitHub adapter from a config and already-resolved token.
+    pub fn new_with_token(config: PlatformConfig, token: &str) -> Result<Self, PlatformError> {
+        let http = HttpClient::new_with_resolved_token(config.clone(), token)?;
+        Ok(Self { http, config })
+    }
+
     /// Constructs the repo path prefix: `/repos/:owner/:repo`
     fn repo_path(&self) -> String {
         format!("/repos/{}/{}", self.config.owner, self.config.repo)
@@ -255,10 +261,7 @@ impl Platform for GithubAdapter {
     ///
     /// Returns the internal state key (e.g., "todo") if a matching workflow label
     /// is found, or None if the issue has no workflow label.
-    async fn get_workflow_state(
-        &self,
-        issue_id: IssueId,
-    ) -> Result<Option<String>, PlatformError> {
+    async fn get_workflow_state(&self, issue_id: IssueId) -> Result<Option<String>, PlatformError> {
         let issue = self.fetch_issue(issue_id).await?;
         Ok(issue.workflow_state)
     }
@@ -325,11 +328,7 @@ impl Platform for GithubAdapter {
     /// Body: `{"labels": ["label1", "label2"]}`
     ///
     /// No-op if the labels slice is empty.
-    async fn add_labels(
-        &self,
-        issue_id: IssueId,
-        labels: &[String],
-    ) -> Result<(), PlatformError> {
+    async fn add_labels(&self, issue_id: IssueId, labels: &[String]) -> Result<(), PlatformError> {
         if labels.is_empty() {
             return Ok(());
         }
@@ -338,13 +337,20 @@ impl Platform for GithubAdapter {
         let url = format!("{}{}", self.http.base_url(), path);
         let body = serde_json::json!({ "labels": labels });
 
-        let response = self.http.inner().post(&url).json(&body).send().await.map_err(|e| {
-            if e.is_timeout() {
-                PlatformError::Timeout
-            } else {
-                PlatformError::Network(e)
-            }
-        })?;
+        let response = self
+            .http
+            .inner()
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    PlatformError::Timeout
+                } else {
+                    PlatformError::Network(e)
+                }
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -476,11 +482,7 @@ impl Platform for GithubAdapter {
     ///
     /// GitHub API: `PATCH /repos/:owner/:repo/issues/comments/:id`
     /// Body: `{"body": "updated text"}`
-    async fn update_comment(
-        &self,
-        comment_id: CommentId,
-        body: &str,
-    ) -> Result<(), PlatformError> {
+    async fn update_comment(&self, comment_id: CommentId, body: &str) -> Result<(), PlatformError> {
         let path = format!("{}/issues/comments/{}", self.repo_path(), comment_id.0);
         let url = format!("{}{}", self.http.base_url(), path);
         let request_body = serde_json::json!({ "body": body });
@@ -575,13 +577,20 @@ impl Platform for GithubAdapter {
             "draft": params.draft,
         });
 
-        let response = self.http.inner().post(&url).json(&body).send().await.map_err(|e| {
-            if e.is_timeout() {
-                PlatformError::Timeout
-            } else {
-                PlatformError::Network(e)
-            }
-        })?;
+        let response = self
+            .http
+            .inner()
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    PlatformError::Timeout
+                } else {
+                    PlatformError::Network(e)
+                }
+            })?;
 
         let status = response.status();
         if !status.is_success() {

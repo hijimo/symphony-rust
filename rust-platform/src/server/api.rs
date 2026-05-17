@@ -5,6 +5,13 @@
 //! - GET /api/v1/state  -> System state summary
 //! - GET /api/v1/{id}   -> Issue-specific details
 //! - POST /api/v1/refresh -> Trigger immediate poll+reconcile
+//!
+//! TODO(Phase 6): 操作员介入模式 API 端点
+//! - GET  /api/v1/approvals/pending   -> 待审批列表
+//! - POST /api/v1/approvals/:id/resolve -> 操作员审批/拒绝
+//! - GET  /api/v1/inputs/pending      -> 待回答的用户输入请求
+//! - POST /api/v1/inputs/:id/answer   -> 操作员提交回答
+//! 参见 docs/migration-gap-analysis.md Phase 6。
 
 use std::sync::Arc;
 use std::time::Duration;

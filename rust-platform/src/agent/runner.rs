@@ -16,7 +16,8 @@ use crate::config::watcher::ConfigHolder;
 use crate::prompt::{BlockerContext, IssueContext, PromptEngine};
 use crate::workspace::{WorkspaceError, WorkspaceManager};
 
-use super::codex_client::{CodexClient, CodexError, CodexEventUpdate, TurnResult};
+use super::codex_client::{CodexClient, CodexError, TurnResult};
+use crate::models::CodexEventUpdate;
 
 /// Errors from agent runner operations.
 #[derive(Debug, Error)]
@@ -171,7 +172,10 @@ impl AgentRunner {
         );
 
         // 1. Ensure workspace exists
-        let ws = self.workspace_mgr.ensure_workspace(&issue.identifier).await?;
+        let ws = self
+            .workspace_mgr
+            .ensure_workspace(&issue.identifier)
+            .await?;
         tracing::info!(
             identifier = %issue.identifier,
             path = %ws.path.display(),
@@ -315,10 +319,7 @@ impl AgentRunner {
             }
 
             // Refresh issue state after turn (SPEC Section 16.5 REQUIRED)
-            match state_refresher
-                .refresh_issue_state(&current_issue.id)
-                .await
-            {
+            match state_refresher.refresh_issue_state(&current_issue.id).await {
                 Err(e) => {
                     tracing::error!(
                         issue_id = %current_issue.id,
@@ -358,7 +359,7 @@ impl AgentRunner {
                     max_turns,
                     "max turns reached"
                 );
-                return Ok(());
+                return Err(AgentError::MaxTurnsExhausted { max_turns });
             }
 
             *turn_number += 1;

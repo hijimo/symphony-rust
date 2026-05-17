@@ -10,16 +10,166 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::service_config::CodexConfig;
+use crate::models::CodexEventUpdate;
 
 /// Maximum line size for safe buffering (10 MB as per SPEC Section 10.1).
 const MAX_LINE_SIZE: usize = 10 * 1024 * 1024;
+
+fn build_initialize_request(id: u64) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "params": {
+            "clientInfo": {
+                "name": "symphony-platform",
+                "version": env!("CARGO_PKG_VERSION"),
+            }
+        },
+        "id": id,
+    })
+}
+
+fn build_thread_start_request(
+    id: u64,
+    workspace_path: &Path,
+    approval_policy: Option<&serde_json::Value>,
+    sandbox_policy: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut params = serde_json::json!({
+        "cwd": workspace_path.to_string_lossy(),
+    });
+
+    if let Some(policy) = approval_policy {
+        params["approvalPolicy"] = policy.clone();
+    }
+    if let Some(sandbox) = sandbox_policy {
+        params["sandbox"] = sandbox_to_thread_value(sandbox);
+    }
+
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "thread/start",
+        "params": params,
+        "id": id,
+    })
+}
+
+fn build_turn_start_request(
+    id: u64,
+    prompt: &str,
+    workspace_path: &Path,
+    thread_id: Option<&str>,
+    sandbox_policy: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut params = serde_json::json!({
+        "cwd": workspace_path.to_string_lossy(),
+        "input": [{
+            "type": "text",
+            "text": prompt,
+        }],
+    });
+
+    if let Some(tid) = thread_id {
+        params["threadId"] = serde_json::Value::String(tid.to_string());
+    }
+    if let Some(sandbox) = sandbox_policy {
+        params["sandboxPolicy"] = sandbox_to_turn_policy(sandbox);
+    }
+
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "turn/start",
+        "params": params,
+        "id": id,
+    })
+}
+
+fn sandbox_to_thread_value(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => serde_json::Value::String(s.clone()),
+        other => other.clone(),
+    }
+}
+
+fn sandbox_to_turn_policy(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => serde_json::json!({
+            "type": kebab_to_lower_camel(s),
+        }),
+        other => other.clone(),
+    }
+}
+
+fn kebab_to_lower_camel(value: &str) -> String {
+    let mut result = String::new();
+    let mut uppercase_next = false;
+    for ch in value.chars() {
+        if ch == '-' || ch == '_' || ch == ' ' {
+            uppercase_next = true;
+        } else if uppercase_next {
+            result.extend(ch.to_uppercase());
+            uppercase_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn extract_thread_id_from_message(message: &serde_json::Value) -> Option<String> {
+    message
+        .pointer("/result/thread/id")
+        .or_else(|| message.pointer("/result/threadId"))
+        .or_else(|| message.pointer("/result/thread_id"))
+        .or_else(|| message.pointer("/params/thread/id"))
+        .or_else(|| message.pointer("/params/threadId"))
+        .or_else(|| message.pointer("/params/thread_id"))
+        .or_else(|| message.get("threadId"))
+        .or_else(|| message.get("thread_id"))
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string)
+}
+
+fn extract_turn_id_from_message(message: &serde_json::Value) -> Option<String> {
+    message
+        .pointer("/params/turn/id")
+        .or_else(|| message.pointer("/params/turnId"))
+        .or_else(|| message.pointer("/params/turn_id"))
+        .or_else(|| message.get("turnId"))
+        .or_else(|| message.get("turn_id"))
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string)
+}
+
+fn extract_usage_from_message(
+    message: &serde_json::Value,
+) -> (Option<u64>, Option<u64>, Option<u64>) {
+    let usage = message
+        .get("usage")
+        .or_else(|| message.pointer("/params/turn/usage"));
+
+    usage
+        .map(|u| {
+            (
+                u.get("input_tokens")
+                    .or_else(|| u.get("inputTokens"))
+                    .and_then(|v| v.as_u64()),
+                u.get("output_tokens")
+                    .or_else(|| u.get("outputTokens"))
+                    .and_then(|v| v.as_u64()),
+                u.get("total_tokens")
+                    .or_else(|| u.get("totalTokens"))
+                    .and_then(|v| v.as_u64()),
+            )
+        })
+        .unwrap_or((None, None, None))
+}
 
 /// Errors from Codex client operations.
 #[derive(Debug, Error)]
@@ -61,6 +211,83 @@ pub enum CodexError {
     Json(#[from] serde_json::Error),
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::path::Path;
+
+    #[test]
+    fn turn_start_request_uses_app_server_schema() {
+        let request = build_turn_start_request(
+            7,
+            "Fix issue ABC-1",
+            Path::new("/tmp/work"),
+            Some("thread-123"),
+            Some(&json!("danger-full-access")),
+        );
+
+        assert_eq!(request["jsonrpc"], "2.0");
+        assert_eq!(request["method"], "turn/start");
+        assert_eq!(request["id"], 7);
+        assert_eq!(request["params"]["threadId"], "thread-123");
+        assert_eq!(
+            request["params"]["input"],
+            json!([
+                {"type": "text", "text": "Fix issue ABC-1"}
+            ])
+        );
+        assert!(request["params"].get("prompt").is_none());
+        assert!(request["params"].get("thread_id").is_none());
+        assert_eq!(
+            request["params"]["sandboxPolicy"],
+            json!({"type": "dangerFullAccess"})
+        );
+    }
+
+    #[test]
+    fn thread_start_request_uses_camel_case_policy_fields() {
+        let request = build_thread_start_request(
+            3,
+            Path::new("/tmp/work"),
+            Some(&json!("never")),
+            Some(&json!("danger-full-access")),
+        );
+
+        assert_eq!(request["method"], "thread/start");
+        assert_eq!(request["params"]["approvalPolicy"], "never");
+        assert_eq!(request["params"]["sandbox"], "danger-full-access");
+        assert!(request["params"].get("approval_policy").is_none());
+    }
+
+    #[test]
+    fn extracts_thread_id_from_real_app_server_shapes() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "thread": { "id": "thread-from-result" }
+            }
+        });
+        assert_eq!(
+            extract_thread_id_from_message(&response).as_deref(),
+            Some("thread-from-result")
+        );
+
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": "thread/started",
+            "params": {
+                "threadId": "thread-from-notification"
+            }
+        });
+        assert_eq!(
+            extract_thread_id_from_message(&notification).as_deref(),
+            Some("thread-from-notification")
+        );
+    }
+}
+
 /// Result of a completed turn.
 #[derive(Debug, Clone)]
 pub enum TurnResult {
@@ -72,31 +299,9 @@ pub enum TurnResult {
     InputRequired,
 }
 
-/// Token usage information extracted from Codex events.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TokenUsage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub total_tokens: u64,
-}
-
-/// Structured event update extracted from Codex JSON-line events.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CodexEventUpdate {
-    pub event: String,
-    pub timestamp: DateTime<Utc>,
-    pub pid: Option<String>,
-    pub session_id: Option<String>,
-    pub thread_id: Option<String>,
-    pub turn_id: Option<String>,
-    pub usage: Option<TokenUsage>,
-    pub rate_limits: Option<serde_json::Value>,
-    pub message: Option<String>,
-}
-
 /// Codex App-Server Client — manages the child process lifecycle.
 ///
-/// Communicates with the Codex app-server over stdio using JSON-line protocol.
+/// Communicates with the Codex app-server over stdio using JSON-RPC 2.0 protocol.
 /// Each instance manages one subprocess that may serve multiple turns.
 pub struct CodexClient {
     child: Child,
@@ -107,8 +312,17 @@ pub struct CodexClient {
     pid: Option<String>,
     cancel_token: CancellationToken,
     turn_timeout_ms: u64,
-    #[allow(dead_code)]
     read_timeout_ms: u64,
+    /// Workspace path for passing cwd in turn/start
+    workspace_path: std::path::PathBuf,
+    /// Approval policy from config
+    approval_policy: Option<serde_json::Value>,
+    /// Sandbox policy from config
+    sandbox_policy: Option<serde_json::Value>,
+    /// Incrementing JSON-RPC request ID
+    next_rpc_id: u64,
+    /// Whether the handshake (initialize + thread/start) has been completed
+    handshake_done: bool,
 }
 
 impl CodexClient {
@@ -153,21 +367,19 @@ impl CodexClient {
 
         let pid = child.id().map(|p| p.to_string());
 
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| CodexError::Io(std::io::Error::new(
+        let stdin = child.stdin.take().ok_or_else(|| {
+            CodexError::Io(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
                 "failed to capture stdin",
-            )))?;
+            ))
+        })?;
 
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| CodexError::Io(std::io::Error::new(
+        let stdout = child.stdout.take().ok_or_else(|| {
+            CodexError::Io(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
                 "failed to capture stdout",
-            )))?;
+            ))
+        })?;
 
         tracing::info!(pid = ?pid, "codex app-server started");
 
@@ -181,6 +393,11 @@ impl CodexClient {
             cancel_token,
             turn_timeout_ms: codex_config.turn_timeout_ms,
             read_timeout_ms: codex_config.read_timeout_ms,
+            workspace_path: workspace_path.to_path_buf(),
+            approval_policy: codex_config.approval_policy.clone(),
+            sandbox_policy: codex_config.turn_sandbox_policy.clone(),
+            next_rpc_id: 1,
+            handshake_done: false,
         })
     }
 
@@ -237,18 +454,15 @@ impl CodexClient {
 
         // Read JSON-line events from stdout
         let mut line_buf = String::with_capacity(4096);
-        let turn_deadline = tokio::time::Instant::now()
-            + Duration::from_millis(self.turn_timeout_ms);
+        let turn_deadline =
+            tokio::time::Instant::now() + Duration::from_millis(self.turn_timeout_ms);
 
         loop {
             line_buf.clear();
 
             // Read with turn timeout
-            let read_result = tokio::time::timeout_at(
-                turn_deadline,
-                self.stdout.read_line(&mut line_buf),
-            )
-            .await;
+            let read_result =
+                tokio::time::timeout_at(turn_deadline, self.stdout.read_line(&mut line_buf)).await;
 
             let bytes_read = match read_result {
                 Err(_) => {
@@ -275,7 +489,11 @@ impl CodexClient {
 
             // Safety: reject excessively long lines
             if line_buf.len() > MAX_LINE_SIZE {
-                tracing::warn!(issue_id, len = line_buf.len(), "dropping oversized line from codex");
+                tracing::warn!(
+                    issue_id,
+                    len = line_buf.len(),
+                    "dropping oversized line from codex"
+                );
                 continue;
             }
 
@@ -287,6 +505,22 @@ impl CodexClient {
             // Parse JSON-line event
             match serde_json::from_str::<serde_json::Value>(trimmed) {
                 Ok(event) => {
+                    // Handle approval requests (SPEC 10.5: MUST NOT stall)
+                    if self.is_approval_request(&event) {
+                        if let Err(e) = self.handle_approval_request(&event).await {
+                            tracing::warn!(issue_id, error = %e, "failed to send approval response");
+                        }
+                        continue;
+                    }
+
+                    // Handle dynamic tool calls
+                    if self.is_tool_call(&event) {
+                        if let Err(e) = self.handle_tool_call(&event).await {
+                            tracing::warn!(issue_id, error = %e, "failed to send tool result");
+                        }
+                        continue;
+                    }
+
                     let update = self.extract_codex_event(&event);
 
                     // Check for turn terminal events
@@ -312,25 +546,206 @@ impl CodexClient {
     }
 
     /// Send a turn start request to the Codex subprocess stdin.
+    /// Performs JSON-RPC 2.0 handshake on first call (initialize → thread/start → turn/start).
+    /// On subsequent calls, reuses thread_id (turn/start only).
     async fn send_turn_start(&mut self, prompt: &str) -> Result<(), CodexError> {
-        let request = serde_json::json!({
-            "type": "turn.start",
-            "prompt": prompt,
-        });
+        if !self.handshake_done {
+            self.perform_handshake().await?;
+        }
 
-        let mut line = serde_json::to_string(&request)?;
+        let id = self.next_rpc_id();
+        let request = build_turn_start_request(
+            id,
+            prompt,
+            &self.workspace_path,
+            self.thread_id.as_deref(),
+            self.sandbox_policy.as_ref(),
+        );
+
+        self.send_json_rpc(&request).await
+    }
+
+    /// Perform the JSON-RPC 2.0 handshake: initialize → thread/start.
+    async fn perform_handshake(&mut self) -> Result<(), CodexError> {
+        let handshake_deadline =
+            tokio::time::Instant::now() + Duration::from_millis(self.read_timeout_ms);
+
+        // Step 1: Send initialize request
+        let init_id = self.next_rpc_id();
+        let init_request = build_initialize_request(init_id);
+
+        self.send_json_rpc(&init_request).await?;
+
+        // Read initialize response (with read_timeout)
+        let _init_response = self
+            .read_json_rpc_response(handshake_deadline, Some(init_id))
+            .await?;
+
+        // Step 2: Send thread/start request
+        let thread_id = self.next_rpc_id();
+        let thread_request = build_thread_start_request(
+            thread_id,
+            &self.workspace_path,
+            self.approval_policy.as_ref(),
+            self.sandbox_policy.as_ref(),
+        );
+
+        self.send_json_rpc(&thread_request).await?;
+
+        // Read thread/start response to get thread_id
+        let thread_response = self
+            .read_json_rpc_response(handshake_deadline, Some(thread_id))
+            .await?;
+
+        if let Some(tid) = extract_thread_id_from_message(&thread_response) {
+            self.thread_id = Some(tid);
+        }
+
+        self.handshake_done = true;
+        tracing::info!(thread_id = ?self.thread_id, "JSON-RPC 2.0 handshake completed");
+        Ok(())
+    }
+
+    /// Send a JSON-RPC message to the Codex subprocess stdin.
+    async fn send_json_rpc(&mut self, message: &serde_json::Value) -> Result<(), CodexError> {
+        let mut line = serde_json::to_string(message)?;
         line.push('\n');
 
         self.stdin
             .write_all(line.as_bytes())
             .await
-            .map_err(|e| CodexError::Io(e))?;
-        self.stdin
-            .flush()
-            .await
-            .map_err(|e| CodexError::Io(e))?;
+            .map_err(CodexError::Io)?;
+        self.stdin.flush().await.map_err(CodexError::Io)?;
 
         Ok(())
+    }
+
+    /// Read a JSON-RPC response with a deadline.
+    async fn read_json_rpc_response(
+        &mut self,
+        deadline: tokio::time::Instant,
+        expected_id: Option<u64>,
+    ) -> Result<serde_json::Value, CodexError> {
+        let mut line_buf = String::with_capacity(4096);
+
+        loop {
+            line_buf.clear();
+            let read_result =
+                tokio::time::timeout_at(deadline, self.stdout.read_line(&mut line_buf)).await;
+
+            let bytes_read = match read_result {
+                Err(_) => return Err(CodexError::ResponseTimeout),
+                Ok(Err(e)) => return Err(CodexError::Io(e)),
+                Ok(Ok(n)) => n,
+            };
+
+            if bytes_read == 0 {
+                let code = self.child.try_wait().ok().flatten().and_then(|s| s.code());
+                return Err(CodexError::ProcessExit { code });
+            }
+
+            let trimmed = line_buf.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            match serde_json::from_str::<serde_json::Value>(trimmed) {
+                Ok(value) => {
+                    if let Some(tid) = extract_thread_id_from_message(&value) {
+                        self.thread_id = Some(tid);
+                    }
+                    if let Some(tid) = extract_turn_id_from_message(&value) {
+                        self.turn_id = Some(tid);
+                    }
+
+                    // Check for JSON-RPC error response
+                    if let Some(error) = value.get("error") {
+                        let detail = error
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown error")
+                            .to_string();
+                        return Err(CodexError::ResponseError { detail });
+                    }
+
+                    if let Some(expected) = expected_id {
+                        if value.get("id").and_then(|v| v.as_u64()) != Some(expected) {
+                            continue;
+                        }
+                    }
+
+                    return Ok(value);
+                }
+                Err(_) => {
+                    // Skip non-JSON lines during handshake (e.g. startup logs)
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Get the next JSON-RPC request ID.
+    fn next_rpc_id(&mut self) -> u64 {
+        let id = self.next_rpc_id;
+        self.next_rpc_id += 1;
+        id
+    }
+
+    /// Handle an approval request event by auto-approving (SPEC 10.5).
+    async fn handle_approval_request(
+        &mut self,
+        event: &serde_json::Value,
+    ) -> Result<(), CodexError> {
+        let request_id = event
+            .get("id")
+            .or_else(|| event.get("request_id"))
+            .or_else(|| event.pointer("/data/request_id"))
+            .or_else(|| event.pointer("/params/requestId"))
+            .or_else(|| event.pointer("/params/request_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        tracing::info!(request_id, "auto-approving codex approval request");
+
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "approval/resolve",
+            "params": {
+                "id": request_id,
+                "approved": true,
+            },
+            "id": self.next_rpc_id(),
+        });
+
+        self.send_json_rpc(&response).await
+    }
+
+    /// Handle a dynamic tool call event.
+    async fn handle_tool_call(&mut self, event: &serde_json::Value) -> Result<(), CodexError> {
+        let call_id = event
+            .get("call_id")
+            .or_else(|| event.pointer("/data/call_id"))
+            .or_else(|| event.pointer("/params/callId"))
+            .or_else(|| event.pointer("/params/call_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        tracing::info!(
+            call_id,
+            "received tool call (not yet implemented, returning error)"
+        );
+
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "tool/result",
+            "params": {
+                "call_id": call_id,
+                "error": "tool not available",
+            },
+            "id": self.next_rpc_id(),
+        });
+
+        self.send_json_rpc(&response).await
     }
 
     /// Extract a structured event update from a raw JSON event.
@@ -338,6 +753,7 @@ impl CodexClient {
         let event_type = event
             .get("type")
             .or_else(|| event.get("event"))
+            .or_else(|| event.get("method"))
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
@@ -349,11 +765,11 @@ impl CodexClient {
             .unwrap_or_else(Utc::now);
 
         // Extract thread_id and turn_id if present
-        if let Some(tid) = event.get("thread_id").and_then(|v| v.as_str()) {
-            self.thread_id = Some(tid.to_string());
+        if let Some(tid) = extract_thread_id_from_message(event) {
+            self.thread_id = Some(tid);
         }
-        if let Some(tid) = event.get("turn_id").and_then(|v| v.as_str()) {
-            self.turn_id = Some(tid.to_string());
+        if let Some(tid) = extract_turn_id_from_message(event) {
+            self.turn_id = Some(tid);
         }
 
         let session_id = match (&self.thread_id, &self.turn_id) {
@@ -362,13 +778,7 @@ impl CodexClient {
         };
 
         // Extract token usage
-        let usage = event.get("usage").and_then(|u| {
-            Some(TokenUsage {
-                input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-                output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-                total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-            })
-        });
+        let (input_tokens, output_tokens, total_tokens) = extract_usage_from_message(event);
 
         let rate_limits = event.get("rate_limits").cloned();
 
@@ -386,13 +796,15 @@ impl CodexClient {
             });
 
         CodexEventUpdate {
-            event: event_type,
-            timestamp,
+            event_type: Some(event_type),
+            timestamp: Some(timestamp),
             pid: self.pid.clone(),
             session_id,
             thread_id: self.thread_id.clone(),
             turn_id: self.turn_id.clone(),
-            usage,
+            input_tokens,
+            output_tokens,
+            total_tokens,
             rate_limits,
             message,
         }
@@ -408,14 +820,23 @@ impl CodexClient {
         let event_type = event
             .get("type")
             .or_else(|| event.get("event"))
+            .or_else(|| event.get("method"))
             .and_then(|v| v.as_str())?;
 
         match event_type {
+            // TODO(Phase 3): 处理 approval 请求事件 (commandExecution/fileChange)
+            //   Phase 3 实现自动审批：根据 approval_policy 配置自动回复 approve/reject。
+            // TODO(Phase 6): 操作员介入模式 — 当 approval_policy.on_reject_match == "ask" 时，
+            //   暂停 turn 并通过 HTTP API 暴露 pending approval，等待操作员决策。
+            //   参见 docs/migration-gap-analysis.md Phase 6。
+
             // Turn completed successfully
-            "turn.completed" | "turn_completed" => Some(Ok(TurnResult::Completed)),
+            "turn.completed" | "turn_completed" | "turn/completed" => {
+                Some(Ok(TurnResult::Completed))
+            }
 
             // Turn failed
-            "turn.failed" | "turn_failed" => {
+            "turn.failed" | "turn_failed" | "turn/failed" => {
                 let reason = event
                     .get("error")
                     .or_else(|| event.get("reason"))
@@ -426,17 +847,21 @@ impl CodexClient {
             }
 
             // Turn cancelled
-            "turn.cancelled" | "turn_cancelled" => {
+            "turn.cancelled" | "turn_cancelled" | "turn/cancelled" => {
                 Some(Err(CodexError::TurnCancelled))
             }
 
             // Turn requires user input (high-trust mode: treat as failure)
+            // TODO(Phase 6): 操作员介入模式 — 当 user_input_policy == "ask" 时，
+            //   暂停 turn 并通过 HTTP API 暴露 pending question，等待操作员回答。
+            //   当前策略：立即 fail turn → 触发 retry。
+            //   参见 docs/migration-gap-analysis.md Phase 6。
             "turn.input_required" | "turn_input_required" | "input_required" => {
                 Some(Err(CodexError::TurnInputRequired))
             }
 
             // Turn ended with error
-            "turn.error" | "turn_ended_with_error" => {
+            "turn.error" | "turn_ended_with_error" | "turn/error" => {
                 let detail = event
                     .get("error")
                     .and_then(|v| v.as_str())
@@ -447,6 +872,31 @@ impl CodexClient {
 
             _ => None,
         }
+    }
+
+    /// Check if an event is an approval request.
+    fn is_approval_request(&self, event: &serde_json::Value) -> bool {
+        let event_type = event
+            .get("type")
+            .or_else(|| event.get("event"))
+            .or_else(|| event.get("method"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        matches!(
+            event_type,
+            "approval/request" | "approval_request" | "commandExecution" | "fileChange"
+        )
+    }
+
+    /// Check if an event is a dynamic tool call.
+    fn is_tool_call(&self, event: &serde_json::Value) -> bool {
+        let event_type = event
+            .get("type")
+            .or_else(|| event.get("event"))
+            .or_else(|| event.get("method"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        matches!(event_type, "item/tool/call" | "tool/call" | "tool_call")
     }
 
     /// Gracefully stop the Codex subprocess (SPEC Section 10.3).

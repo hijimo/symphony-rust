@@ -9,5 +9,6 @@
 pub mod codex_client;
 pub mod runner;
 
-pub use codex_client::{CodexClient, CodexError, CodexEventUpdate, TokenUsage, TurnResult};
+pub use crate::models::{CodexEventUpdate, TokenUsage};
+pub use codex_client::{CodexClient, CodexError, TurnResult};
 pub use runner::{AgentBlockerRef, AgentError, AgentIssue, AgentRunner, IssueStateRefresher};

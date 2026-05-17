@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -272,12 +273,14 @@ impl OrchestratorState {
     /// Prevents unbounded memory growth from the completed set.
     pub fn gc_completed(&mut self) {
         let cutoff = Instant::now() - Duration::from_secs(3600);
-        self.completed.retain(|_, completed_at| *completed_at > cutoff);
+        self.completed
+            .retain(|_, completed_at| *completed_at > cutoff);
     }
 
     /// Number of available global concurrency slots.
     pub fn available_global_slots(&self) -> usize {
-        self.max_concurrent_agents.saturating_sub(self.running.len())
+        self.max_concurrent_agents
+            .saturating_sub(self.running.len())
     }
 
     /// Check if there are any available global slots.
@@ -290,9 +293,19 @@ impl OrchestratorState {
 // Orchestrator Events
 // ---------------------------------------------------------------------------
 
+/// Token usage information extracted from Codex events.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+}
+
 /// Update payload from a Codex event stream.
-#[derive(Debug, Clone)]
+/// Unified struct used by both the codex_client (producer) and orchestrator (consumer).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodexEventUpdate {
+    /// Event type string (e.g. "turn.completed", "notification").
     pub event_type: Option<String>,
     pub message: Option<String>,
     pub input_tokens: Option<u64>,
@@ -300,6 +313,14 @@ pub struct CodexEventUpdate {
     pub total_tokens: Option<u64>,
     pub timestamp: Option<DateTime<Utc>>,
     pub rate_limits: Option<serde_json::Value>,
+    /// Process ID of the codex app-server.
+    pub pid: Option<String>,
+    /// Composed session ID ("<thread_id>-<turn_id>").
+    pub session_id: Option<String>,
+    /// Thread ID from the codex event.
+    pub thread_id: Option<String>,
+    /// Turn ID from the codex event.
+    pub turn_id: Option<String>,
 }
 
 /// Events received by the orchestrator event loop.
@@ -313,13 +334,25 @@ pub enum OrchestratorEvent {
     /// Worker exited abnormally (error, needs exponential backoff retry).
     WorkerExitAbnormal { issue_id: String, error: String },
     /// Codex event update (token counters, activity, rate limits).
-    CodexUpdate { issue_id: String, update: CodexEventUpdate },
+    CodexUpdate {
+        issue_id: String,
+        update: CodexEventUpdate,
+    },
     /// Retry timer fired for an issue.
     RetryFired { issue_id: String },
     /// Configuration was reloaded (hot reload notification).
     ConfigReloaded,
     /// External trigger to force a refresh (e.g. HTTP API /refresh).
     ForceRefresh,
+    /// HTTP/API request for a current state snapshot.
+    QueryState {
+        reply: oneshot::Sender<crate::server::api::StateResponse>,
+    },
+    /// HTTP/API request for a single issue snapshot.
+    QueryIssue {
+        identifier: String,
+        reply: oneshot::Sender<Option<crate::server::api::IssueDetailResponse>>,
+    },
     /// Shutdown signal received.
     Shutdown,
 }
@@ -363,27 +396,10 @@ pub fn normalize_state(state: &str) -> String {
 /// Sanitize an issue identifier into a workspace key (SPEC section 4.2).
 /// Replaces any character not in [A-Za-z0-9._-] with '_'.
 /// Returns an error for unsafe identifiers (empty, ".", "..").
+///
+/// Delegates to the canonical implementation in `crate::workspace::sanitize_workspace_key`.
 pub fn sanitize_workspace_key(identifier: &str) -> Result<String, String> {
-    let sanitized: String = identifier
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-
-    if sanitized.is_empty()
-        || sanitized == "."
-        || sanitized == ".."
-        || sanitized.chars().all(|c| c == '.')
-    {
-        return Err(format!("Unsafe identifier: '{}'", identifier));
-    }
-
-    Ok(sanitized)
+    crate::workspace::sanitize_workspace_key(identifier).map_err(|e| e.to_string())
 }
 
 /// Get current monotonic time in milliseconds (for retry due_at_ms).
