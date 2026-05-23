@@ -390,7 +390,7 @@ pub fn compose_session_id(thread_id: &str, turn_id: &str) -> String {
 
 /// Normalize issue state for comparison (SPEC section 4.2).
 pub fn normalize_state(state: &str) -> String {
-    state.to_lowercase()
+    state.trim().to_lowercase().replace([' ', '-'], "_")
 }
 
 /// Sanitize an issue identifier into a workspace key (SPEC section 4.2).
@@ -437,8 +437,10 @@ mod tests {
 
     #[test]
     fn test_normalize_state() {
-        assert_eq!(normalize_state("In Progress"), "in progress");
+        assert_eq!(normalize_state("In Progress"), "in_progress");
         assert_eq!(normalize_state("TODO"), "todo");
+        assert_eq!(normalize_state("In-Progress"), "in_progress");
+        assert_eq!(normalize_state(" Todo "), "todo");
     }
 
     #[test]

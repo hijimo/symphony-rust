@@ -851,6 +851,22 @@ impl Orchestrator {
 
         if is_terminal_state(&fresh_issue.state, &self.dispatch_config.terminal_states) {
             tracing::info!(issue_id, state = %fresh_issue.state, "issue reached terminal state, releasing claim");
+
+            // Persist the terminal label on the issue so it's visible in the tracker UI.
+            if let Some(tracker) = &self.tracker {
+                if let Err(e) = tracker
+                    .set_workflow_state(issue_id, &fresh_issue.state)
+                    .await
+                {
+                    tracing::warn!(
+                        issue_id,
+                        state = %fresh_issue.state,
+                        error = %e,
+                        "failed to set terminal workflow label (non-fatal)"
+                    );
+                }
+            }
+
             release_claim(&mut self.state, issue_id);
             return;
         }

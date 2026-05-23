@@ -15,8 +15,8 @@ pub struct PlatformConfig {
     pub owner: String,
     /// Repository name.
     pub repo: String,
-    /// GitLab-only: numeric project ID.
-    pub project_id: Option<u64>,
+    /// GitLab-only: project identifier (numeric ID or namespace/project path).
+    pub project_id: Option<String>,
     /// Set to true for self-hosted instances with non-standard hostnames.
     #[serde(default)]
     pub allow_custom_host: bool,

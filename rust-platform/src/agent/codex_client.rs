@@ -381,6 +381,30 @@ impl CodexClient {
             ))
         })?;
 
+        // Drain stderr in background to prevent pipe buffer deadlock
+        if let Some(stderr) = child.stderr.take() {
+            let pid_for_log = pid.clone();
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let mut reader = BufReader::new(stderr);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            tracing::debug!(
+                                pid = ?pid_for_log,
+                                "codex stderr: {}",
+                                line.trim_end()
+                            );
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+
         tracing::info!(pid = ?pid, "codex app-server started");
 
         Ok(Self {
@@ -574,12 +598,16 @@ impl CodexClient {
         let init_id = self.next_rpc_id();
         let init_request = build_initialize_request(init_id);
 
+        tracing::info!("sending initialize request (id={})", init_id);
         self.send_json_rpc(&init_request).await?;
+        tracing::info!("initialize request sent, waiting for response...");
 
         // Read initialize response (with read_timeout)
         let _init_response = self
             .read_json_rpc_response(handshake_deadline, Some(init_id))
             .await?;
+
+        tracing::info!("initialize response received");
 
         // Step 2: Send thread/start request
         let thread_id = self.next_rpc_id();
@@ -591,6 +619,11 @@ impl CodexClient {
         );
 
         self.send_json_rpc(&thread_request).await?;
+
+        tracing::info!(
+            "thread/start request sent (id={}), waiting for response...",
+            thread_id
+        );
 
         // Read thread/start response to get thread_id
         let thread_response = self
@@ -634,7 +667,13 @@ impl CodexClient {
                 tokio::time::timeout_at(deadline, self.stdout.read_line(&mut line_buf)).await;
 
             let bytes_read = match read_result {
-                Err(_) => return Err(CodexError::ResponseTimeout),
+                Err(_) => {
+                    tracing::error!(
+                        expected_id = ?expected_id,
+                        "read_json_rpc_response timed out waiting for response"
+                    );
+                    return Err(CodexError::ResponseTimeout);
+                }
                 Ok(Err(e)) => return Err(CodexError::Io(e)),
                 Ok(Ok(n)) => n,
             };
@@ -670,6 +709,16 @@ impl CodexClient {
 
                     if let Some(expected) = expected_id {
                         if value.get("id").and_then(|v| v.as_u64()) != Some(expected) {
+                            let method = value
+                                .get("method")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown");
+                            tracing::debug!(
+                                expected_id,
+                                got_id = ?value.get("id"),
+                                method,
+                                "skipping non-matching message during handshake"
+                            );
                             continue;
                         }
                     }

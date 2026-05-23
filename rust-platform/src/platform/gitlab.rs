@@ -25,7 +25,7 @@ use crate::platform::{
 /// Supports atomic label add+remove in a single PUT (the `AtomicLabels` capability).
 pub struct GitlabAdapter {
     http: HttpClient,
-    project_id: u64,
+    project_id: String,
 }
 
 // --- GitLab API response types (private, for deserialization only) ---
@@ -82,7 +82,7 @@ impl GitlabAdapter {
     /// Builds the shared HTTP client (which handles token resolution and auth headers)
     /// and resolves the project ID from config.
     pub fn new(config: PlatformConfig) -> Result<Self, PlatformError> {
-        let project_id = config.project_id.unwrap_or(0);
+        let project_id = config.project_id.clone().unwrap_or_default();
         let http = HttpClient::new(config)?;
 
         Ok(Self { http, project_id })
@@ -90,15 +90,20 @@ impl GitlabAdapter {
 
     /// Create a new GitLab adapter from a config and already-resolved token.
     pub fn new_with_token(config: PlatformConfig, token: &str) -> Result<Self, PlatformError> {
-        let project_id = config.project_id.unwrap_or(0);
+        let project_id = config.project_id.clone().unwrap_or_default();
         let http = HttpClient::new_with_resolved_token(config, token)?;
 
         Ok(Self { http, project_id })
     }
 
+    /// Returns a reference to the underlying HTTP client.
+    pub fn http_client(&self) -> &HttpClient {
+        &self.http
+    }
+
     /// API path prefix for project-scoped endpoints.
     fn project_path(&self) -> String {
-        format!("/projects/{}", self.project_id)
+        format!("/projects/{}", urlencoding::encode(&self.project_id))
     }
 
     /// Build the comma-separated labels filter string from issue_filter config.
@@ -263,17 +268,30 @@ impl Platform for GitlabAdapter {
         _opts: FetchOptions,
     ) -> Result<Vec<Issue>, PlatformError> {
         let path = format!("{}/issues", self.project_path());
-        let labels_filter = self.active_labels_filter();
-
-        let params: Vec<(&str, &str)> = vec![("labels", &labels_filter), ("state", "opened")];
-
-        let gitlab_issues: Vec<GitlabIssue> = self.http.get_all_pages(&path, &params).await?;
-        let issues = gitlab_issues
-            .into_iter()
-            .map(|gi| self.parse_issue(gi))
+        let filter_labels: Vec<&str> = self
+            .http
+            .config()
+            .issue_filter
+            .labels
+            .iter()
+            .map(|s| s.as_str())
             .collect();
 
-        Ok(issues)
+        // GitLab's labels param is AND — query each label separately and deduplicate
+        let mut seen = std::collections::HashSet::new();
+        let mut all_issues = Vec::new();
+
+        for label in &filter_labels {
+            let params: Vec<(&str, &str)> = vec![("labels", label), ("state", "opened")];
+            let gitlab_issues: Vec<GitlabIssue> = self.http.get_all_pages(&path, &params).await?;
+            for gi in gitlab_issues {
+                if seen.insert(gi.iid) {
+                    all_issues.push(self.parse_issue(gi));
+                }
+            }
+        }
+
+        Ok(all_issues)
     }
 
     async fn fetch_issue(&self, issue_id: IssueId) -> Result<Issue, PlatformError> {

@@ -65,6 +65,13 @@ pub trait Tracker: Send + Sync {
         &self,
         ids: &[String],
     ) -> Result<Vec<TrackerIssue>, TrackerError>;
+
+    /// Set the workflow state label on an issue (e.g., transition to "Done").
+    /// Used by the orchestrator to persist terminal state after issue closure.
+    /// Default implementation is a no-op for trackers that don't support label writes.
+    async fn set_workflow_state(&self, _issue_id: &str, _state: &str) -> Result<(), TrackerError> {
+        Ok(())
+    }
 }
 
 /// Unified issue source routing (Linear tracker vs Platform adapter).
@@ -85,19 +92,19 @@ pub enum TrackerError {
     #[error("missing tracker project slug")]
     MissingProjectSlug,
 
-    #[error("Linear API request failed: {source}")]
+    #[error("Tracker API request failed: {source}")]
     ApiRequest {
         #[source]
         source: reqwest::Error,
     },
 
-    #[error("Linear API returned status {status}: {body}")]
+    #[error("Tracker API returned status {status}: {body}")]
     ApiStatus { status: u16, body: String },
 
-    #[error("Linear GraphQL errors: {errors:?}")]
+    #[error("Tracker GraphQL errors: {errors:?}")]
     GraphqlErrors { errors: Vec<serde_json::Value> },
 
-    #[error("unexpected Linear API payload: {detail}")]
+    #[error("unexpected Tracker API payload: {detail}")]
     UnknownPayload { detail: String },
 
     #[error("missing endCursor in paginated response")]

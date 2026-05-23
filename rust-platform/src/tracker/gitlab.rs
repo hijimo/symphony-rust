@@ -11,6 +11,24 @@ use crate::platform::{FetchOptions, IssueId, Platform};
 
 use super::{BlockerRef, Tracker, TrackerError, TrackerIssue};
 
+fn platform_error_to_tracker_error(e: crate::error::PlatformError) -> TrackerError {
+    use crate::error::PlatformError;
+    let status = match &e {
+        PlatformError::HttpError(s) => *s,
+        PlatformError::ServerError(s) => *s,
+        PlatformError::RateLimited { .. } => 429,
+        PlatformError::AuthExpired => 401,
+        PlatformError::Forbidden(_) => 403,
+        PlatformError::NotFound(_) => 404,
+        PlatformError::Unprocessable(_) => 422,
+        _ => 0,
+    };
+    TrackerError::ApiStatus {
+        status,
+        body: e.to_string(),
+    }
+}
+
 fn normalize_tracker_state(state: &str) -> String {
     state.trim().to_lowercase().replace([' ', '-'], "_")
 }
@@ -97,10 +115,7 @@ impl Tracker for GitlabTrackerAdapter {
             .platform
             .fetch_candidate_issues(FetchOptions::default())
             .await
-            .map_err(|e| TrackerError::ApiStatus {
-                status: 0,
-                body: e.to_string(),
-            })?;
+            .map_err(platform_error_to_tracker_error)?;
 
         let candidates: Vec<TrackerIssue> = issues
             .iter()
@@ -124,10 +139,7 @@ impl Tracker for GitlabTrackerAdapter {
             .platform
             .fetch_candidate_issues(FetchOptions::default())
             .await
-            .map_err(|e| TrackerError::ApiStatus {
-                status: 0,
-                body: e.to_string(),
-            })?;
+            .map_err(platform_error_to_tracker_error)?;
 
         let filtered: Vec<TrackerIssue> = all_issues
             .iter()
@@ -160,11 +172,20 @@ impl Tracker for GitlabTrackerAdapter {
             .platform
             .fetch_issue_states_by_ids(&issue_ids)
             .await
-            .map_err(|e| TrackerError::ApiStatus {
-                status: 0,
-                body: e.to_string(),
-            })?;
+            .map_err(platform_error_to_tracker_error)?;
 
         Ok(issues.iter().map(Self::convert_issue).collect())
+    }
+
+    async fn set_workflow_state(&self, issue_id: &str, state: &str) -> Result<(), TrackerError> {
+        let id: u64 = issue_id.parse().map_err(|_| TrackerError::ApiStatus {
+            status: 0,
+            body: format!("invalid issue_id: {}", issue_id),
+        })?;
+
+        self.platform
+            .set_workflow_state(IssueId(id), state)
+            .await
+            .map_err(platform_error_to_tracker_error)
     }
 }

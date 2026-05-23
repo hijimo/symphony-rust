@@ -228,6 +228,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             match GitlabAdapter::new_with_token(platform_config, &service_config.tracker_api_key) {
                 Ok(adapter) => {
+                    // Ensure workflow labels exist in the project (auto-creates for GitLab)
+                    if let Err(e) = adapter.http_client().ensure_workflow_labels().await {
+                        tracing::warn!(error = %e, "Failed to verify workflow labels");
+                    }
+
                     let tracker = Arc::new(GitlabTrackerAdapter::new(
                         Arc::new(adapter),
                         service_config.active_states.clone(),
@@ -246,6 +251,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             match GithubAdapter::new_with_token(platform_config, &service_config.tracker_api_key) {
                 Ok(adapter) => {
+                    // Ensure workflow labels exist in the repository
+                    if let Err(e) = adapter.http_client().ensure_workflow_labels().await {
+                        tracing::warn!(error = %e, "Failed to verify workflow labels");
+                    }
+
                     let tracker = Arc::new(GitlabTrackerAdapter::new(
                         Arc::new(adapter),
                         service_config.active_states.clone(),
@@ -353,17 +363,10 @@ fn build_platform_config(
 ) -> symphony_platform::config::platform::PlatformConfig {
     use symphony_platform::config::platform::{IssueFilter, PlatformConfig, WorkflowConfig};
 
-    let base_url = match platform_kind {
-        "gitlab" => service_config
-            .tracker_endpoint
-            .trim_end_matches("/api/v4")
-            .trim_end_matches('/')
-            .to_string(),
-        _ => service_config
-            .tracker_endpoint
-            .trim_end_matches('/')
-            .to_string(),
-    };
+    let base_url = service_config
+        .tracker_endpoint
+        .trim_end_matches('/')
+        .to_string();
 
     let (owner, repo, project_id) = if platform_kind == "github" {
         let mut parts = service_config.tracker_project_slug.splitn(2, '/');
@@ -374,7 +377,7 @@ fn build_platform_config(
         (
             String::new(),
             service_config.tracker_project_slug.clone(),
-            service_config.tracker_project_slug.parse::<u64>().ok(),
+            Some(service_config.tracker_project_slug.clone()),
         )
     };
 
@@ -428,8 +431,11 @@ mod tests {
         let platform_config = build_platform_config(&service_config, "gitlab");
 
         assert_eq!(platform_config.api_token, "resolved-token");
-        assert_eq!(platform_config.base_url, "https://gitlab.example.com");
-        assert_eq!(platform_config.project_id, Some(123));
+        assert_eq!(
+            platform_config.base_url,
+            "https://gitlab.example.com/api/v4"
+        );
+        assert_eq!(platform_config.project_id, Some("123".to_string()));
     }
 
     #[test]

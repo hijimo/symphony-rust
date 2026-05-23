@@ -46,6 +46,8 @@ struct GhIssue {
     title: String,
     body: Option<String>,
     html_url: String,
+    /// GitHub issue state: "open" or "closed".
+    state: String,
     assignee: Option<GhUser>,
     labels: Vec<GhLabel>,
     created_at: String,
@@ -102,6 +104,11 @@ impl GithubAdapter {
         Ok(Self { http, config })
     }
 
+    /// Returns a reference to the underlying HTTP client.
+    pub fn http_client(&self) -> &HttpClient {
+        &self.http
+    }
+
     /// Constructs the repo path prefix: `/repos/:owner/:repo`
     fn repo_path(&self) -> String {
         format!("/repos/{}/{}", self.config.owner, self.config.repo)
@@ -109,7 +116,14 @@ impl GithubAdapter {
 
     /// Converts a GitHub issue API response into our standardized `Issue` type.
     fn convert_issue(&self, gh: GhIssue) -> Issue {
-        let workflow_state = self.extract_workflow_state(&gh.labels);
+        let workflow_state = if gh.state.eq_ignore_ascii_case("closed") {
+            // GitHub's closed state is authoritative. Closed issues often retain
+            // workflow labels, so label-derived active states must not win here.
+            Some(self.inferred_closed_issue_state())
+        } else {
+            self.extract_workflow_state(&gh.labels)
+        };
+
         let labels: Vec<String> = gh.labels.iter().map(|l| l.name.clone()).collect();
         let branch_name = format!("symphony/issue-{}", gh.number);
 
@@ -149,6 +163,26 @@ impl GithubAdapter {
         None
     }
 
+    /// Infers the internal terminal state key for GitHub issues whose API state is closed.
+    fn inferred_closed_issue_state(&self) -> String {
+        if self
+            .config
+            .workflow
+            .terminal_states
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case("done"))
+        {
+            "done".to_string()
+        } else {
+            self.config
+                .workflow
+                .terminal_states
+                .first()
+                .map(|s| s.trim().to_lowercase().replace([' ', '-'], "_"))
+                .unwrap_or_else(|| "done".to_string())
+        }
+    }
+
     /// Returns all workflow label values from config (e.g., "workflow::todo").
     fn all_workflow_labels(&self) -> Vec<String> {
         self.config.workflow.states.values().cloned().collect()
@@ -179,22 +213,38 @@ impl Platform for GithubAdapter {
         let path = format!("{}/issues", self.repo_path());
 
         // Build the labels filter from active_states config
+        // active_states contains original values like "Todo", "In Progress"
+        // workflow.states maps normalized keys ("todo", "in_progress") to label names
+        // We need to find labels by matching normalized keys
         let filter_labels: Vec<String> = self
             .config
             .workflow
             .active_states
             .iter()
-            .filter_map(|state_key| self.config.workflow.states.get(state_key))
-            .cloned()
+            .filter_map(|state| {
+                let normalized = state.to_lowercase().replace([' ', '-'], "_");
+                self.config.workflow.states.get(&normalized).cloned()
+            })
             .collect();
 
-        let labels_param = filter_labels.join(",");
-        let params: Vec<(&str, &str)> = vec![("labels", &labels_param), ("state", "open")];
+        // GitHub's labels filter uses AND logic (all labels must be present).
+        // We need OR logic (any active state label), so we fetch issues per label
+        // and deduplicate by issue number.
+        let mut all_issues: Vec<GhIssue> = Vec::new();
+        let mut seen_numbers: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
-        let gh_issues: Vec<GhIssue> = self.http.get_all_pages(&path, &params).await?;
+        for label in &filter_labels {
+            let params: Vec<(&str, &str)> = vec![("labels", label.as_str()), ("state", "open")];
+            let gh_issues: Vec<GhIssue> = self.http.get_all_pages(&path, &params).await?;
+            for issue in gh_issues {
+                if seen_numbers.insert(issue.number) {
+                    all_issues.push(issue);
+                }
+            }
+        }
 
         // Filter out pull requests (GitHub includes them in the issues endpoint)
-        let issues: Vec<Issue> = gh_issues
+        let issues: Vec<Issue> = all_issues
             .into_iter()
             .filter(|i| i.pull_request.is_none())
             .map(|i| self.convert_issue(i))
@@ -763,6 +813,7 @@ mod tests {
             title: "Fix the bug".to_string(),
             body: Some("Description here".to_string()),
             html_url: "https://github.com/testorg/testrepo/issues/42".to_string(),
+            state: "open".to_string(),
             assignee: Some(GhUser {
                 login: "dev1".to_string(),
             }),
@@ -796,6 +847,39 @@ mod tests {
     }
 
     #[test]
+    fn test_convert_issue_closed_overrides_workflow_label() {
+        let config = test_config("http://localhost:8080");
+        let adapter = GithubAdapter::new(config).unwrap();
+
+        let gh_issue = GhIssue {
+            id: 12346,
+            number: 43,
+            title: "Already closed".to_string(),
+            body: Some("Closed by merged PR".to_string()),
+            html_url: "https://github.com/testorg/testrepo/issues/43".to_string(),
+            state: "closed".to_string(),
+            assignee: Some(GhUser {
+                login: "dev1".to_string(),
+            }),
+            labels: vec![
+                GhLabel {
+                    name: "workflow::in-progress".to_string(),
+                },
+                GhLabel {
+                    name: "bug".to_string(),
+                },
+            ],
+            created_at: "2024-01-15T10:00:00Z".to_string(),
+            updated_at: "2024-01-16T12:00:00Z".to_string(),
+            pull_request: None,
+        };
+
+        let issue = adapter.convert_issue(gh_issue);
+        assert_eq!(issue.workflow_state, Some("done".to_string()));
+        assert!(issue.labels.contains(&"workflow::in-progress".to_string()));
+    }
+
+    #[test]
     fn test_convert_issue_no_assignee() {
         let config = test_config("http://localhost:8080");
         let adapter = GithubAdapter::new(config).unwrap();
@@ -806,6 +890,7 @@ mod tests {
             title: "No assignee".to_string(),
             body: None,
             html_url: "https://github.com/testorg/testrepo/issues/7".to_string(),
+            state: "open".to_string(),
             assignee: None,
             labels: vec![],
             created_at: "2024-03-01T08:00:00Z".to_string(),

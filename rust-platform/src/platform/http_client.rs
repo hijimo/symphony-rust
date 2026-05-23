@@ -175,7 +175,7 @@ impl HttpClient {
             "github" => format!("/repos/{}/{}/labels", self.config.owner, self.config.repo),
             "gitlab" => {
                 let project_id = self.resolve_project_id();
-                format!("/projects/{}/labels", project_id)
+                format!("/projects/{}/labels", urlencoding::encode(&project_id))
             }
             other => {
                 return Err(PlatformError::Unprocessable(format!(
@@ -197,7 +197,7 @@ impl HttpClient {
     /// * `color` — Hex color code (e.g., "#428BCA")
     pub async fn create_label(&self, name: &str, color: &str) -> Result<(), PlatformError> {
         let project_id = self.resolve_project_id();
-        let path = format!("/projects/{}/labels", project_id);
+        let path = format!("/projects/{}/labels", urlencoding::encode(&project_id));
         let url = format!("{}{}", self.base_url, path);
         let body = serde_json::json!({ "name": name, "color": color });
 
@@ -254,29 +254,63 @@ impl HttpClient {
             return Ok(());
         }
 
-        match self.config.kind.as_str() {
-            "github" => {
-                tracing::warn!(
-                    missing = ?missing,
-                    "Workflow labels not found in repository. Please create them manually."
-                );
+        for label_name in &missing {
+            tracing::info!(label = label_name, "Auto-creating missing workflow label");
+            match self.config.kind.as_str() {
+                "github" => self.create_github_label(label_name, "428BCA").await?,
+                "gitlab" => self.create_label(label_name, "#428BCA").await?,
+                _ => {}
             }
-            "gitlab" => {
-                for label_name in &missing {
-                    tracing::info!(label = label_name, "Auto-creating missing workflow label");
-                    self.create_label(label_name, "#428BCA").await?;
+        }
+
+        tracing::info!(
+            count = missing.len(),
+            "Workflow labels created successfully"
+        );
+        Ok(())
+    }
+
+    /// Creates a label in a GitHub repository.
+    ///
+    /// GitHub API: `POST /repos/:owner/:repo/labels`
+    /// Body: `{"name": "...", "color": "..."}`
+    async fn create_github_label(&self, name: &str, color: &str) -> Result<(), PlatformError> {
+        let path = format!("/repos/{}/{}/labels", self.config.owner, self.config.repo);
+        let url = format!("{}{}", self.base_url, path);
+        let body = serde_json::json!({ "name": name, "color": color });
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    PlatformError::Timeout
+                } else {
+                    PlatformError::Network(e)
                 }
-            }
-            _ => {}
+            })?;
+
+        let status = response.status();
+        if status.as_u16() == 422 {
+            // 422 likely means label already exists (race condition) — treat as success
+            tracing::debug!(label = name, "Label may already exist (422), skipping");
+            return Ok(());
+        }
+        if !status.is_success() {
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(PlatformError::from_status(status.as_u16(), &body_text));
         }
 
         Ok(())
     }
 
-    /// Resolves the GitLab project ID from config.
-    /// Falls back to 0 if not set (should be caught by config validation).
-    fn resolve_project_id(&self) -> u64 {
-        self.config.project_id.unwrap_or(0)
+    /// Resolves the GitLab project identifier from config.
+    /// Returns the project_id string (numeric or path-style).
+    fn resolve_project_id(&self) -> String {
+        self.config.project_id.clone().unwrap_or_default()
     }
 }
 

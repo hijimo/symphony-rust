@@ -6,9 +6,41 @@
 //! - Required context fields: issue_id, issue_identifier, session_id
 //! - No secrets in logs
 
+use std::io::Write;
+
 use tracing_subscriber::fmt;
+use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
+
+/// Writer that flushes stderr after every write operation.
+struct FlushWriter;
+
+impl<'a> MakeWriter<'a> for FlushWriter {
+    type Writer = FlushOnDrop;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        FlushOnDrop(std::io::stderr())
+    }
+}
+
+struct FlushOnDrop(std::io::Stderr);
+
+impl Write for FlushOnDrop {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl Drop for FlushOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.flush();
+    }
+}
 
 /// Logging output format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +73,8 @@ pub fn init_logging(format: Option<LogFormat>) {
                 .with_thread_ids(false)
                 .with_file(false)
                 .with_line_number(false)
-                .with_span_list(true);
+                .with_span_list(true)
+                .with_writer(FlushWriter);
 
             tracing_subscriber::registry()
                 .with(env_filter)
@@ -52,7 +85,8 @@ pub fn init_logging(format: Option<LogFormat>) {
             let subscriber = fmt::layer()
                 .pretty()
                 .with_target(true)
-                .with_thread_ids(false);
+                .with_thread_ids(false)
+                .with_writer(FlushWriter);
 
             tracing_subscriber::registry()
                 .with(env_filter)
