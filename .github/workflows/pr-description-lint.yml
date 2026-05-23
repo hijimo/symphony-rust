@@ -10,9 +10,6 @@ permissions:
 jobs:
   validate-pr-description:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: elixir
 
     steps:
       - name: Checkout
@@ -20,19 +17,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up mise tools
-        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
-        with:
-          install: true
-          cache: true
-          working_directory: elixir
-
       - name: Validate PR description format
         env:
           PR_BODY_JSON: ${{ toJson(github.event.pull_request.body) }}
         run: |
-          mix local.hex --force
-          mix local.rebar --force
-          mix deps.get
           printf '%s' "$PR_BODY_JSON" | jq -r '.' > /tmp/pr_body.md
-          mix pr_body.check --file /tmp/pr_body.md
+          test -s /tmp/pr_body.md
+          grep -Eq '(Closes|Fixes|Resolves) #[0-9]+' /tmp/pr_body.md
