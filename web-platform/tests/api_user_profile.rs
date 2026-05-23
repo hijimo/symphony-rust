@@ -85,7 +85,7 @@ async fn test_get_config_token_not_leaked() {
     app.put(
         "/api/user/config",
         &serde_json::json!({
-            "gitlabToken": "glpat-secret-token-value",
+            "gitlabToken": "gitlab-token-secret-value",
             "gitlabHost": "https://gitlab.com"
         }),
         Some(&token),
@@ -95,7 +95,7 @@ async fn test_get_config_token_not_leaked() {
     let config_resp = app.get("/api/user/config", Some(&token)).await;
     let body: serde_json::Value = config_resp.json().await.unwrap();
     let body_str = serde_json::to_string(&body).unwrap();
-    assert!(!body_str.contains("glpat-secret-token-value"));
+    assert!(!body_str.contains("gitlab-token-secret-value"));
 }
 
 #[tokio::test]
