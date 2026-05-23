@@ -8,6 +8,8 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
 
+use crate::proxy::proxy_aware_client_builder;
+
 use super::{BlockerRef, Tracker, TrackerError, TrackerIssue};
 
 /// Default page size for paginated Linear queries.
@@ -42,7 +44,10 @@ impl LinearClient {
             return Err(TrackerError::MissingProjectSlug);
         }
 
-        let http = Client::builder()
+        let http = proxy_aware_client_builder()
+            .map_err(|e| TrackerError::UnknownPayload {
+                detail: format!("failed to apply proxy config: {}", e),
+            })?
             .timeout(Duration::from_millis(DEFAULT_TIMEOUT_MS))
             .build()
             .map_err(|e| TrackerError::ApiRequest { source: e })?;

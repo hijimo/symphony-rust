@@ -82,6 +82,21 @@ pub struct Project {
     pub codex_command: Option<String>,
     pub codex_approval_policy: Option<String>,
     pub codex_sandbox: Option<String>,
+    // Resume/recovery lifecycle fencing fields.
+    pub web_instance_id: Option<String>,
+    pub lifecycle_op_id: Option<String>,
+    pub lifecycle_lease_expires_at: Option<String>,
+    pub service_owner_web_instance_id: Option<String>,
+    pub service_owner_lease_expires_at: Option<String>,
+    pub service_owner_heartbeat_at: Option<String>,
+    pub service_generation: i64,
+    pub service_instance_id: Option<String>,
+    pub service_pgid: Option<i64>,
+    pub service_session_id: Option<i64>,
+    pub service_cmdline_hash: Option<String>,
+    pub service_workdir: Option<String>,
+    pub last_lifecycle_op: Option<String>,
+    pub service_proxy_config_version: Option<String>,
 }
 
 /// Data required to create a new project.
@@ -121,6 +136,22 @@ pub struct ServiceStatusUpdate {
     pub status: ServiceStatus,
     pub pid: Option<i64>,
     pub error_message: Option<String>,
+}
+
+/// Service lifecycle metadata written when a Symphony process is launched.
+#[derive(Debug, Clone)]
+pub struct ServiceLifecycleUpdate {
+    pub web_instance_id: String,
+    pub lifecycle_op_id: String,
+    pub service_owner_web_instance_id: String,
+    pub service_generation: i64,
+    pub service_instance_id: String,
+    pub service_pgid: Option<i64>,
+    pub service_session_id: Option<i64>,
+    pub service_cmdline_hash: String,
+    pub service_workdir: String,
+    pub last_lifecycle_op: String,
+    pub service_proxy_config_version: String,
 }
 
 /// Project member entity (joined with user info).

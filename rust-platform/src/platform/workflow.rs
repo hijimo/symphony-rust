@@ -179,10 +179,8 @@ impl WorkflowStateMachine {
             }
             // Multiple workflow labels — remove extras
             n if n > 1 => {
-                let extra: Vec<String> = labels
-                    .into_iter()
-                    .filter(|l| l != expected_label)
-                    .collect();
+                let extra: Vec<String> =
+                    labels.into_iter().filter(|l| l != expected_label).collect();
 
                 tracing::warn!(
                     issue_id = %issue_id,
@@ -374,10 +372,7 @@ mod tests {
             Ok(None)
         }
 
-        async fn list_comments(
-            &self,
-            _issue_id: IssueId,
-        ) -> Result<Vec<Comment>, PlatformError> {
+        async fn list_comments(&self, _issue_id: IssueId) -> Result<Vec<Comment>, PlatformError> {
             Ok(Vec::new())
         }
 

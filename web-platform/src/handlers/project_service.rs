@@ -4,15 +4,19 @@ use axum::{
 };
 use chrono::Utc;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 use utoipa::ToSchema;
+use uuid::Uuid;
 
 use crate::auth::jwt::Claims;
 use crate::error::WebPlatformError;
 use crate::middleware::project_access::{require_project_member, require_project_owner};
-use crate::models::{ResponseData, ServiceStatus, ServiceStatusUpdate};
+use crate::models::{
+    Project, ResponseData, ServiceLifecycleUpdate, ServiceStatus, ServiceStatusUpdate,
+};
 use crate::process_manager::{pid_verify, spawn, watcher, ProcessState};
-use crate::repository::ProjectRepository;
+use crate::repository::{NetworkProxyRepository, ProjectRepository};
 use crate::AppState;
 
 /// Lock acquisition timeout for per-project mutex.
@@ -20,6 +24,114 @@ const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Timeout for waiting for process to exit after SIGTERM.
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn web_instance_id() -> String {
+    std::env::var("SYMPHONY_WEB_INSTANCE_ID")
+        .unwrap_or_else(|_| format!("web-{}", std::process::id()))
+}
+
+fn service_workdir(workspace_root: &str, project_id: i64) -> String {
+    std::path::PathBuf::from(workspace_root)
+        .join(project_id.to_string())
+        .to_string_lossy()
+        .to_string()
+}
+
+fn service_cmdline_hash(symphony_bin: &str, workdir: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(symphony_bin.as_bytes());
+    hasher.update([0]);
+    hasher.update(b"WORKFLOW.md");
+    hasher.update([0]);
+    hasher.update(workdir.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+fn next_service_identity(project: &Project) -> (i64, String) {
+    let generation = project.service_generation + 1;
+    (
+        generation,
+        format!("svc-{}-{}-{}", project.id, generation, Uuid::new_v4()),
+    )
+}
+
+fn build_lifecycle_update(
+    project: &Project,
+    symphony_bin: &str,
+    workspace_root: &str,
+    pid: u32,
+    service_generation: i64,
+    service_instance_id: String,
+    last_lifecycle_op: &str,
+    proxy_config_version: String,
+) -> ServiceLifecycleUpdate {
+    let web_instance_id = web_instance_id();
+    let workdir = service_workdir(workspace_root, project.id);
+    ServiceLifecycleUpdate {
+        web_instance_id: web_instance_id.clone(),
+        lifecycle_op_id: Uuid::new_v4().to_string(),
+        service_owner_web_instance_id: web_instance_id,
+        service_generation,
+        service_instance_id,
+        service_pgid: process_group_id(pid),
+        service_session_id: process_session_id(pid),
+        service_cmdline_hash: service_cmdline_hash(symphony_bin, &workdir),
+        service_workdir: workdir,
+        last_lifecycle_op: last_lifecycle_op.to_string(),
+        service_proxy_config_version: proxy_config_version,
+    }
+}
+
+fn build_stop_lifecycle_update(project: &Project, workspace_root: &str) -> ServiceLifecycleUpdate {
+    let web_instance_id = project
+        .web_instance_id
+        .clone()
+        .unwrap_or_else(web_instance_id);
+    ServiceLifecycleUpdate {
+        web_instance_id: web_instance_id.clone(),
+        lifecycle_op_id: Uuid::new_v4().to_string(),
+        service_owner_web_instance_id: web_instance_id,
+        service_generation: project.service_generation,
+        service_instance_id: project
+            .service_instance_id
+            .clone()
+            .unwrap_or_else(|| format!("svc-{}-{}", project.id, project.service_generation)),
+        service_pgid: None,
+        service_session_id: None,
+        service_cmdline_hash: project.service_cmdline_hash.clone().unwrap_or_default(),
+        service_workdir: project
+            .service_workdir
+            .clone()
+            .unwrap_or_else(|| service_workdir(workspace_root, project.id)),
+        last_lifecycle_op: "stop".to_string(),
+        service_proxy_config_version: project
+            .service_proxy_config_version
+            .clone()
+            .unwrap_or_default(),
+    }
+}
+
+#[cfg(unix)]
+fn process_group_id(pid: u32) -> Option<i64> {
+    let pgid = unsafe { libc::getpgid(pid as libc::pid_t) };
+    (pgid >= 0).then_some(pgid as i64)
+}
+
+#[cfg(not(unix))]
+fn process_group_id(_pid: u32) -> Option<i64> {
+    None
+}
+
+#[cfg(unix)]
+fn process_session_id(pid: u32) -> Option<i64> {
+    let sid = unsafe { libc::getsid(pid as libc::pid_t) };
+    (sid >= 0).then_some(sid as i64)
+}
+
+#[cfg(not(unix))]
+fn process_session_id(_pid: u32) -> Option<i64> {
+    None
+}
 
 /// Service status response payload.
 #[derive(Debug, Serialize, ToSchema)]
@@ -31,6 +143,64 @@ pub struct ServiceStatusResponse {
     pub uptime_seconds: Option<i64>,
     pub restart_count: u32,
     pub error_message: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDiagnosticsResponse {
+    pub issues: Vec<serde_json::Value>,
+    pub services: Vec<serde_json::Value>,
+}
+
+/// GET /api/projects/:id/diagnostics - Query recovery diagnostics for a project.
+pub async fn get_diagnostics(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(project_id): Path<i64>,
+) -> Result<Json<ResponseData<ProjectDiagnosticsResponse>>, WebPlatformError> {
+    require_project_member(&claims, project_id, &state.repo).await?;
+
+    let project = state
+        .repo
+        .get_project(project_id)
+        .await?
+        .ok_or_else(|| WebPlatformError::NotFound("Project not found".to_string()))?;
+    let global_proxy_config_version = state.repo.current_network_proxy_version().await?;
+    let service_proxy_config_version = project.service_proxy_config_version.clone();
+    let needs_proxy_restart = project.service_status == "running"
+        && service_proxy_config_version.as_deref() != Some(global_proxy_config_version.as_str());
+
+    let service = serde_json::json!({
+        "project_id": project.id,
+        "service_instance_id": project.service_instance_id,
+        "service_generation": project.service_generation,
+        "web_instance_id": project.web_instance_id,
+        "lifecycle_op_id": project.lifecycle_op_id,
+        "lifecycle_lease_expires_at": project.lifecycle_lease_expires_at,
+        "service_owner_web_instance_id": project.service_owner_web_instance_id,
+        "service_owner_lease_expires_at": project.service_owner_lease_expires_at,
+        "service_owner_heartbeat_at": project.service_owner_heartbeat_at,
+        "last_lifecycle_op": project.last_lifecycle_op,
+        "status_code": project.service_status,
+        "pid": project.service_pid,
+        "pgid": project.service_pgid,
+        "session_id": project.service_session_id,
+        "cmdline_hash": project.service_cmdline_hash,
+        "workdir": project.service_workdir,
+        "restart_count": project.restart_count,
+        "proxy": {
+            "globalProxyConfigVersion": global_proxy_config_version,
+            "serviceProxyConfigVersion": service_proxy_config_version,
+            "needsRestart": needs_proxy_restart,
+        },
+        "updated_at": project.updated_at.to_string(),
+        "next_action": null,
+    });
+
+    Ok(Json(ResponseData::success(ProjectDiagnosticsResponse {
+        issues: Vec::new(),
+        services: vec![service],
+    })))
 }
 
 /// POST /api/projects/:id/start - Start the project service.
@@ -76,6 +246,8 @@ pub async fn start_service(
         .update_service_status(project_id, &status_update)
         .await?;
 
+    let (service_generation, service_instance_id) = next_service_identity(&project);
+
     // Spawn the symphony process
     let spawn_result = match spawn::spawn_symphony(
         &project,
@@ -83,6 +255,7 @@ pub async fn start_service(
         &state.encryption_key,
         &state.symphony_bin,
         &state.workspace_root,
+        &service_instance_id,
     )
     .await
     {
@@ -103,6 +276,22 @@ pub async fn start_service(
 
     let now = Utc::now();
     let pid = spawn_result.pid;
+    let proxy_config_version = spawn_result.proxy_config_version.clone();
+
+    let lifecycle_update = build_lifecycle_update(
+        &project,
+        &state.symphony_bin,
+        &state.workspace_root,
+        pid,
+        service_generation,
+        service_instance_id,
+        "start",
+        proxy_config_version,
+    );
+    state
+        .repo
+        .update_service_lifecycle(project_id, &lifecycle_update)
+        .await?;
 
     // Update DB with running status
     let status_update = ServiceStatusUpdate {
@@ -216,6 +405,12 @@ pub async fn stop_service(
     }
 
     // Update status to stopped
+    let lifecycle_update = build_stop_lifecycle_update(&project, &state.workspace_root);
+    state
+        .repo
+        .update_service_lifecycle(project_id, &lifecycle_update)
+        .await?;
+
     let status_update = ServiceStatusUpdate {
         status: ServiceStatus::Stopped,
         pid: None,
@@ -290,6 +485,8 @@ pub async fn restart_service(
         }
     }
 
+    let (service_generation, service_instance_id) = next_service_identity(&project);
+
     // Start phase
     let spawn_result = match spawn::spawn_symphony(
         &project,
@@ -297,6 +494,7 @@ pub async fn restart_service(
         &state.encryption_key,
         &state.symphony_bin,
         &state.workspace_root,
+        &service_instance_id,
     )
     .await
     {
@@ -317,6 +515,22 @@ pub async fn restart_service(
 
     let now = Utc::now();
     let pid = spawn_result.pid;
+    let proxy_config_version = spawn_result.proxy_config_version.clone();
+
+    let lifecycle_update = build_lifecycle_update(
+        &project,
+        &state.symphony_bin,
+        &state.workspace_root,
+        pid,
+        service_generation,
+        service_instance_id,
+        "restart",
+        proxy_config_version,
+    );
+    state
+        .repo
+        .update_service_lifecycle(project_id, &lifecycle_update)
+        .await?;
 
     let status_update = ServiceStatusUpdate {
         status: ServiceStatus::Running,

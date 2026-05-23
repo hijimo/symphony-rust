@@ -6,6 +6,8 @@ use std::pin::Pin;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
+use crate::proxy::EffectiveProxyConfig;
+
 /// Configuration for the AI service.
 #[derive(Debug, Clone)]
 pub struct AiServiceConfig {
@@ -219,6 +221,32 @@ impl AiService {
         system_prompt: &str,
         user_prompt: &str,
     ) -> Result<Pin<Box<dyn Stream<Item = AiStreamChunk> + Send>>, String> {
+        self.generate_stream_with_client(&self.http, system_prompt, user_prompt)
+            .await
+    }
+
+    pub async fn generate_stream_with_proxy(
+        &self,
+        proxy_config: &EffectiveProxyConfig,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<Pin<Box<dyn Stream<Item = AiStreamChunk> + Send>>, String> {
+        let http = proxy_config
+            .apply_to_reqwest_builder(Client::builder())
+            .map_err(|e| format!("AI proxy config failed: {}", e))?
+            .timeout(Duration::from_secs(120))
+            .build()
+            .map_err(|e| format!("AI HTTP client build failed: {}", e))?;
+        self.generate_stream_with_client(&http, system_prompt, user_prompt)
+            .await
+    }
+
+    async fn generate_stream_with_client(
+        &self,
+        http: &Client,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<Pin<Box<dyn Stream<Item = AiStreamChunk> + Send>>, String> {
         let base = self.config.base_url.trim_end_matches('/');
         let is_openai_compatible = base.ends_with("/v1");
 
@@ -262,8 +290,7 @@ impl AiService {
             stream: true,
         };
 
-        let response = self
-            .http
+        let response = http
             .post(&url)
             .header(auth_header_name, &auth_header_value)
             .header("Content-Type", "application/json")

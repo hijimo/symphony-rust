@@ -6,7 +6,7 @@
 
 use std::time::Instant;
 
-use crate::models::{OrchestratorState, normalize_state};
+use crate::models::{normalize_state, OrchestratorState};
 
 /// Hard deadline: after cancel signal, wait at most 30s before force-killing.
 const CANCEL_HARD_DEADLINE_MS: u64 = 30_000;
@@ -23,11 +23,17 @@ pub struct ForceKilledEntry {
 #[derive(Debug)]
 pub enum ReconcileAction {
     /// Issue is in a terminal state: terminate worker and clean workspace.
-    TerminateAndClean { issue_id: String, identifier: String },
+    TerminateAndClean {
+        issue_id: String,
+        identifier: String,
+    },
     /// Issue is still active: update the in-memory snapshot.
     UpdateSnapshot { issue_id: String },
     /// Issue is neither active nor terminal: terminate without cleanup.
-    TerminateNoClean { issue_id: String, identifier: String },
+    TerminateNoClean {
+        issue_id: String,
+        identifier: String,
+    },
 }
 
 /// Reconcile stalled runs using monotonic clock (SPEC section 8.5 Part A).
@@ -188,7 +194,6 @@ pub fn terminate_running_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_determine_reconcile_actions_terminal() {
@@ -198,9 +203,12 @@ mod tests {
         let terminal = vec!["Done".to_string(), "Closed".to_string()];
         let identifiers = vec![("1".to_string(), "TEST-1".to_string())];
 
-        let actions = determine_reconcile_actions(&running, &refreshed, &active, &terminal, &identifiers);
+        let actions =
+            determine_reconcile_actions(&running, &refreshed, &active, &terminal, &identifiers);
         assert_eq!(actions.len(), 1);
-        assert!(matches!(&actions[0], ReconcileAction::TerminateAndClean { issue_id, .. } if issue_id == "1"));
+        assert!(
+            matches!(&actions[0], ReconcileAction::TerminateAndClean { issue_id, .. } if issue_id == "1")
+        );
     }
 
     #[test]
@@ -211,9 +219,12 @@ mod tests {
         let terminal = vec!["Done".to_string(), "Closed".to_string()];
         let identifiers = vec![("1".to_string(), "TEST-1".to_string())];
 
-        let actions = determine_reconcile_actions(&running, &refreshed, &active, &terminal, &identifiers);
+        let actions =
+            determine_reconcile_actions(&running, &refreshed, &active, &terminal, &identifiers);
         assert_eq!(actions.len(), 1);
-        assert!(matches!(&actions[0], ReconcileAction::UpdateSnapshot { issue_id } if issue_id == "1"));
+        assert!(
+            matches!(&actions[0], ReconcileAction::UpdateSnapshot { issue_id } if issue_id == "1")
+        );
     }
 
     #[test]
@@ -224,9 +235,12 @@ mod tests {
         let terminal = vec!["Done".to_string(), "Closed".to_string()];
         let identifiers = vec![("1".to_string(), "TEST-1".to_string())];
 
-        let actions = determine_reconcile_actions(&running, &refreshed, &active, &terminal, &identifiers);
+        let actions =
+            determine_reconcile_actions(&running, &refreshed, &active, &terminal, &identifiers);
         assert_eq!(actions.len(), 1);
-        assert!(matches!(&actions[0], ReconcileAction::TerminateNoClean { issue_id, .. } if issue_id == "1"));
+        assert!(
+            matches!(&actions[0], ReconcileAction::TerminateNoClean { issue_id, .. } if issue_id == "1")
+        );
     }
 
     #[test]

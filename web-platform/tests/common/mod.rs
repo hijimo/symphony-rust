@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -10,9 +11,10 @@ use tokio::net::TcpListener;
 use web_platform::auth::password::hash_password;
 use web_platform::auth::rate_limit::RateLimiter;
 use web_platform::concurrency::ConcurrencyManager;
+use web_platform::crypto;
 use web_platform::db::init_pool;
 use web_platform::process_manager::ProcessManager;
-use web_platform::repository::{SqliteRepository, UserRepository};
+use web_platform::repository::{SqliteRepository, UserConfigRepository, UserRepository};
 use web_platform::router::create_router;
 use web_platform::services::cache::ApiCache;
 use web_platform::{AppState, Phase3RateLimiter};
@@ -21,25 +23,42 @@ pub struct TestApp {
     pub addr: String,
     pub client: Client,
     pub admin_token: String,
+    pub db_path: PathBuf,
     _dir: TempDir,
 }
 
 impl TestApp {
     pub async fn new() -> Self {
+        Self::new_with_symphony_bin("/usr/bin/false").await
+    }
+
+    pub async fn new_with_symphony_bin(symphony_bin: &str) -> Self {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
         let pool = init_pool(db_path.to_str().unwrap());
         let repo = SqliteRepository::new(pool);
 
         let admin_hash = hash_password("admin123").unwrap();
-        repo.create_user("admin", &admin_hash, Some("Administrator"), "admin")
+        let admin = repo
+            .create_user("admin", &admin_hash, Some("Administrator"), "admin")
             .await
             .unwrap();
+        let encryption_key = [0x42u8; 32];
+        let github_token = crypto::encrypt("test-github-token", &encryption_key).unwrap();
+        let gitlab_token = crypto::encrypt("test-gitlab-token", &encryption_key).unwrap();
+        repo.upsert_config(
+            admin.id,
+            Some(&gitlab_token),
+            Some("https://gitlab.com"),
+            Some(&github_token),
+        )
+        .await
+        .unwrap();
 
         let state = AppState {
             repo,
             jwt_secret: "test-jwt-secret-key-at-least-32-characters-long".to_string(),
-            encryption_key: [0x42u8; 32],
+            encryption_key,
             token_blacklist: Arc::new(DashMap::new()),
             rate_limiter: Arc::new(RateLimiter::new()),
             process_manager: ProcessManager::new(),
@@ -47,7 +66,7 @@ impl TestApp {
             ai_service: None,
             phase3_rate_limiter: Arc::new(Phase3RateLimiter::new()),
             concurrency_manager: Arc::new(ConcurrencyManager::new(10)),
-            symphony_bin: "/usr/bin/false".to_string(),
+            symphony_bin: symphony_bin.to_string(),
             workspace_root: dir.path().to_str().unwrap().to_string(),
             alert_manager: None,
         };
@@ -81,6 +100,7 @@ impl TestApp {
             addr: base_url,
             client,
             admin_token,
+            db_path,
             _dir: dir,
         }
     }

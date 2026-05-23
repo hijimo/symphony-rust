@@ -76,11 +76,7 @@ pub fn parse_workflow(content: &str) -> Result<WorkflowDefinition, WorkflowLoadE
     // Check for front matter delimiter
     if content.starts_with("---\n") || content.starts_with("---\r\n") {
         // Find the closing delimiter
-        let after_first = if content.starts_with("---\r\n") {
-            5
-        } else {
-            4
-        };
+        let after_first = if content.starts_with("---\r\n") { 5 } else { 4 };
 
         let rest = &content[after_first..];
 
@@ -91,7 +87,7 @@ pub fn parse_workflow(content: &str) -> Result<WorkflowDefinition, WorkflowLoadE
             Some(pos) => {
                 let yaml_str = &rest[..pos];
                 let body_start = pos + 3; // skip "---"
-                // Skip the newline after closing delimiter
+                                          // Skip the newline after closing delimiter
                 let body_rest = &rest[body_start..];
                 let body = if body_rest.starts_with('\n') {
                     &body_rest[1..]
@@ -152,15 +148,17 @@ fn find_closing_delimiter(content: &str) -> Option<usize> {
 
 /// Parse YAML front matter string into a HashMap.
 /// Returns an error if the YAML is invalid or not a map.
-fn parse_yaml_front_matter(yaml_str: &str) -> Result<HashMap<String, YamlValue>, WorkflowLoadError> {
+fn parse_yaml_front_matter(
+    yaml_str: &str,
+) -> Result<HashMap<String, YamlValue>, WorkflowLoadError> {
     // Empty front matter is valid — returns empty map
     let trimmed = yaml_str.trim();
     if trimmed.is_empty() {
         return Ok(HashMap::new());
     }
 
-    let value: YamlValue =
-        serde_yaml::from_str(trimmed).map_err(|e| WorkflowLoadError::WorkflowParseError { source: e })?;
+    let value: YamlValue = serde_yaml::from_str(trimmed)
+        .map_err(|e| WorkflowLoadError::WorkflowParseError { source: e })?;
 
     match value {
         YamlValue::Mapping(mapping) => {

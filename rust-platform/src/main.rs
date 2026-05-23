@@ -29,8 +29,8 @@ use symphony_platform::config::watcher::{ConfigHolder, EffectiveConfig};
 use symphony_platform::config::workflow_loader::load_workflow;
 use symphony_platform::logging::init_logging;
 use symphony_platform::models::OrchestratorEvent as ModelOrchestratorEvent;
-use symphony_platform::orchestrator::Orchestrator;
 use symphony_platform::orchestrator::scheduler::DispatchConfig;
+use symphony_platform::orchestrator::Orchestrator;
 use symphony_platform::platform::github::GithubAdapter;
 use symphony_platform::platform::gitlab::GitlabAdapter;
 use symphony_platform::prompt::PromptEngine;
@@ -470,20 +470,16 @@ mod tests {
             vec!["Todo", "In Progress"]
         );
         assert_eq!(platform_config.workflow.terminal_states, vec!["Done"]);
-        assert!(
-            platform_config
-                .workflow
-                .states
-                .values()
-                .any(|label| label == "Backlog")
-        );
-        assert!(
-            platform_config
-                .workflow
-                .states
-                .values()
-                .any(|label| label == "Human Review")
-        );
+        assert!(platform_config
+            .workflow
+            .states
+            .values()
+            .any(|label| label == "Backlog"));
+        assert!(platform_config
+            .workflow
+            .states
+            .values()
+            .any(|label| label == "Human Review"));
     }
 }
 

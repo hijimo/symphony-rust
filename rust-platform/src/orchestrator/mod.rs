@@ -25,8 +25,8 @@ use tokio_util::sync::CancellationToken;
 use self::reconciler::{determine_reconcile_actions, reconcile_stalled_runs, ReconcileAction};
 use self::retry::{compute_retry_delay, release_claim, schedule_retry};
 use self::scheduler::{
-    is_terminal_state, schedule_immediate_tick, schedule_next_tick, should_dispatch,
-    sort_for_dispatch, DispatchConfig,
+    is_active_state, is_terminal_state, schedule_immediate_tick, schedule_next_tick,
+    should_dispatch, sort_for_dispatch, DispatchConfig,
 };
 use crate::agent::runner::{AgentBlockerRef, AgentIssue, AgentRunner, IssueStateRefresher};
 use crate::config::watcher::ConfigHolder;
@@ -255,8 +255,28 @@ impl Orchestrator {
                         );
                         for action in actions {
                             match action {
-                                ReconcileAction::TerminateAndClean { issue_id, .. }
-                                | ReconcileAction::TerminateNoClean { issue_id, .. } => {
+                                ReconcileAction::TerminateAndClean {
+                                    issue_id,
+                                    identifier,
+                                } => {
+                                    if let Some(entry) = self.state.running.get(&issue_id) {
+                                        entry.cancel_token.cancel();
+                                    }
+                                    if let Some(entry) = self.state.running.remove(&issue_id) {
+                                        self.state.codex_totals.add_runtime(entry.started_at);
+                                        release_claim(&mut self.state, &issue_id);
+                                        if let Some(workspace_mgr) = &self.workspace_mgr {
+                                            workspace_mgr
+                                                .remove_issue_workspace(&issue_id, &identifier)
+                                                .await;
+                                        }
+                                        tracing::info!(
+                                            issue_id = %issue_id,
+                                            "reconciler Part B: terminated worker and cleaned workspace for terminal issue"
+                                        );
+                                    }
+                                }
+                                ReconcileAction::TerminateNoClean { issue_id, .. } => {
                                     if let Some(entry) = self.state.running.get(&issue_id) {
                                         entry.cancel_token.cancel();
                                     }
@@ -265,7 +285,7 @@ impl Orchestrator {
                                         release_claim(&mut self.state, &issue_id);
                                         tracing::info!(
                                             issue_id = %issue_id,
-                                            "reconciler Part B: terminated worker for terminal/invisible issue"
+                                            "reconciler Part B: terminated worker for non-active issue"
                                         );
                                     }
                                 }
@@ -459,6 +479,11 @@ impl Orchestrator {
 
     /// Spawn an AgentRunner task for a dispatched issue.
     fn spawn_worker(&mut self, issue: Issue) {
+        self.spawn_worker_with_attempt(issue, None);
+    }
+
+    /// Spawn an AgentRunner task for a dispatched issue with retry context.
+    fn spawn_worker_with_attempt(&mut self, issue: Issue, retry_attempt: Option<u32>) {
         let issue_id = issue.id.clone();
         let issue_id_for_spawn = issue_id.clone();
         let identifier = issue.identifier.clone();
@@ -560,7 +585,9 @@ impl Orchestrator {
                 None => Arc::new(NoopStateRefresher),
             };
 
-            let result = runner.run_attempt(agent_issue, None, state_refresher).await;
+            let result = runner
+                .run_attempt(agent_issue, retry_attempt, state_refresher)
+                .await;
 
             match result {
                 Ok(()) => {
@@ -589,7 +616,7 @@ impl Orchestrator {
             identifier: identifier.clone(),
             issue: issue.clone(),
             session,
-            retry_attempt: None,
+            retry_attempt,
             started_at: Instant::now(),
             started_at_utc: chrono::Utc::now(),
             cancel_sent_at: None,
@@ -599,6 +626,7 @@ impl Orchestrator {
         tracing::info!(
             issue_id = %issue_id,
             identifier = %identifier,
+            attempt = ?retry_attempt,
             "spawned agent worker"
         );
     }
@@ -670,10 +698,62 @@ impl Orchestrator {
                 .completed
                 .insert(issue_id.to_string(), Instant::now());
 
+            let tracker = match &self.tracker {
+                Some(tracker) => tracker.clone(),
+                None => {
+                    tracing::warn!(
+                        issue_id,
+                        identifier = %entry.identifier,
+                        "worker exited normally but no tracker is configured; not scheduling continuation"
+                    );
+                    release_claim(&mut self.state, issue_id);
+                    return;
+                }
+            };
+
+            let fresh_issues = match tracker
+                .fetch_issue_states_by_ids(&[issue_id.to_string()])
+                .await
+            {
+                Ok(issues) => issues,
+                Err(e) => {
+                    tracing::warn!(
+                        issue_id,
+                        identifier = %entry.identifier,
+                        error = %e,
+                        "worker exited normally but tracker revalidation failed; not scheduling continuation"
+                    );
+                    release_claim(&mut self.state, issue_id);
+                    return;
+                }
+            };
+
+            let Some(fresh_issue) = fresh_issues.into_iter().find(|i| i.id == issue_id) else {
+                tracing::info!(
+                    issue_id,
+                    identifier = %entry.identifier,
+                    "worker exited normally but issue is no longer visible; not scheduling continuation"
+                );
+                release_claim(&mut self.state, issue_id);
+                return;
+            };
+
+            if !is_active_state(&fresh_issue.state, &self.dispatch_config.active_states) {
+                tracing::info!(
+                    issue_id,
+                    identifier = %entry.identifier,
+                    state = %fresh_issue.state,
+                    "worker exited normally and issue is no longer active; not scheduling continuation"
+                );
+                release_claim(&mut self.state, issue_id);
+                return;
+            }
+
             tracing::info!(
                 issue_id,
                 identifier = %entry.identifier,
-                "worker exited normally, scheduling continuation retry"
+                state = %fresh_issue.state,
+                "worker exited normally and issue is still active, scheduling continuation retry"
             );
 
             // Schedule continuation retry (fixed 1s delay)
@@ -819,9 +899,8 @@ impl Orchestrator {
             Ok(issues) => issues,
             Err(e) => {
                 tracing::warn!(issue_id, error = %e, "retry fetch failed, rescheduling");
-                // Reschedule with attempt+1
                 let delay = compute_retry_delay(
-                    entry.attempt + 1,
+                    entry.attempt,
                     &entry.retry_kind,
                     self.max_retry_backoff_ms,
                 );
@@ -829,7 +908,7 @@ impl Orchestrator {
                     &mut self.state,
                     issue_id,
                     &entry.identifier,
-                    entry.attempt + 1,
+                    entry.attempt,
                     entry.retry_kind,
                     delay,
                     Some(format!("retry fetch failed: {}", e)),
@@ -852,21 +931,16 @@ impl Orchestrator {
         if is_terminal_state(&fresh_issue.state, &self.dispatch_config.terminal_states) {
             tracing::info!(issue_id, state = %fresh_issue.state, "issue reached terminal state, releasing claim");
 
-            // Persist the terminal label on the issue so it's visible in the tracker UI.
-            if let Some(tracker) = &self.tracker {
-                if let Err(e) = tracker
-                    .set_workflow_state(issue_id, &fresh_issue.state)
-                    .await
-                {
-                    tracing::warn!(
-                        issue_id,
-                        state = %fresh_issue.state,
-                        error = %e,
-                        "failed to set terminal workflow label (non-fatal)"
-                    );
-                }
-            }
+            release_claim(&mut self.state, issue_id);
+            return;
+        }
 
+        if !is_active_state(&fresh_issue.state, &self.dispatch_config.active_states) {
+            tracing::info!(
+                issue_id,
+                state = %fresh_issue.state,
+                "issue is no longer active, releasing claim without retry"
+            );
             release_claim(&mut self.state, issue_id);
             return;
         }
@@ -874,17 +948,14 @@ impl Orchestrator {
         // 4. Check if we have slots
         if !self.state.has_global_slots() {
             tracing::info!(issue_id, "no global slots available, rescheduling retry");
-            let delay = compute_retry_delay(
-                entry.attempt + 1,
-                &RetryKind::Failure,
-                self.max_retry_backoff_ms,
-            );
+            let delay =
+                compute_retry_delay(entry.attempt, &entry.retry_kind, self.max_retry_backoff_ms);
             schedule_retry(
                 &mut self.state,
                 issue_id,
                 &entry.identifier,
-                entry.attempt + 1,
-                RetryKind::Failure,
+                entry.attempt,
+                entry.retry_kind,
                 delay,
                 Some("no available orchestrator slots".to_string()),
                 &self.event_tx,
@@ -916,7 +987,7 @@ impl Orchestrator {
             updated_at: fresh_issue.updated_at,
         };
 
-        self.spawn_worker(issue);
+        self.spawn_worker_with_attempt(issue, Some(entry.attempt));
     }
 
     /// Reschedule a retry when no slots are available (called by integration layer).

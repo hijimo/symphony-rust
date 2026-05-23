@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
 use crate::models::kanban::{CreateIssueRequest, PlatformIssue, PlatformMergeRequest};
+use crate::proxy::EffectiveProxyConfig;
 
 /// Errors that can occur when calling the git platform API.
 #[derive(Debug, thiserror::Error)]
@@ -108,8 +109,20 @@ pub fn create_platform_client(
     platform: &str,
     platform_host: Option<&str>,
 ) -> Box<dyn GitPlatformClient> {
+    create_platform_client_with_proxy(platform, platform_host, None)
+        .expect("failed to create platform client")
+}
+
+/// Factory function to create the appropriate client with proxy configuration.
+pub fn create_platform_client_with_proxy(
+    platform: &str,
+    platform_host: Option<&str>,
+    proxy: Option<&EffectiveProxyConfig>,
+) -> Result<Box<dyn GitPlatformClient>, GitPlatformError> {
     match platform {
-        "github" => Box::new(super::github_client::GitHubClient::new()),
+        "github" => Ok(Box::new(
+            super::github_client::GitHubClient::new_with_proxy(proxy)?,
+        )),
         _ => {
             // Default to GitLab; use custom host if provided.
             let base_url = platform_host
@@ -122,7 +135,9 @@ pub fn create_platform_client(
                     }
                 })
                 .unwrap_or_else(|| "https://gitlab.com".to_string());
-            Box::new(super::gitlab_client::GitLabClient::new(base_url))
+            Ok(Box::new(
+                super::gitlab_client::GitLabClient::new_with_proxy(base_url, proxy)?,
+            ))
         }
     }
 }

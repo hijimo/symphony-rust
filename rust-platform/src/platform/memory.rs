@@ -12,8 +12,8 @@ use chrono::Utc;
 use tokio::sync::Mutex;
 
 use super::{
-    Capability, Comment, CommentId, CreatePrParams, FetchOptions, Issue, IssueId,
-    Platform, PullRequest,
+    Capability, Comment, CommentId, CreatePrParams, FetchOptions, Issue, IssueId, Platform,
+    PullRequest,
 };
 use crate::error::PlatformError;
 
@@ -183,9 +183,7 @@ pub fn make_test_issue(id: u64, title: &str, state: Option<&str>) -> Issue {
         workflow_state: state.map(|s| s.to_string()),
         branch_name: format!("issue-{}", id),
         priority: None,
-        labels: state
-            .map(|s| vec![s.to_string()])
-            .unwrap_or_default(),
+        labels: state.map(|s| vec![s.to_string()]).unwrap_or_default(),
         blocked_by: Vec::new(),
         created_at: Some(Utc::now()),
         updated_at: Some(Utc::now()),
@@ -273,10 +271,7 @@ impl Platform for MemoryAdapter {
         Ok(results)
     }
 
-    async fn get_workflow_state(
-        &self,
-        issue_id: IssueId,
-    ) -> Result<Option<String>, PlatformError> {
+    async fn get_workflow_state(&self, issue_id: IssueId) -> Result<Option<String>, PlatformError> {
         if let Some(err) = self.check_fault("get_workflow_state").await {
             return Err(err);
         }
@@ -311,11 +306,7 @@ impl Platform for MemoryAdapter {
         Ok(())
     }
 
-    async fn add_labels(
-        &self,
-        issue_id: IssueId,
-        labels: &[String],
-    ) -> Result<(), PlatformError> {
+    async fn add_labels(&self, issue_id: IssueId, labels: &[String]) -> Result<(), PlatformError> {
         if labels.is_empty() {
             return Ok(());
         }
@@ -374,19 +365,11 @@ impl Platform for MemoryAdapter {
             is_system: false,
         };
         let mut state = self.state.lock().await;
-        state
-            .comments
-            .entry(issue_id)
-            .or_default()
-            .push(comment);
+        state.comments.entry(issue_id).or_default().push(comment);
         Ok(comment_id)
     }
 
-    async fn update_comment(
-        &self,
-        comment_id: CommentId,
-        body: &str,
-    ) -> Result<(), PlatformError> {
+    async fn update_comment(&self, comment_id: CommentId, body: &str) -> Result<(), PlatformError> {
         if let Some(err) = self.check_fault("update_comment").await {
             return Err(err);
         }
@@ -397,10 +380,7 @@ impl Platform for MemoryAdapter {
                 return Ok(());
             }
         }
-        Err(PlatformError::NotFound(format!(
-            "comment {}",
-            comment_id
-        )))
+        Err(PlatformError::NotFound(format!("comment {}", comment_id)))
     }
 
     async fn find_workpad_comment(
@@ -421,19 +401,12 @@ impl Platform for MemoryAdapter {
         Ok(None)
     }
 
-    async fn list_comments(
-        &self,
-        issue_id: IssueId,
-    ) -> Result<Vec<Comment>, PlatformError> {
+    async fn list_comments(&self, issue_id: IssueId) -> Result<Vec<Comment>, PlatformError> {
         if let Some(err) = self.check_fault("list_comments").await {
             return Err(err);
         }
         let state = self.state.lock().await;
-        Ok(state
-            .comments
-            .get(&issue_id)
-            .cloned()
-            .unwrap_or_default())
+        Ok(state.comments.get(&issue_id).cloned().unwrap_or_default())
     }
 
     async fn create_pull_request(
@@ -485,7 +458,9 @@ mod tests {
     #[tokio::test]
     async fn test_fault_injection_fires_once() {
         let adapter = MemoryAdapter::new();
-        adapter.seed_issue(make_test_issue(1, "Test", Some("workflow::todo"))).await;
+        adapter
+            .seed_issue(make_test_issue(1, "Test", Some("workflow::todo")))
+            .await;
 
         adapter
             .with_fault("fetch_issue", PlatformError::Timeout)
@@ -503,7 +478,9 @@ mod tests {
     #[tokio::test]
     async fn test_persistent_fault() {
         let adapter = MemoryAdapter::new();
-        adapter.seed_issue(make_test_issue(1, "Test", Some("workflow::todo"))).await;
+        adapter
+            .seed_issue(make_test_issue(1, "Test", Some("workflow::todo")))
+            .await;
 
         adapter
             .with_persistent_fault("fetch_issue", PlatformError::ServerError(503))
@@ -520,7 +497,9 @@ mod tests {
     #[tokio::test]
     async fn test_call_count_tracking() {
         let adapter = MemoryAdapter::new();
-        adapter.seed_issue(make_test_issue(1, "Test", Some("workflow::todo"))).await;
+        adapter
+            .seed_issue(make_test_issue(1, "Test", Some("workflow::todo")))
+            .await;
 
         adapter.fetch_issue(IssueId(1)).await.unwrap();
         adapter.fetch_issue(IssueId(1)).await.unwrap();

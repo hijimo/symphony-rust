@@ -12,11 +12,12 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::service_config::CodexConfig;
 use crate::models::CodexEventUpdate;
+use crate::proxy::proxy_command;
 
 /// Maximum line size for safe buffering (10 MB as per SPEC Section 10.1).
 const MAX_LINE_SIZE: usize = 10 * 1024 * 1024;
@@ -214,6 +215,7 @@ pub enum CodexError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proxy::test_support::{clear_env, env_lock};
     use serde_json::json;
     use std::path::Path;
 
@@ -258,6 +260,32 @@ mod tests {
         assert_eq!(request["params"]["approvalPolicy"], "never");
         assert_eq!(request["params"]["sandbox"], "danger-full-access");
         assert!(request["params"].get("approval_policy").is_none());
+    }
+
+    #[tokio::test]
+    async fn codex_app_server_command_exposes_proxy_env_to_shell_tools() {
+        let _guard = env_lock();
+        clear_env();
+        let tmp = tempfile::tempdir().unwrap();
+        let env_file = tmp.path().join("codex-tool-env.txt");
+        std::env::set_var("SYMPHONY_PROXY_MODE", "manual");
+        std::env::set_var("SYMPHONY_PROXY_VERSION", "22");
+        std::env::set_var("SYMPHONY_PROXY_SOURCE", "system_config");
+        std::env::set_var("HTTPS_PROXY", "http://proxy.example.com:8443");
+        std::env::set_var("NO_PROXY", "localhost,127.0.0.1");
+
+        let mut command = codex_app_server_command(tmp.path(), "env > \"$CODEX_TOOL_ENV_FILE\"");
+        command.env("CODEX_TOOL_ENV_FILE", &env_file);
+        let status = command.status().await.unwrap();
+        let output = std::fs::read_to_string(&env_file).unwrap();
+
+        assert!(status.success());
+        assert!(output.contains("SYMPHONY_PROXY_MODE=manual"));
+        assert!(output.contains("HTTPS_PROXY=http://proxy.example.com:8443"));
+        assert!(output.contains("https_proxy=http://proxy.example.com:8443"));
+        assert!(output.contains("NO_PROXY=localhost,127.0.0.1"));
+        assert!(output.contains("no_proxy=localhost,127.0.0.1"));
+        clear_env();
     }
 
     #[test]
@@ -348,22 +376,15 @@ impl CodexClient {
             "starting codex app-server"
         );
 
-        let mut child = Command::new("bash")
-            .args(["-lc", &codex_config.command])
-            .current_dir(workspace_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            // Create new process group for clean kill propagation
-            .process_group(0)
-            .spawn()
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    CodexError::NotFound
-                } else {
-                    CodexError::Io(e)
-                }
-            })?;
+        let mut command = codex_app_server_command(workspace_path, &codex_config.command);
+
+        let mut child = command.spawn().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                CodexError::NotFound
+            } else {
+                CodexError::Io(e)
+            }
+        })?;
 
         let pid = child.id().map(|p| p.to_string());
 
@@ -993,6 +1014,19 @@ impl CodexClient {
         // Reap the zombie
         let _ = self.child.wait().await;
     }
+}
+
+fn codex_app_server_command(workspace_path: &Path, command_line: &str) -> tokio::process::Command {
+    let mut command = proxy_command("bash");
+    command
+        .args(["-lc", command_line])
+        .current_dir(workspace_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // Create new process group for clean kill propagation
+        .process_group(0);
+    command
 }
 
 impl Drop for CodexClient {

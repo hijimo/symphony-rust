@@ -11,6 +11,7 @@ pub mod middleware;
 pub mod models;
 pub mod notification;
 pub mod process_manager;
+pub mod proxy;
 pub mod repository;
 pub mod router;
 pub mod services;
@@ -70,6 +71,10 @@ impl AlertManager {
 
         self.dispatcher.clear_channels().await;
 
+        let proxy_config =
+            crate::handlers::network_proxy::load_effective_proxy_config(repo, encryption_key)
+                .await?;
+
         for row in rows {
             if row.channel_type != "dingtalk" {
                 continue;
@@ -92,7 +97,12 @@ impl AlertManager {
             let severity_filter: Vec<String> =
                 serde_json::from_str(&row.severity_filter_json).unwrap_or_default();
 
-            let channel = Arc::new(DingTalkChannel::new(row.channel_id, webhook_url, secret));
+            let channel = Arc::new(DingTalkChannel::new_with_proxy(
+                row.channel_id,
+                webhook_url,
+                secret,
+                Some(&proxy_config),
+            ));
 
             self.dispatcher
                 .add_channel(channel, severity_filter, row.enabled)

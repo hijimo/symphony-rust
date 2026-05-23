@@ -7,6 +7,7 @@ use crate::auth::jwt::Claims;
 use crate::crypto;
 use crate::error::WebPlatformError;
 use crate::handlers::issues::map_platform_error;
+use crate::handlers::network_proxy::load_effective_proxy_config;
 use crate::middleware::project_access::require_project_member;
 use crate::models::issue::KanbanIssue;
 use crate::models::merge_request::KanbanMergeRequest;
@@ -14,7 +15,7 @@ use crate::models::{
     InProgressColumn, KanbanData, KanbanQuery, PrColumn, ResponseData, TodoColumn,
 };
 use crate::repository::{ProjectRepository, UserConfigRepository};
-use crate::services::git_platform::{create_platform_client, ListIssuesOptions};
+use crate::services::git_platform::{create_platform_client_with_proxy, ListIssuesOptions};
 use crate::AppState;
 
 /// GET /api/projects/:id/kanban
@@ -104,7 +105,13 @@ pub async fn get_kanban(
     }
 
     // Create platform client
-    let client = create_platform_client(&project.platform, project.platform_host.as_deref());
+    let proxy_config = load_effective_proxy_config(&state.repo, &state.encryption_key).await?;
+    let client = create_platform_client_with_proxy(
+        &project.platform,
+        project.platform_host.as_deref(),
+        Some(&proxy_config),
+    )
+    .map_err(map_platform_error)?;
 
     let todo_limit = query.effective_todo_limit();
     let parsed_labels = query.parsed_labels();

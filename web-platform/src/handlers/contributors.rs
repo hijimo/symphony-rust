@@ -6,11 +6,12 @@ use axum::{
 use crate::auth::jwt::Claims;
 use crate::crypto;
 use crate::error::WebPlatformError;
+use crate::handlers::network_proxy::load_effective_proxy_config;
 use crate::middleware::project_access::require_project_member;
 use crate::models::concurrency::{Contributor, ContributorsResponse};
 use crate::models::ResponseData;
 use crate::repository::{ProjectRepository, UserConfigRepository};
-use crate::services::git_platform::{create_platform_client, ListIssuesOptions};
+use crate::services::git_platform::{create_platform_client_with_proxy, ListIssuesOptions};
 use crate::AppState;
 
 /// GET /api/projects/:id/contributors
@@ -75,7 +76,9 @@ pub async fn get_contributors(
             .or(project.platform_host.as_deref()),
     };
 
-    let client = create_platform_client(&project.platform, host);
+    let proxy_config = load_effective_proxy_config(&state.repo, &state.encryption_key).await?;
+    let client = create_platform_client_with_proxy(&project.platform, host, Some(&proxy_config))
+        .map_err(crate::handlers::issues::map_platform_error)?;
     let project_path = format!("{}/{}", project.namespace, project.repo_name);
 
     // Fetch recent issues to extract contributors

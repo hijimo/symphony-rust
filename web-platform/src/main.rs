@@ -98,6 +98,19 @@ async fn main() {
         use web_platform::notification::DingTalkChannel;
         match repo.get_all_notification_channels().await {
             Ok(rows) => {
+                let proxy_config =
+                    match web_platform::handlers::network_proxy::load_effective_proxy_config(
+                        &repo,
+                        &encryption_key,
+                    )
+                    .await
+                    {
+                        Ok(config) => Some(config),
+                        Err(e) => {
+                            tracing::warn!("Failed to load proxy config for notifications: {}", e);
+                            None
+                        }
+                    };
                 for row in rows {
                     if row.channel_type != "dingtalk" {
                         continue;
@@ -128,8 +141,12 @@ async fn main() {
                     let severity_filter: Vec<String> =
                         serde_json::from_str(&row.severity_filter_json).unwrap_or_default();
 
-                    let channel =
-                        Arc::new(DingTalkChannel::new(row.channel_id, webhook_url, secret));
+                    let channel = Arc::new(DingTalkChannel::new_with_proxy(
+                        row.channel_id,
+                        webhook_url,
+                        secret,
+                        proxy_config.as_ref(),
+                    ));
 
                     dispatcher
                         .add_channel(channel, severity_filter, row.enabled)

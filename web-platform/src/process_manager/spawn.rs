@@ -5,6 +5,7 @@ use tracing::info;
 use crate::crypto;
 use crate::error::WebPlatformError;
 use crate::git_url::Platform;
+use crate::handlers::network_proxy::load_effective_proxy_config;
 use crate::models::project::Project;
 use crate::repository::{SqliteRepository, UserConfigRepository};
 use crate::templates::{self, WorkflowTemplateContext};
@@ -12,6 +13,7 @@ use crate::templates::{self, WorkflowTemplateContext};
 pub struct SpawnResult {
     pub pid: u32,
     pub child: tokio::process::Child,
+    pub proxy_config_version: String,
 }
 
 pub async fn spawn_symphony(
@@ -20,6 +22,7 @@ pub async fn spawn_symphony(
     encryption_key: &[u8; 32],
     symphony_bin: &str,
     workspace_root: &str,
+    service_instance_id: &str,
 ) -> Result<SpawnResult, WebPlatformError> {
     let owner_id = project.created_by.ok_or_else(|| {
         WebPlatformError::Internal("Project has no owner (created_by is null)".to_string())
@@ -87,22 +90,11 @@ pub async fn spawn_symphony(
     cmd.arg("WORKFLOW.md");
     cmd.current_dir(&workspace_dir);
     cmd.env("RUST_LOG", "info");
+    cmd.env("SYMPHONY_SERVICE_INSTANCE_ID", service_instance_id);
 
-    // Inherit proxy environment variables for network access
-    for var in [
-        "https_proxy",
-        "http_proxy",
-        "all_proxy",
-        "HTTPS_PROXY",
-        "HTTP_PROXY",
-        "ALL_PROXY",
-        "no_proxy",
-        "NO_PROXY",
-    ] {
-        if let Ok(val) = std::env::var(var) {
-            cmd.env(var, val);
-        }
-    }
+    let proxy_config = load_effective_proxy_config(repo, encryption_key).await?;
+    proxy_config.apply_to_command(&mut cmd);
+    let proxy_config_version = proxy_config.version.clone();
 
     match &platform {
         Platform::GitLab => {
@@ -151,5 +143,9 @@ pub async fn spawn_symphony(
         pid, "Symphony process spawned successfully"
     );
 
-    Ok(SpawnResult { pid, child })
+    Ok(SpawnResult {
+        pid,
+        child,
+        proxy_config_version,
+    })
 }
