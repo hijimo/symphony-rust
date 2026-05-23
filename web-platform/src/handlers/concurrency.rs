@@ -39,7 +39,7 @@ pub async fn update_concurrency_config(
         .global_max
         .ok_or_else(|| WebPlatformError::BadRequest("global_max is required".to_string()))?;
 
-    if new_max < 1 || new_max > 100 {
+    if !(1..=100).contains(&new_max) {
         return Err(WebPlatformError::BadRequest(
             "global_max must be between 1 and 100".to_string(),
         ));

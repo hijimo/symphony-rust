@@ -106,11 +106,6 @@ impl GitlabAdapter {
         format!("/projects/{}", urlencoding::encode(&self.project_id))
     }
 
-    /// Build the comma-separated labels filter string from issue_filter config.
-    fn active_labels_filter(&self) -> String {
-        self.http.config().issue_filter.labels.join(",")
-    }
-
     /// Parse a GitLab API issue response into our standardized Issue type.
     fn parse_issue(&self, gi: GitlabIssue) -> Issue {
         let workflow_state = self.detect_workflow_state(&gi.labels);
@@ -535,7 +530,7 @@ mod tests {
 
     #[test]
     fn test_capabilities_includes_atomic_labels() {
-        let caps = vec![Capability::AtomicLabels];
+        let caps = [Capability::AtomicLabels];
         assert!(caps.contains(&Capability::AtomicLabels));
         assert!(!caps.contains(&Capability::Webhook));
         assert!(!caps.contains(&Capability::MergeRequest));

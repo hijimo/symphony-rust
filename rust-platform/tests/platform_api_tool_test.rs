@@ -44,11 +44,7 @@ async fn test_disallowed_actions_rejected() {
 
     for action in disallowed {
         let result = tool.execute(action, json!({})).await;
-        assert!(
-            result.is_err(),
-            "Action '{}' should be rejected",
-            action
-        );
+        assert!(result.is_err(), "Action '{}' should be rejected", action);
     }
 }
 
@@ -133,7 +129,10 @@ async fn test_get_issue_routes_correctly() {
         .unwrap();
 
     // Should return serialized issue
-    assert_eq!(result.get("title").unwrap().as_str().unwrap(), "Test routing");
+    assert_eq!(
+        result.get("title").unwrap().as_str().unwrap(),
+        "Test routing"
+    );
     assert_eq!(result.get("number").unwrap().as_u64().unwrap(), 42);
 
     // Verify the platform method was called
@@ -145,7 +144,11 @@ async fn test_get_issue_routes_correctly() {
 async fn test_add_comment_routes_correctly() {
     let adapter = Arc::new(MemoryAdapter::new());
     adapter
-        .seed_issue(make_test_issue(10, "Comment target", Some("workflow::todo")))
+        .seed_issue(make_test_issue(
+            10,
+            "Comment target",
+            Some("workflow::todo"),
+        ))
         .await;
 
     let tool = PlatformApiTool::new(adapter.clone() as Arc<dyn Platform>);
@@ -196,14 +199,10 @@ async fn test_get_issue_missing_id() {
 #[tokio::test]
 async fn test_add_comment_missing_body() {
     let adapter = Arc::new(MemoryAdapter::new());
-    adapter
-        .seed_issue(make_test_issue(1, "Test", None))
-        .await;
+    adapter.seed_issue(make_test_issue(1, "Test", None)).await;
     let tool = PlatformApiTool::new(adapter as Arc<dyn Platform>);
 
-    let result = tool
-        .execute("add_comment", json!({ "issue_id": 1 }))
-        .await;
+    let result = tool.execute("add_comment", json!({ "issue_id": 1 })).await;
     assert!(result.is_err());
 
     match result.unwrap_err() {
@@ -250,15 +249,15 @@ async fn test_sanitize_preserves_primitives() {
     let input = json!({
         "count": 42,
         "enabled": true,
-        "ratio": 3.14,
+        "ratio": 1.25,
         "nothing": null
     });
 
     let sanitized = sanitize_value(input, 0);
 
     assert_eq!(sanitized.get("count").unwrap().as_u64().unwrap(), 42);
-    assert_eq!(sanitized.get("enabled").unwrap().as_bool().unwrap(), true);
-    assert_eq!(sanitized.get("ratio").unwrap().as_f64().unwrap(), 3.14);
+    assert!(sanitized.get("enabled").unwrap().as_bool().unwrap());
+    assert_eq!(sanitized.get("ratio").unwrap().as_f64().unwrap(), 1.25);
     // null is preserved in objects (only filtered from arrays)
     assert!(sanitized.get("nothing").unwrap().is_null());
 }

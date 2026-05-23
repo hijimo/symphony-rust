@@ -41,7 +41,10 @@ pub enum PlatformError {
     Network(#[from] reqwest::Error),
 
     #[error("Partial label operation: added={added:?}, failed_to_remove={failed:?}")]
-    PartialLabelUpdate { added: Vec<String>, failed: Vec<String> },
+    PartialLabelUpdate {
+        added: Vec<String>,
+        failed: Vec<String>,
+    },
 
     #[error("Resource not found: {0}")]
     NotFound(String),

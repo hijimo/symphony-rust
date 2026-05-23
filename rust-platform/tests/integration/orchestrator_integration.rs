@@ -14,10 +14,9 @@
 //! - Per-state concurrency limits
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{TimeDelta, Utc};
+use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
 use symphony_platform::models::{BlockerRef, Issue, OrchestratorEvent};

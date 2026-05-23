@@ -124,7 +124,7 @@ impl AiRateLimiter {
             // Remove expired entries
             while global
                 .front()
-                .map_or(false, |t| now.duration_since(*t) > self.window)
+                .is_some_and(|t| now.duration_since(*t) > self.window)
             {
                 global.pop_front();
             }
@@ -148,7 +148,7 @@ impl AiRateLimiter {
             // Remove expired entries
             while window
                 .front()
-                .map_or(false, |t| now.duration_since(*t) > self.window)
+                .is_some_and(|t| now.duration_since(*t) > self.window)
             {
                 window.pop_front();
             }

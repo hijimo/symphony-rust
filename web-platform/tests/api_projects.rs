@@ -379,19 +379,36 @@ async fn test_delete_project_success() {
 
 #[tokio::test]
 async fn test_delete_project_running_service() {
-    let app = common::TestApp::new().await;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin_dir = tempfile::TempDir::new().unwrap();
+    let fake_bin = bin_dir.path().join("fake-symphony");
+    let mut file = std::fs::File::create(&fake_bin).unwrap();
+    writeln!(file, "#!/bin/sh").unwrap();
+    writeln!(file, "sleep 30").unwrap();
+    let mut perms = file.metadata().unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&fake_bin, perms).unwrap();
+    drop(file);
+
+    let app = common::TestApp::new_with_symphony_bin(fake_bin.to_string_lossy().to_string()).await;
     let create_body = app
         .create_test_project("https://github.com/owner/running-proj", &app.admin_token)
         .await;
     let project_id = app.get_project_id(&create_body);
 
     // Start the service (simulated)
-    app.post(
-        &format!("/api/projects/{}/start", project_id),
-        &json!({}),
-        Some(&app.admin_token),
-    )
-    .await;
+    let start_resp = app
+        .post(
+            &format!("/api/projects/{}/start", project_id),
+            &json!({}),
+            Some(&app.admin_token),
+        )
+        .await;
+    assert_eq!(start_resp.status(), StatusCode::OK);
+    let start_body: serde_json::Value = start_resp.json().await.unwrap();
+    assert_eq!(start_body["data"]["status"], "running");
 
     // Try to delete while running
     let resp = app

@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn test_decrypt_too_short_ciphertext_fails() {
         let key = test_key();
-        let short = BASE64.encode(&[0u8; 5]);
+        let short = BASE64.encode([0u8; 5]);
         let result = decrypt(&short, &key);
         assert!(result.is_err());
     }
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn test_parse_base64_key_valid() {
         let raw_key = [0xABu8; 32];
-        let b64 = BASE64.encode(&raw_key);
+        let b64 = BASE64.encode(raw_key);
         let parsed = parse_base64_key(&b64).unwrap();
         assert_eq!(parsed, raw_key);
     }
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn test_parse_base64_key_wrong_length() {
         let raw_key = [0xABu8; 16];
-        let b64 = BASE64.encode(&raw_key);
+        let b64 = BASE64.encode(raw_key);
         let result = parse_base64_key(&b64);
         assert!(result.is_err());
     }

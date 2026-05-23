@@ -250,6 +250,7 @@ impl AgentRunner {
     }
 
     /// Internal turn loop implementation.
+    #[allow(clippy::too_many_arguments)]
     async fn run_turn_loop(
         &self,
         client: &mut CodexClient,
