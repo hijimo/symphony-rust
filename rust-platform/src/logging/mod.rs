@@ -62,7 +62,8 @@ pub enum LogFormat {
 pub fn init_logging(format: Option<LogFormat>) {
     let format = format.unwrap_or_else(detect_format);
 
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
 
     match format {
         LogFormat::Json => {

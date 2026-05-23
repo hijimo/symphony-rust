@@ -83,8 +83,13 @@ impl CooldownQueue {
             "Issue entering cooldown"
         );
 
-        self.entries
-            .insert(issue_id, CooldownEntry { reason, skip_until });
+        self.entries.insert(
+            issue_id,
+            CooldownEntry {
+                reason,
+                skip_until,
+            },
+        );
     }
 
     /// Removes all expired entries from the queue.
@@ -97,11 +102,7 @@ impl CooldownQueue {
         self.entries.retain(|_, entry| now < entry.skip_until);
         let removed = before - self.entries.len();
         if removed > 0 {
-            tracing::debug!(
-                removed,
-                remaining = self.entries.len(),
-                "Cleaned up expired cooldown entries"
-            );
+            tracing::debug!(removed, remaining = self.entries.len(), "Cleaned up expired cooldown entries");
         }
     }
 

@@ -158,15 +158,15 @@ impl FakeLinearServer {
     /// Create and start a new fake Linear server.
     pub async fn start() -> Self {
         let server = MockServer::start().await;
-
-        Self {
+        let instance = Self {
             server,
             issues: Arc::new(Mutex::new(Vec::new())),
             error_mode: Arc::new(Mutex::new(LinearErrorMode::None)),
             request_count: Arc::new(Mutex::new(0)),
             state_changes: Arc::new(Mutex::new(Vec::new())),
             assignee_filter: Arc::new(Mutex::new(None)),
-        }
+        };
+        instance
     }
 
     /// Get the server URI for client configuration.

@@ -3,13 +3,14 @@
 //! These tests verify the orchestrator's dispatch logic, shutdown behavior,
 //! and state management using the actual DispatchConfig-based API.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
 use symphony_platform::models::Issue;
-use symphony_platform::orchestrator::scheduler::DispatchConfig;
 use symphony_platform::orchestrator::Orchestrator;
+use symphony_platform::orchestrator::scheduler::DispatchConfig;
 
 /// Helper to create a test issue (models::Issue).
 fn make_issue(id: &str, title: &str, state: &str, priority: Option<i32>) -> Issue {

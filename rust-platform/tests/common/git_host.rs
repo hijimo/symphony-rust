@@ -56,7 +56,13 @@ pub trait GitHost: Send + Sync {
     ) -> Result<()>;
 
     /// Create a pull request / merge request.
-    async fn create_pr(&self, title: &str, body: &str, head: &str, base: &str) -> Result<PrInfo>;
+    async fn create_pr(
+        &self,
+        title: &str,
+        body: &str,
+        head: &str,
+        base: &str,
+    ) -> Result<PrInfo>;
 
     /// Returns a clone URL with embedded authentication.
     fn clone_url(&self) -> String;

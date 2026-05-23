@@ -405,9 +405,13 @@ fn normalize_linear_issue(node: &Value) -> Option<TrackerIssue> {
         .map(|s| s.to_string());
 
     // Priority: integer only
-    let priority = node
-        .get("priority")
-        .and_then(|v| v.as_i64().map(|n| n as i32));
+    let priority = node.get("priority").and_then(|v| {
+        if let Some(n) = v.as_i64() {
+            Some(n as i32)
+        } else {
+            None
+        }
+    });
 
     let state = node
         .get("state")

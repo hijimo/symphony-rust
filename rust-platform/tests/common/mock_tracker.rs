@@ -225,7 +225,10 @@ mod tests {
         tracker.set_issue_state(1, "workflow::done");
 
         let result = tracker.fetch_candidates().unwrap();
-        assert_eq!(result[0].workflow_state, Some("workflow::done".to_string()));
+        assert_eq!(
+            result[0].workflow_state,
+            Some("workflow::done".to_string())
+        );
     }
 
     #[test]

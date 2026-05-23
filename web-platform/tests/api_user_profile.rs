@@ -44,8 +44,8 @@ async fn test_get_config_no_config_returns_defaults() {
     let resp = app.get("/api/user/config", Some(&token)).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(!body["data"]["hasGitlabToken"].as_bool().unwrap());
-    assert!(!body["data"]["hasGithubToken"].as_bool().unwrap());
+    assert_eq!(body["data"]["hasGitlabToken"].as_bool().unwrap(), false);
+    assert_eq!(body["data"]["hasGithubToken"].as_bool().unwrap(), false);
     assert!(body["data"]["gitlabHost"].is_null());
 }
 
@@ -69,7 +69,7 @@ async fn test_update_config_set_token() {
 
     let config_resp = app.get("/api/user/config", Some(&token)).await;
     let body: serde_json::Value = config_resp.json().await.unwrap();
-    assert!(body["data"]["hasGitlabToken"].as_bool().unwrap());
+    assert_eq!(body["data"]["hasGitlabToken"].as_bool().unwrap(), true);
     assert_eq!(
         body["data"]["gitlabHost"].as_str().unwrap(),
         "https://gitlab.example.com"

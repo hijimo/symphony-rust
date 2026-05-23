@@ -12,7 +12,9 @@ pub enum ConfigValidationError {
     #[error("Unknown platform kind: {0}. Expected 'github' or 'gitlab'.")]
     InvalidKind(String),
 
-    #[error("api_token must reference an environment variable (prefix with $), got literal value")]
+    #[error(
+        "api_token must reference an environment variable (prefix with $), got literal value"
+    )]
     LiteralToken,
 
     #[error("Environment variable {0} is not set or empty")]
@@ -91,8 +93,8 @@ fn validate_token_reference(token: &str) -> Result<(), ConfigValidationError> {
 }
 
 fn validate_base_url(url_str: &str, allow_custom_host: bool) -> Result<(), ConfigValidationError> {
-    let url =
-        url::Url::parse(url_str).map_err(|e| ConfigValidationError::InvalidUrl(e.to_string()))?;
+    let url = url::Url::parse(url_str)
+        .map_err(|e| ConfigValidationError::InvalidUrl(e.to_string()))?;
 
     let host = url.host_str().unwrap_or("");
 
@@ -102,7 +104,8 @@ fn validate_base_url(url_str: &str, allow_custom_host: bool) -> Result<(), Confi
     }
 
     // Check if it's a known host
-    let is_known = ALLOWED_HOSTS.contains(&host) || host.ends_with(".gitlab.com");
+    let is_known =
+        ALLOWED_HOSTS.contains(&host) || host.ends_with(".gitlab.com");
 
     if is_known {
         return Ok(());

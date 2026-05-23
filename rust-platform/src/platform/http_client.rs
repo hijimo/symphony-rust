@@ -349,7 +349,7 @@ fn build_client_with_token(
         "gitlab" => {
             headers.insert(
                 HeaderName::from_static("private-token"),
-                HeaderValue::from_str(token).map_err(|_| PlatformError::InvalidToken)?,
+                HeaderValue::from_str(&token).map_err(|_| PlatformError::InvalidToken)?,
             );
         }
         _ => {

@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
-use symphony_platform::orchestrator::scheduler::DispatchConfig;
 use symphony_platform::orchestrator::Orchestrator;
+use symphony_platform::orchestrator::scheduler::DispatchConfig;
 
 /// Helper to create a default Orchestrator for shutdown tests.
 fn make_orchestrator(cancel: CancellationToken) -> Orchestrator {
@@ -94,10 +94,7 @@ async fn e2e_shutdown_idle_service() {
     cancel.cancel();
 
     let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
-    assert!(
-        result.is_ok(),
-        "Idle orchestrator did not shut down quickly"
-    );
+    assert!(result.is_ok(), "Idle orchestrator did not shut down quickly");
 }
 
 // ============================================================================

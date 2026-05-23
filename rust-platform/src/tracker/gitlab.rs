@@ -48,6 +48,23 @@ pub struct GitlabTrackerAdapter {
     terminal_states: Vec<String>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_matching_treats_spaces_and_underscores_equivalently() {
+        assert!(state_matches_any(
+            "in_progress",
+            &["In Progress".to_string()]
+        ));
+        assert!(state_matches_any(
+            "In Progress",
+            &["in_progress".to_string()]
+        ));
+    }
+}
+
 impl GitlabTrackerAdapter {
     pub fn new(
         platform: Arc<dyn Platform>,
@@ -170,22 +187,5 @@ impl Tracker for GitlabTrackerAdapter {
             .set_workflow_state(IssueId(id), state)
             .await
             .map_err(platform_error_to_tracker_error)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn state_matching_treats_spaces_and_underscores_equivalently() {
-        assert!(state_matches_any(
-            "in_progress",
-            &["In Progress".to_string()]
-        ));
-        assert!(state_matches_any(
-            "In Progress",
-            &["in_progress".to_string()]
-        ));
     }
 }

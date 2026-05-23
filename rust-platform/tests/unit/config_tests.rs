@@ -5,15 +5,18 @@
 //! - service_config: default values, $VAR resolution, ~ expansion, relative path resolution, validation
 //! - sanitize_workspace_key: special chars, "..", ".", empty string, valid identifiers
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use tempfile::TempDir;
 
 use symphony_platform::config::service_config::{
     resolve_path, resolve_value, sanitize_workspace_key, CodexConfig, HooksConfig, ServiceConfig,
-    TrackerKind,
+    ServiceConfigError, TrackerKind,
 };
-use symphony_platform::config::{load_workflow, parse_workflow, WorkflowLoadError};
+use symphony_platform::config::{
+    load_workflow, parse_workflow, WorkflowDefinition, WorkflowLoadError,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Workflow Loader Tests

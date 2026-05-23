@@ -326,7 +326,6 @@ pub struct CodexEventUpdate {
 /// Events received by the orchestrator event loop.
 /// All state mutations flow through this channel.
 #[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
 pub enum OrchestratorEvent {
     /// Periodic tick trigger.
     Tick,

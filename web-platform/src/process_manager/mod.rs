@@ -55,7 +55,10 @@ impl ProcessManager {
         timeout: std::time::Duration,
     ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
         let lock = self.get_lock(project_id);
-        tokio::time::timeout(timeout, lock.lock_owned()).await.ok()
+        match tokio::time::timeout(timeout, lock.lock_owned()).await {
+            Ok(guard) => Some(guard),
+            Err(_) => None,
+        }
     }
 
     /// Get the current process state for a project.

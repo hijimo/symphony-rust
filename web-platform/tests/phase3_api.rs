@@ -44,7 +44,6 @@ async fn setup_phase3_test() -> (common::TestApp, i64, String) {
 // ==================== Kanban Endpoint Tests ====================
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_kanban_get_success() {
     let (app, project_id, token) = setup_phase3_test().await;
 
@@ -91,7 +90,6 @@ async fn test_kanban_get_success() {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_kanban_with_todo_limit() {
     let (app, project_id, token) = setup_phase3_test().await;
 
@@ -109,7 +107,6 @@ async fn test_kanban_with_todo_limit() {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_kanban_unauthorized() {
     let (app, project_id, _token) = setup_phase3_test().await;
 
@@ -127,7 +124,6 @@ async fn test_kanban_unauthorized() {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_kanban_project_not_found() {
     let app = common::TestApp::new().await;
 
@@ -141,7 +137,6 @@ async fn test_kanban_project_not_found() {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_kanban_non_member_access() {
     let (app, project_id, _token) = setup_phase3_test().await;
 
@@ -167,7 +162,6 @@ async fn test_kanban_non_member_access() {
 // ==================== Issue Creation Tests ====================
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_create_issue_success() {
     let (app, project_id, token) = setup_phase3_test().await;
 
@@ -199,7 +193,6 @@ async fn test_create_issue_success() {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_create_issue_validation_title_too_long() {
     let (app, project_id, token) = setup_phase3_test().await;
 
@@ -221,7 +214,6 @@ async fn test_create_issue_validation_title_too_long() {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_create_issue_validation_empty_title() {
     let (app, project_id, token) = setup_phase3_test().await;
 
@@ -241,7 +233,6 @@ async fn test_create_issue_validation_empty_title() {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_create_issue_unauthorized() {
     let (app, project_id, _token) = setup_phase3_test().await;
 
@@ -261,7 +252,6 @@ async fn test_create_issue_unauthorized() {
 // ==================== Issue Detail Tests ====================
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_get_issue_detail() {
     let (app, project_id, token) = setup_phase3_test().await;
 
@@ -286,7 +276,6 @@ async fn test_get_issue_detail() {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_get_issue_not_found() {
     let (app, project_id, token) = setup_phase3_test().await;
 
@@ -308,7 +297,6 @@ async fn test_get_issue_not_found() {
 // ==================== Issue MRs Tests ====================
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_get_issue_mrs() {
     let (app, project_id, token) = setup_phase3_test().await;
 
@@ -338,7 +326,6 @@ async fn test_get_issue_mrs() {
 // ==================== MR Detail Tests ====================
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_get_mr_detail() {
     let (app, project_id, token) = setup_phase3_test().await;
 
@@ -364,7 +351,6 @@ async fn test_get_mr_detail() {
 // ==================== Cache Behavior Tests ====================
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_kanban_cache_behavior() {
     let (app, project_id, token) = setup_phase3_test().await;
 
@@ -397,7 +383,6 @@ async fn test_kanban_cache_behavior() {
 // ==================== AI Generate Tests (rate limit only, no Azure) ====================
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_ai_generate_validation_prompt_too_short() {
     let (app, project_id, token) = setup_phase3_test().await;
 
@@ -418,7 +403,6 @@ async fn test_ai_generate_validation_prompt_too_short() {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_ai_generate_validation_prompt_too_long() {
     let (app, project_id, token) = setup_phase3_test().await;
 
@@ -440,7 +424,6 @@ async fn test_ai_generate_validation_prompt_too_long() {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_ai_generate_unauthorized() {
     let (app, project_id, _token) = setup_phase3_test().await;
 

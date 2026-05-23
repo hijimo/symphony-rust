@@ -72,46 +72,50 @@ impl ConfigHolder {
             .map(|f| f.to_os_string())
             .unwrap_or_default();
 
-        let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-            match res {
-                Ok(event) => {
-                    // Only react to modify/create events for our specific file
-                    let dominated =
-                        matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_));
-                    if !dominated {
-                        return;
-                    }
-
-                    // Check if the event is for our workflow file
-                    let is_our_file = event
-                        .paths
-                        .iter()
-                        .any(|p| p.file_name().map(|f| f == watch_filename).unwrap_or(false));
-
-                    if !is_our_file {
-                        return;
-                    }
-
-                    // Attempt reload
-                    match try_reload(&path_clone) {
-                        Ok(new_config) => {
-                            current_clone.store(Arc::new(new_config));
-                            tracing::info!("workflow config reloaded successfully");
+        let mut watcher =
+            notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+                match res {
+                    Ok(event) => {
+                        // Only react to modify/create events for our specific file
+                        let dominated = matches!(
+                            event.kind,
+                            EventKind::Modify(_) | EventKind::Create(_)
+                        );
+                        if !dominated {
+                            return;
                         }
-                        Err(e) => {
-                            tracing::error!(
-                                error = %e,
-                                "workflow reload failed, keeping last known good config"
-                            );
+
+                        // Check if the event is for our workflow file
+                        let is_our_file = event.paths.iter().any(|p| {
+                            p.file_name()
+                                .map(|f| f == watch_filename)
+                                .unwrap_or(false)
+                        });
+
+                        if !is_our_file {
+                            return;
                         }
+
+                        // Attempt reload
+                        match try_reload(&path_clone) {
+                            Ok(new_config) => {
+                                current_clone.store(Arc::new(new_config));
+                                tracing::info!("workflow config reloaded successfully");
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    error = %e,
+                                    "workflow reload failed, keeping last known good config"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "file watcher error");
                     }
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, "file watcher error");
-                }
-            }
-        })
-        .map_err(|e| ConfigWatchError::WatcherInit(e.to_string()))?;
+            })
+            .map_err(|e| ConfigWatchError::WatcherInit(e.to_string()))?;
 
         watcher
             .watch(&watch_dir, RecursiveMode::NonRecursive)

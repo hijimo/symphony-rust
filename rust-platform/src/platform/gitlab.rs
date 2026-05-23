@@ -107,7 +107,6 @@ impl GitlabAdapter {
     }
 
     /// Build the comma-separated labels filter string from issue_filter config.
-    #[allow(dead_code)]
     fn active_labels_filter(&self) -> String {
         self.http.config().issue_filter.labels.join(",")
     }
@@ -536,7 +535,7 @@ mod tests {
 
     #[test]
     fn test_capabilities_includes_atomic_labels() {
-        let caps = [Capability::AtomicLabels];
+        let caps = vec![Capability::AtomicLabels];
         assert!(caps.contains(&Capability::AtomicLabels));
         assert!(!caps.contains(&Capability::Webhook));
         assert!(!caps.contains(&Capability::MergeRequest));

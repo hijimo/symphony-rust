@@ -110,7 +110,9 @@ async fn test_retry_succeeds_on_third_attempt() {
 
     Mock::given(method("GET"))
         .and(path("/api/test"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})),
+        )
         .expect(1)
         .with_priority(2) // Lower priority, used after 500s are consumed
         .mount(&mock_server)
@@ -131,9 +133,11 @@ async fn test_no_retry_on_401() {
     // 401 is non-retryable — should fail immediately without retrying
     Mock::given(method("GET"))
         .and(path("/api/auth"))
-        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
-            "message": "Bad credentials"
-        })))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_json(json!({
+                "message": "Bad credentials"
+            })),
+        )
         .expect(1) // Should only be called once (no retry)
         .mount(&mock_server)
         .await;
@@ -155,9 +159,11 @@ async fn test_no_retry_on_404() {
     // 404 is non-retryable — resource doesn't exist, retrying won't help
     Mock::given(method("GET"))
         .and(path("/api/missing"))
-        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
-            "message": "Not Found"
-        })))
+        .respond_with(
+            ResponseTemplate::new(404).set_body_json(json!({
+                "message": "Not Found"
+            })),
+        )
         .expect(1) // Should only be called once (no retry)
         .mount(&mock_server)
         .await;
@@ -210,7 +216,9 @@ async fn test_retry_on_503_service_unavailable() {
 
     Mock::given(method("GET"))
         .and(path("/api/service"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"recovered": true})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"recovered": true})),
+        )
         .with_priority(2)
         .mount(&mock_server)
         .await;
@@ -240,7 +248,9 @@ async fn test_retry_on_429_rate_limited() {
 
     Mock::given(method("GET"))
         .and(path("/api/rate-limited"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": "success"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data": "success"})),
+        )
         .with_priority(2)
         .mount(&mock_server)
         .await;
@@ -258,7 +268,9 @@ async fn test_immediate_success_no_retry() {
     // Immediate success — no retries needed
     Mock::given(method("GET"))
         .and(path("/api/healthy"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"healthy": true})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"healthy": true})),
+        )
         .expect(1) // Called exactly once
         .mount(&mock_server)
         .await;
@@ -276,10 +288,12 @@ async fn test_no_retry_on_422_unprocessable() {
     // 422 is non-retryable — client error, request is malformed
     Mock::given(method("GET"))
         .and(path("/api/invalid"))
-        .respond_with(ResponseTemplate::new(422).set_body_json(json!({
-            "message": "Validation Failed",
-            "errors": [{"field": "title", "code": "missing"}]
-        })))
+        .respond_with(
+            ResponseTemplate::new(422).set_body_json(json!({
+                "message": "Validation Failed",
+                "errors": [{"field": "title", "code": "missing"}]
+            })),
+        )
         .expect(1)
         .mount(&mock_server)
         .await;

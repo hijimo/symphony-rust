@@ -2,8 +2,6 @@ mod common;
 
 use reqwest::StatusCode;
 use serde_json::json;
-use web_platform::models::{ServiceStatus, ServiceStatusUpdate};
-use web_platform::repository::ProjectRepository;
 
 #[tokio::test]
 async fn test_create_project_success() {
@@ -387,15 +385,13 @@ async fn test_delete_project_running_service() {
         .await;
     let project_id = app.get_project_id(&create_body);
 
-    let status_update = ServiceStatusUpdate {
-        status: ServiceStatus::Running,
-        pid: Some(12345),
-        error_message: None,
-    };
-    app.repo
-        .update_service_status(project_id, &status_update)
-        .await
-        .unwrap();
+    // Start the service (simulated)
+    app.post(
+        &format!("/api/projects/{}/start", project_id),
+        &json!({}),
+        Some(&app.admin_token),
+    )
+    .await;
 
     // Try to delete while running
     let resp = app

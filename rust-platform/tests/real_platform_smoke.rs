@@ -176,7 +176,7 @@ async fn real_github_issue_normalization() {
         let id = issue["number"].as_u64().unwrap();
         let title = issue["title"].as_str().unwrap();
         let url = issue["html_url"].as_str().unwrap();
-        let _assignee = issue["assignee"]["login"].as_str();
+        let assignee = issue["assignee"]["login"].as_str();
         let labels: Vec<String> = issue["labels"]
             .as_array()
             .map(|arr| {

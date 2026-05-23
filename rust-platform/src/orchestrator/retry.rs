@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::models::{
-    current_monotonic_ms, OrchestratorEvent, OrchestratorState, RetryEntry, RetryKind,
+    OrchestratorEvent, OrchestratorState, RetryEntry, RetryKind, current_monotonic_ms,
 };
 
 /// Compute the retry delay in milliseconds (SPEC section 8.4).
@@ -32,7 +32,6 @@ pub fn compute_retry_delay(attempt: u32, retry_kind: &RetryKind, max_backoff_ms:
 ///
 /// SPEC requirement: MUST cancel any existing retry timer for the same issue
 /// before creating a new one.
-#[allow(clippy::too_many_arguments)]
 pub fn schedule_retry(
     state: &mut OrchestratorState,
     issue_id: &str,
@@ -59,9 +58,7 @@ pub fn schedule_retry(
 
     let timer_handle: JoinHandle<()> = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-        let _ = tx
-            .send(OrchestratorEvent::RetryFired { issue_id: id })
-            .await;
+        let _ = tx.send(OrchestratorEvent::RetryFired { issue_id: id }).await;
     });
 
     tracing::info!(
@@ -111,14 +108,8 @@ mod tests {
 
     #[test]
     fn test_compute_retry_delay_continuation() {
-        assert_eq!(
-            compute_retry_delay(1, &RetryKind::Continuation, 300_000),
-            1_000
-        );
-        assert_eq!(
-            compute_retry_delay(5, &RetryKind::Continuation, 300_000),
-            1_000
-        );
+        assert_eq!(compute_retry_delay(1, &RetryKind::Continuation, 300_000), 1_000);
+        assert_eq!(compute_retry_delay(5, &RetryKind::Continuation, 300_000), 1_000);
     }
 
     #[test]
@@ -132,24 +123,15 @@ mod tests {
         // attempt 4: 10000 * 2^3 = 80000
         assert_eq!(compute_retry_delay(4, &RetryKind::Failure, 300_000), 80_000);
         // attempt 5: 10000 * 2^4 = 160000
-        assert_eq!(
-            compute_retry_delay(5, &RetryKind::Failure, 300_000),
-            160_000
-        );
+        assert_eq!(compute_retry_delay(5, &RetryKind::Failure, 300_000), 160_000);
         // attempt 6: 10000 * 2^5 = 320000 -> capped at 300000
-        assert_eq!(
-            compute_retry_delay(6, &RetryKind::Failure, 300_000),
-            300_000
-        );
+        assert_eq!(compute_retry_delay(6, &RetryKind::Failure, 300_000), 300_000);
     }
 
     #[test]
     fn test_compute_retry_delay_failure_cap() {
         // Very high attempt should be capped
-        assert_eq!(
-            compute_retry_delay(100, &RetryKind::Failure, 300_000),
-            300_000
-        );
+        assert_eq!(compute_retry_delay(100, &RetryKind::Failure, 300_000), 300_000);
     }
 
     #[tokio::test]

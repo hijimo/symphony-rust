@@ -10,24 +10,20 @@ use tokio::net::TcpListener;
 use web_platform::auth::password::hash_password;
 use web_platform::auth::rate_limit::RateLimiter;
 use web_platform::concurrency::ConcurrencyManager;
-use web_platform::crypto;
 use web_platform::db::init_pool;
 use web_platform::process_manager::ProcessManager;
-use web_platform::repository::{SqliteRepository, UserConfigRepository, UserRepository};
+use web_platform::repository::{SqliteRepository, UserRepository};
 use web_platform::router::create_router;
 use web_platform::services::cache::ApiCache;
 use web_platform::{AppState, Phase3RateLimiter};
 
-#[allow(dead_code)]
 pub struct TestApp {
     pub addr: String,
     pub client: Client,
     pub admin_token: String,
-    pub repo: SqliteRepository,
     _dir: TempDir,
 }
 
-#[allow(dead_code)]
 impl TestApp {
     pub async fn new() -> Self {
         let dir = TempDir::new().unwrap();
@@ -37,11 +33,6 @@ impl TestApp {
 
         let admin_hash = hash_password("admin123").unwrap();
         repo.create_user("admin", &admin_hash, Some("Administrator"), "admin")
-            .await
-            .unwrap();
-        let admin = repo.find_by_username("admin").await.unwrap().unwrap();
-        let encrypted_github_token = crypto::encrypt("test-github-token", &[0x42u8; 32]).unwrap();
-        repo.upsert_config(admin.id, None, None, Some(&encrypted_github_token))
             .await
             .unwrap();
 
@@ -61,7 +52,6 @@ impl TestApp {
             alert_manager: None,
         };
 
-        let repo = state.repo.clone();
         let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -91,7 +81,6 @@ impl TestApp {
             addr: base_url,
             client,
             admin_token,
-            repo,
             _dir: dir,
         }
     }

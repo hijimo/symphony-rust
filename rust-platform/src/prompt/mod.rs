@@ -298,7 +298,8 @@ fn issue_to_liquid_object(issue: &IssueContext) -> Object {
                     );
                 }
                 None => {
-                    blocker_obj.insert(KString::from_static("identifier"), LiquidValue::Nil);
+                    blocker_obj
+                        .insert(KString::from_static("identifier"), LiquidValue::Nil);
                 }
             }
             match &b.state {
@@ -387,7 +388,8 @@ mod tests {
 
     #[test]
     fn test_render_with_attempt() {
-        let template = "{% if attempt %}Retry #{{ attempt }}: {% endif %}{{ issue.title }}";
+        let template =
+            "{% if attempt %}Retry #{{ attempt }}: {% endif %}{{ issue.title }}";
         let engine = PromptEngine::compile(template).unwrap();
         let issue = make_test_issue();
 
@@ -450,7 +452,8 @@ mod tests {
     fn test_continuation_custom_template() {
         let main = "Main: {{ issue.title }}";
         let cont = "Continue {{ issue.identifier }}, turn {{ turn_number }}/{{ max_turns }}";
-        let engine = PromptEngine::compile_with_continuation(main, Some(cont)).unwrap();
+        let engine =
+            PromptEngine::compile_with_continuation(main, Some(cont)).unwrap();
         let issue = make_test_issue();
 
         // Turn 1 uses main
@@ -471,8 +474,7 @@ mod tests {
 
     #[test]
     fn test_render_nil_fields() {
-        let template =
-            "Desc: {% if issue.description %}{{ issue.description }}{% else %}none{% endif %}";
+        let template = "Desc: {% if issue.description %}{{ issue.description }}{% else %}none{% endif %}";
         let engine = PromptEngine::compile(template).unwrap();
 
         let mut issue = make_test_issue();
@@ -492,15 +494,18 @@ mod tests {
         assert_eq!(result, "FIRST");
 
         // For turn > 1 with a custom continuation template that uses is_continuation
-        let engine2 = PromptEngine::compile_with_continuation(template, Some(template)).unwrap();
+        let engine2 = PromptEngine::compile_with_continuation(
+            template,
+            Some(template),
+        )
+        .unwrap();
         let result = engine2.render(&issue, None, 2, 20).unwrap();
         assert_eq!(result, "CONT");
     }
 
     #[test]
     fn test_render_priority_nil() {
-        let template =
-            "Priority: {% if issue.priority %}{{ issue.priority }}{% else %}unset{% endif %}";
+        let template = "Priority: {% if issue.priority %}{{ issue.priority }}{% else %}unset{% endif %}";
         let engine = PromptEngine::compile(template).unwrap();
 
         let mut issue = make_test_issue();

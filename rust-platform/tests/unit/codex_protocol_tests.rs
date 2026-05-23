@@ -293,10 +293,12 @@ mod token_usage {
             }
         });
 
-        let usage = event.get("usage").map(|u| TokenUsage {
-            input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-            output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-            total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        let usage = event.get("usage").and_then(|u| {
+            Some(TokenUsage {
+                input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            })
         });
 
         assert!(usage.is_some());
@@ -322,10 +324,12 @@ mod token_usage {
             }
         });
 
-        let usage = event.get("usage").map(|u| TokenUsage {
-            input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-            output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-            total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        let usage = event.get("usage").and_then(|u| {
+            Some(TokenUsage {
+                input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                total_tokens: u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            })
         });
 
         let usage = usage.unwrap();

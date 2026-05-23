@@ -48,10 +48,7 @@ mod tests {
             workflow_path: None,
             port: None,
         };
-        assert_eq!(
-            cli.effective_workflow_path(),
-            PathBuf::from("./WORKFLOW.md")
-        );
+        assert_eq!(cli.effective_workflow_path(), PathBuf::from("./WORKFLOW.md"));
     }
 
     #[test]

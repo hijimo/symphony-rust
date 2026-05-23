@@ -23,7 +23,6 @@ fn gitlab_token() -> &'static str {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_gitlab_list_issues() {
     let client = GitLabClient::new(GITLAB_HOST.to_string());
 
@@ -52,7 +51,6 @@ async fn test_gitlab_list_issues() {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_gitlab_list_issues_with_label_filter() {
     let client = GitLabClient::new(GITLAB_HOST.to_string());
 
@@ -85,7 +83,6 @@ async fn test_gitlab_list_issues_with_label_filter() {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_gitlab_list_issues_exclude_label() {
     let client = GitLabClient::new(GITLAB_HOST.to_string());
 
@@ -120,7 +117,6 @@ async fn test_gitlab_list_issues_exclude_label() {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_gitlab_create_and_get_issue() {
     let client = GitLabClient::new(GITLAB_HOST.to_string());
 
@@ -165,7 +161,6 @@ async fn test_gitlab_create_and_get_issue() {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_gitlab_get_issue_not_found() {
     let client = GitLabClient::new(GITLAB_HOST.to_string());
 
@@ -181,7 +176,6 @@ async fn test_gitlab_get_issue_not_found() {
     }
 }
 
-#[ignore = "requires live GitLab test environment"]
 #[tokio::test]
 async fn test_gitlab_invalid_token() {
     let client = GitLabClient::new(GITLAB_HOST.to_string());
@@ -209,7 +203,6 @@ async fn test_gitlab_invalid_token() {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_gitlab_get_issue_merge_requests() {
     let client = GitLabClient::new(GITLAB_HOST.to_string());
 
@@ -249,7 +242,6 @@ async fn test_gitlab_get_issue_merge_requests() {
 }
 
 #[tokio::test]
-#[ignore = "requires live GitLab test environment"]
 async fn test_gitlab_search_issues() {
     let client = GitLabClient::new(GITLAB_HOST.to_string());
 

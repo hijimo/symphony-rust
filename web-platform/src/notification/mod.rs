@@ -30,7 +30,6 @@ impl std::fmt::Display for Severity {
 }
 
 impl Severity {
-    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "critical" => Some(Severity::Critical),

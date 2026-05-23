@@ -7,10 +7,16 @@
 //! - concurrency control: global slots, per-state slots
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{DateTime, TimeDelta, Utc};
+use tokio_util::sync::CancellationToken;
 
-use symphony_platform::platform::{make_test_issue, Issue, IssueId};
+use symphony_platform::config::{Config, PlatformConfig, PollingConfig, WorkflowConfig};
+use symphony_platform::orchestrator::Orchestrator;
+use symphony_platform::platform::cooldown_queue::CooldownQueue;
+use symphony_platform::platform::{Issue, IssueId, Dispatchable, make_test_issue, MemoryAdapter};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Sort for Dispatch Tests
@@ -20,7 +26,7 @@ mod sort_for_dispatch {
     use super::*;
 
     /// Sort issues by priority (lower number = higher priority), then by created_at.
-    fn sort_issues(issues: &mut [Issue]) {
+    fn sort_issues(issues: &mut Vec<Issue>) {
         issues.sort_by(|a, b| {
             // Priority: lower number = higher priority, None goes last
             let pri_cmp = match (a.priority, b.priority) {
@@ -76,7 +82,7 @@ mod sort_for_dispatch {
         // Issues with priority come first
         assert_eq!(issues[0].id, IssueId(2)); // priority 1
         assert_eq!(issues[1].id, IssueId(4)); // priority 5
-                                              // Issues without priority come last
+        // Issues without priority come last
         assert!(issues[2].priority.is_none());
         assert!(issues[3].priority.is_none());
     }
@@ -323,6 +329,7 @@ mod should_dispatch {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 mod compute_retry_delay {
+    use super::*;
 
     /// Retry kind determines the delay strategy.
     #[derive(Debug, Clone, PartialEq)]
@@ -337,7 +344,11 @@ mod compute_retry_delay {
     ///
     /// - Continuation: always 1000ms (SPEC §8.4)
     /// - Failure: 10_000ms * 2^(attempt-1), capped at max_retry_backoff_ms
-    fn compute_retry_delay_ms(kind: &RetryKind, attempt: u32, max_retry_backoff_ms: u64) -> u64 {
+    fn compute_retry_delay_ms(
+        kind: &RetryKind,
+        attempt: u32,
+        max_retry_backoff_ms: u64,
+    ) -> u64 {
         match kind {
             RetryKind::Continuation => 1_000,
             RetryKind::Failure => {
