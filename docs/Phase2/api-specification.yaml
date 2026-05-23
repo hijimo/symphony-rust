@@ -1,0 +1,1794 @@
+openapi: '3.0.3'
+info:
+  title: Symphony Web Platform API - Phase 2
+  version: '0.2.0'
+  description: |
+    项目管理相关 API（Phase 2）。
+
+    ## 通用协议
+
+    所有接口遵循 RESTful 规范，Content-Type 为 application/json。
+
+    ### 统一响应格式
+
+    成功响应：
+    ```json
+    { "data": T, "success": true, "retCode": "0", "retMsg": "success", "showType": 0 }
+    ```
+
+    错误响应：
+    ```json
+    { "data": null, "success": false, "retCode": "BIZ_001", "retMsg": "...", "showType": 1 }
+    ```
+
+    ### 错误码
+
+    | retCode   | 含义                         | showType |
+    |-----------|------------------------------|----------|
+    | 0         | 成功                         | 0 silent |
+    | AUTH_001  | 未登录或 Token 过期          | 9 redirect |
+    | AUTH_002  | 权限不足                     | 2 error  |
+    | BIZ_001   | 业务参数错误                 | 1 warn   |
+    | BIZ_002   | 资源不存在                   | 2 error  |
+    | BIZ_003   | 操作冲突（如服务运行中不可删除）| 1 warn   |
+    | SYS_001   | 系统内部错误                 | 2 error  |
+    | EXT_001   | 外部服务不可用（GitLab/GitHub API）| 4 notification |
+
+    ### 分页
+
+    请求参数：`?pageNo=1&pageSize=20`（默认 pageNo=1, pageSize=20）。
+
+    ### 认证
+
+    除登录接口外，所有接口需要 Bearer Token（JWT）认证。
+
+    ### 字段命名约定
+
+    - 响应包装层使用 camelCase：`retCode`, `retMsg`, `showType`, `pageNo`, `pageSize`, `totalCount`
+    - 业务实体字段使用 snake_case：`git_url`, `service_status`, `created_at`, `user_id`
+    - 此约定在整个 API 中保持一致
+
+    ### 幂等性
+
+    | 方法 | 幂等 | 说明 |
+    |------|------|------|
+    | GET  | 是   | 所有 GET 请求幂等 |
+    | PUT  | 是   | 相同输入产生相同结果 |
+    | DELETE | 否 | 第二次调用返回 BIZ_002（资源已不存在） |
+    | POST /start | 否 | 服务已运行时返回 BIZ_003 |
+    | POST /stop | 否 | 服务未运行时返回 BIZ_003 |
+    | POST /members | 否 | 用户已是成员时返回 BIZ_003 |
+    | POST /members/sync | 是 | add-only 策略，重复同步安全 |
+
+    ### 速率限制
+
+    以下端点有额外的速率限制保护：
+    - `POST /api/projects/{id}/start|stop|restart`：同一项目 10 次/分钟
+    - `POST /api/projects/{id}/members/sync`：同一项目 5 次/分钟（调用外部 API）
+    - 全局默认：同一 IP 200 次/分钟
+
+    超出限制返回 HTTP 429，响应体：
+    ```json
+    { "data": null, "success": false, "retCode": "SYS_001", "retMsg": "请求过于频繁，请稍后重试", "showType": 1 }
+    ```
+
+    ### 请求体大小限制
+
+    全局请求体大小限制为 1MB。WORKFLOW.md 内容字段最大 64KB。
+
+  contact:
+    name: Symphony Team
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000
+    description: 本地开发
+
+tags:
+  - name: Projects
+    description: 项目 CRUD
+  - name: Project Service
+    description: 项目服务生命周期控制（启动/停止/重启/状态）
+  - name: Project Members
+    description: 项目成员管理
+  - name: Project Workflow
+    description: WORKFLOW.md 配置管理
+
+paths:
+  /api/projects:
+    get:
+      summary: 项目列表
+      operationId: listProjects
+      description: |
+        获取当前用户可见的项目列表。
+
+        **业务规则**：
+        - 普通用户只能看到自己作为成员的项目（按 project_members 表过滤）
+        - admin 角色可见全部项目
+        - 支持按平台、服务状态、关键字筛选
+        - 返回结果包含当前用户在每个项目中的角色（my_role 字段）
+      tags: [Projects]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: pageNo
+          in: query
+          description: 页码，从 1 开始
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          description: 每页条数
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: platform
+          in: query
+          description: 按平台过滤
+          schema:
+            type: string
+            enum: [gitlab, github]
+        - name: status
+          in: query
+          description: 按服务状态过滤
+          schema:
+            type: string
+            enum: [running, stopped, starting, stopping, error, failed]
+        - name: search
+          in: query
+          description: 按项目名称或 Git URL 模糊搜索
+          schema:
+            type: string
+            maxLength: 200
+      responses:
+        '200':
+          description: 项目列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectListResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+
+    post:
+      summary: 创建项目
+      operationId: createProject
+      description: |
+        通过 Git URL 创建项目。
+
+        **业务规则**：
+        - 系统自动解析 Git URL，识别平台（GitLab/GitHub）、namespace、repo_name
+        - 支持 HTTPS 和 SSH 格式
+        - git_url 全局唯一，重复创建返回 BIZ_001
+        - 创建者自动成为项目 owner
+        - 服务默认为 stopped 状态
+        - workflow_template 为 "default" 时使用平台对应的内置模板
+        - workflow_template 为 "custom" 时必须提供 workflow_content
+      tags: [Projects]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '200':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '422':
+          description: 参数校验失败（如 URL 格式无效、git_url 已存在）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz001'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+
+  /api/projects/{id}:
+    get:
+      summary: 项目详情
+      operationId: getProject
+      description: |
+        获取单个项目的详细信息。
+
+        **业务规则**：
+        - 普通用户需为项目成员才可访问
+        - admin 可访问任意项目
+      tags: [Projects]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: 项目详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '403':
+          description: 非项目成员，无权访问
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth002'
+        '404':
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz002'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+
+    put:
+      summary: 更新项目
+      operationId: updateProject
+      description: |
+        更新项目配置信息。
+
+        **业务规则**：
+        - 需要 owner 或 admin 权限
+        - 仅可更新 name、description、default_branch、max_concurrent_agents、auto_restart
+        - git_url、platform 等字段不可修改
+      tags: [Projects]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '403':
+          description: 权限不足（需要 owner 或 admin）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth002'
+        '404':
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz002'
+        '422':
+          description: 参数校验失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz001'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+
+    delete:
+      summary: 删除项目
+      operationId: deleteProject
+      description: |
+        删除项目及其所有关联数据（成员关系、配置等）。
+
+        **业务规则**：
+        - 需要 owner 或 admin 权限
+        - 服务必须处于 stopped 状态才能删除，否则返回 BIZ_003
+        - 删除操作不可逆
+      tags: [Projects]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '403':
+          description: 权限不足（需要 owner 或 admin）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth002'
+        '404':
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz002'
+        '409':
+          description: 服务运行中，不可删除（需先停止服务）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz003'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+
+  /api/projects/{id}/start:
+    post:
+      summary: 启动服务
+      operationId: startProjectService
+      description: |
+        启动项目对应的 Symphony 子进程。
+
+        **业务规则**：
+        - 需要 owner 或 admin 权限
+        - 仅当服务处于 stopped、error 或 failed 状态时可启动
+        - 使用 per-project 互斥锁（5s 超时），超时返回 BIZ_003
+        - 服务已在运行中（running/starting）时返回 BIZ_003 冲突
+        - 启动流程：获取锁 → 检查状态 → 渲染 WORKFLOW.md → 解密 owner Token → 启动子进程 → 记录 PID → 释放锁
+        - 启动后自动开启健康检查 watcher
+        - 项目 owner 必须已配置对应平台的 Token，否则返回 BIZ_001
+      tags: [Project Service]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: 启动成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceStatusResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '403':
+          description: 权限不足（需要 owner 或 admin）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth002'
+        '404':
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz002'
+        '409':
+          description: 操作冲突（服务已在运行或互斥锁超时）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz003'
+        '422':
+          description: 项目 owner 未配置对应平台的 Token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz001'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+
+  /api/projects/{id}/stop:
+    post:
+      summary: 停止服务
+      operationId: stopProjectService
+      description: |
+        停止项目对应的 Symphony 子进程。
+
+        **业务规则**：
+        - 需要 owner 或 admin 权限
+        - 使用 per-project 互斥锁（5s 超时），超时返回 BIZ_003
+        - 服务未运行时返回 BIZ_003 冲突
+        - 停止流程：获取锁 → PID 验证（三要素） → SIGTERM → 等待退出（30s 超时后 SIGKILL） → 更新状态 → 释放锁
+      tags: [Project Service]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: 停止成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceStatusResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '403':
+          description: 权限不足（需要 owner 或 admin）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth002'
+        '404':
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz002'
+        '409':
+          description: 操作冲突（服务未运行或互斥锁超时）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz003'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+
+  /api/projects/{id}/restart:
+    post:
+      summary: 重启服务
+      operationId: restartProjectService
+      description: |
+        重启项目对应的 Symphony 子进程（先停止再启动）。
+
+        **业务规则**：
+        - 需要 owner 或 admin 权限
+        - 使用 per-project 互斥锁（5s 超时），超时返回 BIZ_003
+        - 服务未运行时返回 BIZ_003 冲突
+        - 重启流程：stop → start（原子操作，共用同一把锁）
+        - 重启后 restart_count 归零
+      tags: [Project Service]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: 重启成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceStatusResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '403':
+          description: 权限不足（需要 owner 或 admin）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth002'
+        '404':
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz002'
+        '409':
+          description: 操作冲突（服务未运行或互斥锁超时）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz003'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+
+  /api/projects/{id}/status:
+    get:
+      summary: 服务运行状态
+      operationId: getProjectServiceStatus
+      description: |
+        获取项目服务的实时运行状态。
+
+        **业务规则**：
+        - 项目成员或 admin 均可查询
+        - 返回进程 PID、启动时间、运行时长、重启次数等信息
+        - 如果服务处于 error/failed 状态，返回 error_message
+      tags: [Project Service]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: 服务状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceStatusResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '403':
+          description: 非项目成员，无权访问
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth002'
+        '404':
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz002'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+
+  /api/projects/{id}/members:
+    get:
+      summary: 成员列表
+      operationId: listProjectMembers
+      description: |
+        获取项目的所有成员列表。
+
+        **业务规则**：
+        - 项目成员或 admin 均可查询
+        - 返回每个成员的用户信息、角色、同步来源
+      tags: [Project Members]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: 成员列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberListResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '403':
+          description: 非项目成员，无权访问
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth002'
+        '404':
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz002'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+
+    post:
+      summary: 添加成员
+      operationId: addProjectMember
+      description: |
+        手动添加用户为项目成员。
+
+        **业务规则**：
+        - 需要 owner 或 admin 权限
+        - user_id 必须为系统中已存在的用户
+        - 用户已是成员时返回 BIZ_003 冲突
+        - 默认角色为 member
+      tags: [Project Members]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMemberRequest'
+      responses:
+        '200':
+          description: 添加成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '403':
+          description: 权限不足（需要 owner 或 admin）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth002'
+        '404':
+          description: 项目不存在或用户不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz002'
+        '409':
+          description: 用户已是项目成员
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz003'
+        '422':
+          description: 参数校验失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz001'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+
+  /api/projects/{id}/members/{userId}:
+    put:
+      summary: 更新成员角色
+      operationId: updateProjectMemberRole
+      description: |
+        更新项目成员的角色。
+
+        **业务规则**：
+        - 需要 owner 或 admin 权限
+        - 不能修改自己的角色
+        - 项目至少保留一个 owner
+      tags: [Project Members]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/MemberUserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMemberRoleRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '403':
+          description: 权限不足（需要 owner 或 admin）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth002'
+        '404':
+          description: 项目不存在或成员不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz002'
+        '409':
+          description: 操作冲突（如最后一个 owner 不可降级）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz003'
+        '422':
+          description: 参数校验失败
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz001'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+
+    delete:
+      summary: 移除成员
+      operationId: removeProjectMember
+      description: |
+        从项目中移除成员。
+
+        **业务规则**：
+        - 需要 owner 或 admin 权限
+        - 不能移除自己（owner 需先转让所有权）
+        - 项目至少保留一个 owner
+      tags: [Project Members]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/MemberUserId'
+      responses:
+        '200':
+          description: 移除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '403':
+          description: 权限不足（需要 owner 或 admin）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth002'
+        '404':
+          description: 项目不存在或成员不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz002'
+        '409':
+          description: 操作冲突（如不能移除自己、最后一个 owner）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz003'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+
+  /api/projects/{id}/members/sync:
+    post:
+      summary: 从平台同步成员
+      operationId: syncProjectMembers
+      description: |
+        从 GitLab/GitHub 平台同步项目成员到本系统。
+
+        **业务规则**：
+        - 需要 owner 或 admin 权限
+        - 使用当前用户的平台 Token 调用 GitLab/GitHub API
+        - 同步策略为 add-only（仅添加，不删除已有成员）
+        - 按 username 匹配本系统已注册用户
+        - 匹配成功的用户添加为 member 角色（已存在则跳过）
+        - 未在本系统注册的平台用户名记录在 unmatched 中返回
+        - synced_from 字段标记同步来源
+      tags: [Project Members]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: 同步结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncMembersResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '403':
+          description: 权限不足（需要 owner 或 admin）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth002'
+        '404':
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz002'
+        '422':
+          description: 用户未配置对应平台的 Token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz001'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+        '502':
+          description: 外部平台 API 不可用（GitLab/GitHub 请求失败）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseExt001'
+
+  /api/projects/{id}/workflow:
+    get:
+      summary: 获取 WORKFLOW.md 内容
+      operationId: getProjectWorkflow
+      description: |
+        获取项目的 WORKFLOW.md 配置内容。
+
+        **业务规则**：
+        - 项目成员或 admin 均可查询
+        - template_mode 为 "default" 时，content 为使用项目变量渲染后的内置模板内容
+        - template_mode 为 "custom" 时，content 为用户自定义的内容
+      tags: [Project Workflow]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: 工作流内容
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '403':
+          description: 非项目成员，无权访问
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth002'
+        '404':
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz002'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+
+    put:
+      summary: 更新 WORKFLOW.md 内容
+      operationId: updateProjectWorkflow
+      description: |
+        更新项目的 WORKFLOW.md 配置。
+
+        **业务规则**：
+        - 需要 owner 或 admin 权限
+        - template_mode 为 "default" 时，content 字段被忽略，使用内置模板
+        - template_mode 为 "custom" 时，content 为必填，存储用户自定义内容
+        - 更新后需重启服务才能生效
+      tags: [Project Workflow]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWorkflowRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '403':
+          description: 权限不足（需要 owner 或 admin）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth002'
+        '404':
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz002'
+        '422':
+          description: 参数校验失败（如 custom 模式未提供 content）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz001'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+
+  /api/projects/{id}/workflow/reset:
+    post:
+      summary: 重置为默认模板
+      operationId: resetProjectWorkflow
+      description: |
+        将 WORKFLOW.md 重置为平台对应的默认模板。
+
+        **业务规则**：
+        - 需要 owner 或 admin 权限
+        - 重置后 template_mode 变为 "default"，workflow_content 清空
+        - 重置后需重启服务才能生效
+      tags: [Project Workflow]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: 重置成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowResponse'
+        '401':
+          description: 未认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth001'
+        '403':
+          description: 权限不足（需要 owner 或 admin）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseAuth002'
+        '404':
+          description: 项目不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseBiz002'
+        '500':
+          description: 系统内部错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponseSys001'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT Token 通过 POST /api/auth/login 获取。
+        有效期 7 天，过期后需重新登录。
+        请求头格式：Authorization: Bearer <token>
+
+  parameters:
+    ProjectId:
+      name: id
+      in: path
+      required: true
+      description: 项目 ID
+      schema:
+        type: integer
+        minimum: 1
+        example: 1
+
+    MemberUserId:
+      name: userId
+      in: path
+      required: true
+      description: 成员的用户 ID
+      schema:
+        type: integer
+        minimum: 1
+        example: 2
+
+  schemas:
+    # ==================== Request Schemas ====================
+
+    CreateProjectRequest:
+      type: object
+      required: [git_url]
+      properties:
+        git_url:
+          type: string
+          description: |
+            Git 仓库地址，支持 HTTPS 和 SSH 格式。
+            系统自动解析平台（GitLab/GitHub）、namespace、repo_name。
+          minLength: 10
+          maxLength: 500
+          pattern: '^(https?://|git@).+'
+          example: "https://gitlab.com/group/my-project"
+        name:
+          type: string
+          description: 项目显示名称。不提供时自动使用 repo_name。
+          minLength: 1
+          maxLength: 100
+          example: "my-project"
+        description:
+          type: string
+          description: 项目描述
+          maxLength: 500
+          example: "My awesome project"
+        default_branch:
+          type: string
+          description: 默认分支名
+          minLength: 1
+          maxLength: 100
+          default: "main"
+          example: "main"
+        workflow_template:
+          type: string
+          description: |
+            WORKFLOW.md 模板模式：
+            - "default"：使用平台对应的内置模板（根据项目变量自动渲染）
+            - "custom"：使用用户提供的自定义内容（需同时提供 workflow_content）
+          enum: [default, custom]
+          default: "default"
+        workflow_content:
+          type: string
+          description: |
+            自定义 WORKFLOW.md 内容。
+            仅当 workflow_template = "custom" 时有效且必填。
+          maxLength: 65536
+          example: "# Custom Workflow\n\n..."
+
+    UpdateProjectRequest:
+      type: object
+      description: 更新项目配置，所有字段均为可选，仅更新提供的字段。
+      properties:
+        name:
+          type: string
+          description: 项目显示名称
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          description: 项目描述
+          maxLength: 500
+        default_branch:
+          type: string
+          description: 默认分支名
+          minLength: 1
+          maxLength: 100
+        max_concurrent_agents:
+          type: integer
+          description: 最大并发 Agent 数
+          minimum: 1
+          maximum: 20
+          default: 2
+        auto_restart:
+          type: boolean
+          description: 服务崩溃后是否自动重启（最多 3 次）
+          default: true
+
+    AddMemberRequest:
+      type: object
+      required: [user_id]
+      properties:
+        user_id:
+          type: integer
+          description: 要添加的用户 ID（必须为系统中已存在的用户）
+          minimum: 1
+          example: 5
+        role:
+          type: string
+          description: 成员角色
+          enum: [owner, member]
+          default: "member"
+
+    UpdateMemberRoleRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          description: 新的成员角色
+          enum: [owner, member]
+
+    UpdateWorkflowRequest:
+      type: object
+      required: [template_mode]
+      properties:
+        template_mode:
+          type: string
+          description: |
+            模板模式：
+            - "default"：切换为内置模板，content 字段被忽略
+            - "custom"：切换为自定义模式，content 为必填
+          enum: [default, custom]
+        content:
+          type: string
+          description: |
+            自定义 WORKFLOW.md 内容。
+            template_mode = "custom" 时必填。
+            template_mode = "default" 时忽略此字段。
+          maxLength: 65536
+
+    # ==================== Entity Schemas ====================
+
+    Project:
+      type: object
+      description: 项目实体
+      properties:
+        id:
+          type: integer
+          description: 项目 ID
+          example: 1
+        name:
+          type: string
+          description: 项目显示名称
+          example: "my-project"
+        description:
+          type: string
+          description: 项目描述
+          nullable: true
+          example: "My awesome project"
+        git_url:
+          type: string
+          description: Git 仓库地址（标准化后的 HTTPS 格式）
+          example: "https://gitlab.com/group/my-project"
+        platform:
+          type: string
+          description: 代码托管平台
+          enum: [gitlab, github]
+          example: "gitlab"
+        platform_host:
+          type: string
+          description: 平台域名（自建 GitLab 时为自定义域名，GitHub 为 null）
+          nullable: true
+          example: "gitlab.com"
+        namespace:
+          type: string
+          description: 仓库命名空间（GitLab 的 group/subgroup 或 GitHub 的 owner）
+          example: "group"
+        repo_name:
+          type: string
+          description: 仓库名称
+          example: "my-project"
+        default_branch:
+          type: string
+          description: 默认分支
+          example: "main"
+        workflow_template:
+          type: string
+          description: WORKFLOW.md 模板模式
+          enum: [default, custom]
+          example: "default"
+        service_status:
+          type: string
+          description: |
+            服务运行状态：
+            - running: 正常运行中
+            - stopped: 已停止
+            - starting: 启动中
+            - stopping: 停止中
+            - error: 运行异常（将自动重启）
+            - failed: 启动失败（超过重试次数）
+          enum: [running, stopped, starting, stopping, error, failed]
+          example: "stopped"
+        service_pid:
+          type: integer
+          description: 服务进程 PID（仅运行中有值）
+          nullable: true
+          example: 12345
+        max_concurrent_agents:
+          type: integer
+          description: 最大并发 Agent 数
+          example: 2
+        auto_restart:
+          type: boolean
+          description: 是否自动重启
+          example: true
+        member_count:
+          type: integer
+          description: 项目成员数量
+          example: 3
+        my_role:
+          type: string
+          description: 当前请求用户在此项目中的角色（admin 用户固定返回 "admin"）
+          enum: [owner, member, admin]
+          nullable: true
+          example: "owner"
+        created_by:
+          type: integer
+          description: 创建者用户 ID
+          example: 1
+        created_at:
+          type: string
+          format: date-time
+          description: 创建时间（ISO 8601）
+          example: "2025-01-15T10:30:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          description: 最后更新时间（ISO 8601）
+          example: "2025-01-15T10:30:00Z"
+
+    ProjectMember:
+      type: object
+      description: 项目成员实体
+      properties:
+        user_id:
+          type: integer
+          description: 用户 ID
+          example: 2
+        username:
+          type: string
+          description: 用户名
+          example: "zhangsan"
+        display_name:
+          type: string
+          description: 显示名称
+          nullable: true
+          example: "张三"
+        role:
+          type: string
+          description: 项目角色
+          enum: [owner, member]
+          example: "member"
+        synced_from:
+          type: string
+          description: 同步来源（null 表示手动添加）
+          enum: [gitlab, github]
+          nullable: true
+          example: null
+        created_at:
+          type: string
+          format: date-time
+          description: 加入时间（ISO 8601）
+          example: "2025-01-15T10:30:00Z"
+
+    ServiceStatus:
+      type: object
+      description: 服务运行状态详情
+      properties:
+        status:
+          type: string
+          description: 服务状态
+          enum: [running, stopped, starting, stopping, error, failed]
+          example: "running"
+        pid:
+          type: integer
+          description: 进程 PID（仅运行中有值）
+          nullable: true
+          example: 12345
+        started_at:
+          type: string
+          format: date-time
+          description: 最近一次启动时间（ISO 8601）
+          nullable: true
+          example: "2025-01-15T10:30:00Z"
+        uptime_seconds:
+          type: integer
+          description: 运行时长（秒），仅 running 状态有值
+          nullable: true
+          example: 3600
+        restart_count:
+          type: integer
+          description: 自动重启次数（手动重启后归零）
+          example: 0
+        error_message:
+          type: string
+          description: 错误信息（仅 error/failed 状态有值）
+          nullable: true
+          example: null
+
+    WorkflowData:
+      type: object
+      description: WORKFLOW.md 配置数据
+      properties:
+        template_mode:
+          type: string
+          description: |
+            当前模板模式：
+            - "default"：使用内置模板（content 为渲染后的结果）
+            - "custom"：使用用户自定义内容
+          enum: [default, custom]
+          example: "default"
+        content:
+          type: string
+          description: |
+            WORKFLOW.md 内容。
+            default 模式下为渲染后的内置模板内容；
+            custom 模式下为用户自定义内容。
+          example: "# Workflow\n\ntracker:\n  kind: gitlab\n..."
+        updated_at:
+          type: string
+          format: date-time
+          description: WORKFLOW.md 最后更新时间（ISO 8601）
+          example: "2025-01-15T10:30:00Z"
+
+    SyncResult:
+      type: object
+      description: 平台成员同步结果
+      properties:
+        added:
+          type: integer
+          description: 新增成员数量（匹配到系统用户且之前不是成员的）
+          example: 3
+        skipped:
+          type: integer
+          description: 跳过数量（已是项目成员的）
+          example: 1
+        unmatched:
+          type: array
+          description: 未匹配的平台用户名列表（在平台上存在但未在本系统注册）
+          items:
+            type: string
+          example: ["external_user1", "external_user2"]
+
+    # ==================== Response Wrappers ====================
+
+    SuccessResponse:
+      type: object
+      description: 通用成功响应（无业务数据）
+      required: [data, success, retCode, retMsg]
+      properties:
+        data:
+          type: object
+          nullable: true
+          description: 无业务数据时为 null
+          example: null
+        success:
+          type: boolean
+          example: true
+        retCode:
+          type: string
+          example: "0"
+        retMsg:
+          type: string
+          example: "success"
+        showType:
+          type: integer
+          description: "0: silent, 1: warn, 2: error, 4: notification, 9: redirect"
+          enum: [0, 1, 2, 4, 9]
+          example: 0
+
+    ProjectResponse:
+      type: object
+      description: 单个项目响应
+      required: [data, success, retCode, retMsg]
+      properties:
+        data:
+          $ref: '#/components/schemas/Project'
+        success:
+          type: boolean
+          example: true
+        retCode:
+          type: string
+          example: "0"
+        retMsg:
+          type: string
+          example: "success"
+        showType:
+          type: integer
+          enum: [0, 1, 2, 4, 9]
+          example: 0
+
+    ProjectListResponse:
+      type: object
+      description: 项目列表分页响应
+      required: [data, success, retCode, retMsg]
+      properties:
+        data:
+          type: object
+          required: [records, totalCount, pageNo, pageSize, pages]
+          properties:
+            records:
+              type: array
+              description: 当前页的项目列表
+              items:
+                $ref: '#/components/schemas/Project'
+            totalCount:
+              type: integer
+              description: 符合条件的总记录数
+              example: 42
+            pageNo:
+              type: integer
+              description: 当前页码
+              example: 1
+            pageSize:
+              type: integer
+              description: 每页条数
+              example: 20
+            pages:
+              type: integer
+              description: 总页数
+              example: 3
+        success:
+          type: boolean
+          example: true
+        retCode:
+          type: string
+          example: "0"
+        retMsg:
+          type: string
+          example: "success"
+        showType:
+          type: integer
+          enum: [0, 1, 2, 4, 9]
+          example: 0
+
+    ServiceStatusResponse:
+      type: object
+      description: 服务状态响应
+      required: [data, success, retCode, retMsg]
+      properties:
+        data:
+          $ref: '#/components/schemas/ServiceStatus'
+        success:
+          type: boolean
+          example: true
+        retCode:
+          type: string
+          example: "0"
+        retMsg:
+          type: string
+          example: "success"
+        showType:
+          type: integer
+          enum: [0, 1, 2, 4, 9]
+          example: 0
+
+    MemberResponse:
+      type: object
+      description: 单个成员响应
+      required: [data, success, retCode, retMsg]
+      properties:
+        data:
+          $ref: '#/components/schemas/ProjectMember'
+        success:
+          type: boolean
+          example: true
+        retCode:
+          type: string
+          example: "0"
+        retMsg:
+          type: string
+          example: "success"
+        showType:
+          type: integer
+          enum: [0, 1, 2, 4, 9]
+          example: 0
+
+    MemberListResponse:
+      type: object
+      description: 成员列表响应
+      required: [data, success, retCode, retMsg]
+      properties:
+        data:
+          type: array
+          description: 项目成员列表
+          items:
+            $ref: '#/components/schemas/ProjectMember'
+        success:
+          type: boolean
+          example: true
+        retCode:
+          type: string
+          example: "0"
+        retMsg:
+          type: string
+          example: "success"
+        showType:
+          type: integer
+          enum: [0, 1, 2, 4, 9]
+          example: 0
+
+    SyncMembersResponse:
+      type: object
+      description: 成员同步结果响应
+      required: [data, success, retCode, retMsg]
+      properties:
+        data:
+          $ref: '#/components/schemas/SyncResult'
+        success:
+          type: boolean
+          example: true
+        retCode:
+          type: string
+          example: "0"
+        retMsg:
+          type: string
+          example: "success"
+        showType:
+          type: integer
+          enum: [0, 1, 2, 4, 9]
+          example: 0
+
+    WorkflowResponse:
+      type: object
+      description: WORKFLOW.md 响应
+      required: [data, success, retCode, retMsg]
+      properties:
+        data:
+          $ref: '#/components/schemas/WorkflowData'
+        success:
+          type: boolean
+          example: true
+        retCode:
+          type: string
+          example: "0"
+        retMsg:
+          type: string
+          example: "success"
+        showType:
+          type: integer
+          enum: [0, 1, 2, 4, 9]
+          example: 0
+
+    # ==================== Error Response Schemas ====================
+
+    ErrorResponseAuth001:
+      type: object
+      description: 未认证错误（Token 缺失或过期）
+      required: [data, success, retCode, retMsg]
+      properties:
+        data:
+          nullable: true
+          example: null
+        success:
+          type: boolean
+          example: false
+        retCode:
+          type: string
+          example: "AUTH_001"
+        retMsg:
+          type: string
+          example: "未登录或 Token 已过期，请重新登录"
+        showType:
+          type: integer
+          description: "9: redirect to login"
+          example: 9
+
+    ErrorResponseAuth002:
+      type: object
+      description: 权限不足错误
+      required: [data, success, retCode, retMsg]
+      properties:
+        data:
+          nullable: true
+          example: null
+        success:
+          type: boolean
+          example: false
+        retCode:
+          type: string
+          example: "AUTH_002"
+        retMsg:
+          type: string
+          example: "权限不足，需要 owner 或 admin 角色"
+        showType:
+          type: integer
+          description: "2: error"
+          example: 2
+
+    ErrorResponseBiz001:
+      type: object
+      description: 业务参数错误
+      required: [data, success, retCode, retMsg]
+      properties:
+        data:
+          type: object
+          nullable: true
+          description: 可选的字段级错误详情
+          properties:
+            errors:
+              type: array
+              description: 字段校验错误列表
+              items:
+                type: object
+                properties:
+                  field:
+                    type: string
+                    description: 错误字段名
+                    example: "git_url"
+                  message:
+                    type: string
+                    description: 错误描述
+                    example: "无效的 Git URL 格式"
+          example:
+            errors:
+              - field: "git_url"
+                message: "无效的 Git URL 格式"
+        success:
+          type: boolean
+          example: false
+        retCode:
+          type: string
+          example: "BIZ_001"
+        retMsg:
+          type: string
+          example: "参数校验失败"
+        showType:
+          type: integer
+          description: "1: warn"
+          example: 1
+
+    ErrorResponseBiz002:
+      type: object
+      description: 资源不存在错误
+      required: [data, success, retCode, retMsg]
+      properties:
+        data:
+          nullable: true
+          example: null
+        success:
+          type: boolean
+          example: false
+        retCode:
+          type: string
+          example: "BIZ_002"
+        retMsg:
+          type: string
+          example: "项目不存在"
+        showType:
+          type: integer
+          description: "2: error"
+          example: 2
+
+    ErrorResponseBiz003:
+      type: object
+      description: 操作冲突错误
+      required: [data, success, retCode, retMsg]
+      properties:
+        data:
+          nullable: true
+          example: null
+        success:
+          type: boolean
+          example: false
+        retCode:
+          type: string
+          example: "BIZ_003"
+        retMsg:
+          type: string
+          example: "操作冲突：服务运行中，请先停止服务"
+        showType:
+          type: integer
+          description: "1: warn"
+          example: 1
+
+    ErrorResponseSys001:
+      type: object
+      description: 系统内部错误
+      required: [data, success, retCode, retMsg]
+      properties:
+        data:
+          nullable: true
+          example: null
+        success:
+          type: boolean
+          example: false
+        retCode:
+          type: string
+          example: "SYS_001"
+        retMsg:
+          type: string
+          example: "系统内部错误，请稍后重试"
+        showType:
+          type: integer
+          description: "2: error"
+          example: 2
+
+    ErrorResponseExt001:
+      type: object
+      description: 外部服务不可用错误（GitLab/GitHub API 请求失败）
+      required: [data, success, retCode, retMsg]
+      properties:
+        data:
+          nullable: true
+          example: null
+        success:
+          type: boolean
+          example: false
+        retCode:
+          type: string
+          example: "EXT_001"
+        retMsg:
+          type: string
+          example: "外部服务不可用，GitLab/GitHub API 请求失败"
+        showType:
+          type: integer
+          description: "4: notification"
+          example: 4

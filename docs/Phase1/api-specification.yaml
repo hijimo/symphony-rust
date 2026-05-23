@@ -1,0 +1,1351 @@
+openapi: 3.0.3
+info:
+  title: Symphony Web Management Platform API
+  description: |
+    Symphony Web 管理平台 Phase 1 API 接口规范。
+    
+    ## 通用协议
+    
+    所有接口统一使用 `application/json` 格式，响应体遵循 `ResponseData<T>` 包装结构。
+    
+    ## 认证方式
+    
+    除 `/api/auth/login` 和 `/health` 外，所有接口需要在请求头中携带 JWT Bearer Token：
+    ```
+    Authorization: Bearer <jwt_token>
+    ```
+    
+    ## 错误码说明
+    
+    | retCode | 含义 | HTTP Status | showType |
+    |---------|------|-------------|----------|
+    | 0 | 成功 | 200 | 0 (silent) |
+    | AUTH_001 | 未登录或 Token 过期 | 401 | 9 (redirect) |
+    | AUTH_002 | 权限不足 | 403 | 2 (error) |
+    | BIZ_001 | 业务参数错误 | 400 | 1 (warn) |
+    | BIZ_002 | 资源不存在 | 404 | 2 (error) |
+    | BIZ_003 | 操作冲突 | 409 | 1 (warn) |
+    | SYS_001 | 系统内部错误 | 500 | 2 (error) |
+    | EXT_001 | 外部服务不可用 | 502 | 4 (notification) |
+    
+    ## Rate Limit
+    
+    - 登录接口：同一用户名 5次/分钟，同一 IP 20次/分钟
+    - 超出限制返回 HTTP 429，响应头包含 `Retry-After` 秒数
+  version: 1.0.0
+  contact:
+    name: Symphony Team
+
+servers:
+  - url: http://localhost:3000
+    description: 本地开发环境
+
+tags:
+  - name: Health
+    description: 健康检查
+  - name: Auth
+    description: 认证相关接口
+  - name: User
+    description: 个人信息与配置
+  - name: Admin
+    description: 管理员用户管理接口（需要 admin 角色）
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: 健康检查
+      description: |
+        检查服务是否正常运行。此接口无需认证。
+      operationId: healthCheck
+      responses:
+        '200':
+          description: 服务正常
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ResponseData'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/HealthData'
+              example:
+                data:
+                  status: "ok"
+                  version: "0.1.0"
+                  uptime: 3600
+                success: true
+                retCode: "0"
+                retMsg: "success"
+
+  /api/auth/login:
+    post:
+      tags:
+        - Auth
+      summary: 用户登录
+      description: |
+        使用用户名和密码登录，返回 JWT Token。
+        
+        **Rate Limit**: 同一用户名 5次/分钟，同一 IP 20次/分钟。
+        
+        **安全说明**:
+        - 无论用户名是否存在，错误提示统一为"用户名或密码错误"，防止用户名枚举
+        - 已软删除的用户无法登录
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              username: "admin"
+              password: "Admin@123456"
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ResponseData'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LoginResponse'
+              example:
+                data:
+                  token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  expiresAt: "2026-05-27T10:00:00Z"
+                  user:
+                    id: 1
+                    username: "admin"
+                    displayName: "管理员"
+                    role: "admin"
+                success: true
+                retCode: "0"
+                retMsg: "success"
+        '400':
+          description: 参数错误（用户名或密码为空）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                data: null
+                success: false
+                retCode: "BIZ_001"
+                retMsg: "用户名和密码不能为空"
+                showType: 1
+        '401':
+          description: 用户名或密码错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                data: null
+                success: false
+                retCode: "AUTH_001"
+                retMsg: "用户名或密码错误"
+                showType: 2
+        '429':
+          description: 请求过于频繁
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: 需要等待的秒数
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                data: null
+                success: false
+                retCode: "BIZ_003"
+                retMsg: "登录尝试过于频繁，请稍后再试"
+                showType: 1
+
+  /api/auth/password:
+    put:
+      tags:
+        - Auth
+      summary: 修改密码
+      description: |
+        当前登录用户修改自己的密码。需要验证旧密码。
+        
+        修改成功后，该用户的所有已签发 Token 将被加入黑名单（即时失效），
+        用户需要使用新密码重新登录。
+      operationId: changePassword
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+            example:
+              oldPassword: "OldPass@123"
+              newPassword: "NewPass@456"
+      responses:
+        '200':
+          description: 密码修改成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ResponseData'
+                  - type: object
+                    properties:
+                      data:
+                        type: "null"
+              example:
+                data: null
+                success: true
+                retCode: "0"
+                retMsg: "密码修改成功，请重新登录"
+        '400':
+          description: 参数错误（密码格式不符合要求）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                data: null
+                success: false
+                retCode: "BIZ_001"
+                retMsg: "新密码长度至少8位，需包含大小写字母和数字"
+                showType: 1
+        '401':
+          description: 旧密码错误或 Token 无效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                data: null
+                success: false
+                retCode: "AUTH_001"
+                retMsg: "旧密码错误"
+                showType: 2
+
+  /api/user/profile:
+    get:
+      tags:
+        - User
+      summary: 获取个人信息
+      description: 获取当前登录用户的个人信息。
+      operationId: getUserProfile
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ResponseData'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserProfile'
+              example:
+                data:
+                  id: 1
+                  username: "admin"
+                  displayName: "管理员"
+                  role: "admin"
+                  createdAt: "2026-05-20T08:00:00Z"
+                  updatedAt: "2026-05-20T08:00:00Z"
+                success: true
+                retCode: "0"
+                retMsg: "success"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags:
+        - User
+      summary: 更新个人信息
+      description: |
+        更新当前登录用户的个人信息。目前仅支持修改 `displayName`。
+      operationId: updateUserProfile
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+            example:
+              displayName: "新昵称"
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ResponseData'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserProfile'
+              example:
+                data:
+                  id: 1
+                  username: "admin"
+                  displayName: "新昵称"
+                  role: "admin"
+                  createdAt: "2026-05-20T08:00:00Z"
+                  updatedAt: "2026-05-20T10:00:00Z"
+                success: true
+                retCode: "0"
+                retMsg: "success"
+        '400':
+          description: 参数错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                data: null
+                success: false
+                retCode: "BIZ_001"
+                retMsg: "displayName 长度不能超过50个字符"
+                showType: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/user/config:
+    get:
+      tags:
+        - User
+      summary: 获取个人配置
+      description: |
+        获取当前登录用户的个人配置（GitLab/GitHub Token 等）。
+        
+        **安全说明**: Token 字段返回脱敏值（仅显示前4位和后4位），不返回完整明文。
+      operationId: getUserConfig
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ResponseData'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserConfig'
+              example:
+                data:
+                  gitlabToken: "glpat-****...****ab3f"
+                  gitlabHost: "https://gitlab.example.com"
+                  githubToken: null
+                  hasGitlabToken: true
+                  hasGithubToken: false
+                  updatedAt: "2026-05-20T09:00:00Z"
+                success: true
+                retCode: "0"
+                retMsg: "success"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags:
+        - User
+      summary: 更新个人配置
+      description: |
+        更新当前登录用户的 Token 配置。
+        
+        **安全说明**:
+        - Token 使用 AES-GCM 256-bit 加密后存储
+        - 传入空字符串表示清除对应 Token
+        - 仅传入需要更新的字段，未传入的字段保持不变
+      operationId: updateUserConfig
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateConfigRequest'
+            example:
+              gitlabToken: "gitlab-token-example"
+              gitlabHost: "https://gitlab.example.com"
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ResponseData'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserConfig'
+              example:
+                data:
+                  gitlabToken: "glpa-****...****xxxx"
+                  gitlabHost: "https://gitlab.example.com"
+                  githubToken: null
+                  hasGitlabToken: true
+                  hasGithubToken: false
+                  updatedAt: "2026-05-20T10:30:00Z"
+                success: true
+                retCode: "0"
+                retMsg: "success"
+        '400':
+          description: 参数错误（如 gitlabHost 格式不正确）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                data: null
+                success: false
+                retCode: "BIZ_001"
+                retMsg: "gitlabHost 必须是有效的 URL 格式"
+                showType: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/admin/users:
+    get:
+      tags:
+        - Admin
+      summary: 用户列表（分页）
+      description: |
+        获取系统用户列表，支持分页。仅 admin 角色可访问。
+        
+        **说明**:
+        - 默认不返回已软删除的用户
+        - 支持通过 `includeDeleted=true` 查看已删除用户
+        - 响应中不包含 `passwordHash` 等敏感字段
+      operationId: listUsers
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: pageNo
+          in: query
+          description: 页码，从 1 开始
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          description: 每页数量
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: keyword
+          in: query
+          description: 搜索关键词（匹配 username 或 displayName）
+          required: false
+          schema:
+            type: string
+            maxLength: 50
+        - name: role
+          in: query
+          description: 按角色筛选
+          required: false
+          schema:
+            type: string
+            enum:
+              - admin
+              - user
+        - name: includeDeleted
+          in: query
+          description: 是否包含已删除用户
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ResponseData'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserListPagination'
+              example:
+                data:
+                  limit: 20
+                  offset: 0
+                  pageNo: 1
+                  pageSize: 20
+                  pages: 1
+                  totalCount: 3
+                  records:
+                    - id: 1
+                      username: "admin"
+                      displayName: "管理员"
+                      role: "admin"
+                      deletedAt: null
+                      createdAt: "2026-05-20T08:00:00Z"
+                      updatedAt: "2026-05-20T08:00:00Z"
+                    - id: 2
+                      username: "zhangsan"
+                      displayName: "张三"
+                      role: "user"
+                      deletedAt: null
+                      createdAt: "2026-05-20T09:00:00Z"
+                      updatedAt: "2026-05-20T09:00:00Z"
+                success: true
+                retCode: "0"
+                retMsg: "success"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags:
+        - Admin
+      summary: 创建用户
+      description: |
+        管理员创建新用户。仅 admin 角色可访问。
+        
+        **规则**:
+        - username 必须唯一（包括已软删除的用户）
+        - username 仅允许字母、数字、下划线，长度 3-30
+        - 初始密码长度至少 8 位，需包含大小写字母和数字
+        - 默认角色为 user
+      operationId: createUser
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+            example:
+              username: "zhangsan"
+              password: "Init@12345"
+              displayName: "张三"
+              role: "user"
+      responses:
+        '200':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ResponseData'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserInfo'
+              example:
+                data:
+                  id: 3
+                  username: "zhangsan"
+                  displayName: "张三"
+                  role: "user"
+                  deletedAt: null
+                  createdAt: "2026-05-20T10:00:00Z"
+                  updatedAt: "2026-05-20T10:00:00Z"
+                success: true
+                retCode: "0"
+                retMsg: "success"
+        '400':
+          description: 参数错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidUsername:
+                  summary: 用户名格式错误
+                  value:
+                    data: null
+                    success: false
+                    retCode: "BIZ_001"
+                    retMsg: "用户名仅允许字母、数字、下划线，长度3-30"
+                    showType: 1
+                duplicateUsername:
+                  summary: 用户名已存在
+                  value:
+                    data: null
+                    success: false
+                    retCode: "BIZ_003"
+                    retMsg: "用户名已存在"
+                    showType: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/admin/users/{id}:
+    delete:
+      tags:
+        - Admin
+      summary: 删除用户（软删除）
+      description: |
+        软删除指定用户。仅 admin 角色可访问。
+        
+        **规则**:
+        - 不能删除自己
+        - 删除后该用户的所有 Token 即时失效（加入黑名单）
+        - 软删除：设置 `deleted_at` 字段，数据保留
+        - 已删除的用户无法登录
+      operationId: deleteUser
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 用户 ID
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ResponseData'
+                  - type: object
+                    properties:
+                      data:
+                        type: "null"
+              example:
+                data: null
+                success: true
+                retCode: "0"
+                retMsg: "success"
+        '400':
+          description: 不能删除自己
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                data: null
+                success: false
+                retCode: "BIZ_001"
+                retMsg: "不能删除自己的账号"
+                showType: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: 用户不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                data: null
+                success: false
+                retCode: "BIZ_002"
+                retMsg: "用户不存在"
+                showType: 2
+
+  /api/admin/users/{id}/reset-password:
+    put:
+      tags:
+        - Admin
+      summary: 重置用户密码
+      description: |
+        管理员重置指定用户的密码。仅 admin 角色可访问。
+        
+        **规则**:
+        - 重置后该用户的所有 Token 即时失效（加入黑名单）
+        - 新密码长度至少 8 位，需包含大小写字母和数字
+        - 不能重置自己的密码（应使用修改密码接口）
+      operationId: resetUserPassword
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 用户 ID
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+            example:
+              newPassword: "Reset@12345"
+      responses:
+        '200':
+          description: 重置成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ResponseData'
+                  - type: object
+                    properties:
+                      data:
+                        type: "null"
+              example:
+                data: null
+                success: true
+                retCode: "0"
+                retMsg: "密码重置成功"
+        '400':
+          description: 参数错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                weakPassword:
+                  summary: 密码强度不足
+                  value:
+                    data: null
+                    success: false
+                    retCode: "BIZ_001"
+                    retMsg: "新密码长度至少8位，需包含大小写字母和数字"
+                    showType: 1
+                resetSelf:
+                  summary: 不能重置自己的密码
+                  value:
+                    data: null
+                    success: false
+                    retCode: "BIZ_001"
+                    retMsg: "不能重置自己的密码，请使用修改密码功能"
+                    showType: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: 用户不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                data: null
+                success: false
+                retCode: "BIZ_002"
+                retMsg: "用户不存在"
+                showType: 2
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT Bearer Token 认证。
+        
+        **Token 规格**:
+        - 签名算法: HS256（拒绝 alg: none）
+        - 有效期: 7 天
+        - Payload 包含: sub (user_id), username, role, iat, exp
+        
+        **即时失效机制**:
+        - 用户被删除时，该用户所有 Token 加入黑名单
+        - 用户修改密码时，该用户所有 Token 加入黑名单
+        - 管理员重置密码时，目标用户所有 Token 加入黑名单
+        - 黑名单存储: 内存 HashMap + SQLite 持久化（重启恢复）
+
+  responses:
+    Unauthorized:
+      description: 未登录或 Token 过期
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            data: null
+            success: false
+            retCode: "AUTH_001"
+            retMsg: "未登录或登录已过期，请重新登录"
+            showType: 9
+    Forbidden:
+      description: 权限不足（需要 admin 角色）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            data: null
+            success: false
+            retCode: "AUTH_002"
+            retMsg: "权限不足，需要管理员权限"
+            showType: 2
+    InternalError:
+      description: 系统内部错误
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            data: null
+            success: false
+            retCode: "SYS_001"
+            retMsg: "系统内部错误，请稍后重试"
+            showType: 2
+
+  schemas:
+    ResponseData:
+      type: object
+      required:
+        - data
+        - success
+        - retCode
+        - retMsg
+      properties:
+        data:
+          description: 响应数据，成功时为具体数据对象，失败时为 null
+        success:
+          type: boolean
+          description: 请求是否成功
+        retCode:
+          type: string
+          description: 业务状态码，"0" 表示成功
+        retMsg:
+          type: string
+          description: 状态描述信息
+        showType:
+          type: integer
+          description: |
+            前端错误展示方式：
+            - 0: silent（不展示）
+            - 1: warn（警告提示）
+            - 2: error（错误提示）
+            - 4: notification（通知）
+            - 9: redirect（跳转登录页）
+          enum: [0, 1, 2, 4, 9]
+
+    ErrorResponse:
+      type: object
+      required:
+        - data
+        - success
+        - retCode
+        - retMsg
+        - showType
+      properties:
+        data:
+          type: "null"
+          description: 错误时 data 为 null
+        success:
+          type: boolean
+          enum: [false]
+        retCode:
+          type: string
+          description: 错误码
+        retMsg:
+          type: string
+          description: 错误描述
+        showType:
+          type: integer
+          description: 前端错误展示方式
+          enum: [0, 1, 2, 4, 9]
+
+    HealthData:
+      type: object
+      required:
+        - status
+        - version
+      properties:
+        status:
+          type: string
+          description: 服务状态
+          enum: ["ok"]
+        version:
+          type: string
+          description: 服务版本号
+          example: "0.1.0"
+        uptime:
+          type: integer
+          description: 服务运行时长（秒）
+          example: 3600
+
+    LoginRequest:
+      type: object
+      required:
+        - username
+        - password
+      properties:
+        username:
+          type: string
+          description: 用户名
+          minLength: 1
+          maxLength: 30
+          example: "admin"
+        password:
+          type: string
+          description: 密码
+          minLength: 1
+          maxLength: 128
+          format: password
+          example: "Admin@123456"
+
+    LoginResponse:
+      type: object
+      required:
+        - token
+        - expiresAt
+        - user
+      properties:
+        token:
+          type: string
+          description: JWT Token
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        expiresAt:
+          type: string
+          format: date-time
+          description: Token 过期时间（ISO 8601）
+          example: "2026-05-27T10:00:00Z"
+        user:
+          $ref: '#/components/schemas/LoginUserInfo'
+
+    LoginUserInfo:
+      type: object
+      required:
+        - id
+        - username
+        - role
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: 用户 ID
+        username:
+          type: string
+          description: 用户名
+        displayName:
+          type: string
+          nullable: true
+          description: 显示名称
+        role:
+          type: string
+          enum: ["admin", "user"]
+          description: 用户角色
+
+    ChangePasswordRequest:
+      type: object
+      required:
+        - oldPassword
+        - newPassword
+      properties:
+        oldPassword:
+          type: string
+          description: 当前密码
+          minLength: 1
+          maxLength: 128
+          format: password
+        newPassword:
+          type: string
+          description: |
+            新密码。要求：
+            - 长度至少 8 位，最多 128 位
+            - 必须包含大写字母、小写字母和数字
+            - 不能与旧密码相同
+          minLength: 8
+          maxLength: 128
+          format: password
+
+    UserProfile:
+      type: object
+      required:
+        - id
+        - username
+        - role
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: 用户 ID
+        username:
+          type: string
+          description: 用户名
+        displayName:
+          type: string
+          nullable: true
+          description: 显示名称
+        role:
+          type: string
+          enum: ["admin", "user"]
+          description: 用户角色
+        createdAt:
+          type: string
+          format: date-time
+          description: 创建时间
+        updatedAt:
+          type: string
+          format: date-time
+          description: 更新时间
+
+    UpdateProfileRequest:
+      type: object
+      required:
+        - displayName
+      properties:
+        displayName:
+          type: string
+          description: 显示名称
+          minLength: 1
+          maxLength: 50
+          example: "新昵称"
+
+    UserConfig:
+      type: object
+      required:
+        - hasGitlabToken
+        - hasGithubToken
+      properties:
+        gitlabToken:
+          type: string
+          nullable: true
+          description: GitLab Token（脱敏显示，仅前4后4位）
+          example: "glpa-****...****ab3f"
+        gitlabHost:
+          type: string
+          nullable: true
+          description: GitLab 实例地址
+          example: "https://gitlab.example.com"
+        githubToken:
+          type: string
+          nullable: true
+          description: GitHub Token（脱敏显示，仅前4后4位）
+          example: "ghp_****...****x7z9"
+        hasGitlabToken:
+          type: boolean
+          description: 是否已配置 GitLab Token
+        hasGithubToken:
+          type: boolean
+          description: 是否已配置 GitHub Token
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最后更新时间
+
+    UpdateConfigRequest:
+      type: object
+      properties:
+        gitlabToken:
+          type: string
+          nullable: true
+          description: |
+            GitLab Personal Access Token。
+            - 传入有效值：更新 Token
+            - 传入空字符串 ""：清除 Token
+            - 不传入该字段：保持不变
+          maxLength: 255
+        gitlabHost:
+          type: string
+          nullable: true
+          description: |
+            GitLab 实例地址（如 https://gitlab.example.com）。
+            - 必须是有效的 HTTPS URL
+            - 不传入该字段：保持不变
+          maxLength: 255
+          format: uri
+        githubToken:
+          type: string
+          nullable: true
+          description: |
+            GitHub Personal Access Token。
+            - 传入有效值：更新 Token
+            - 传入空字符串 ""：清除 Token
+            - 不传入该字段：保持不变
+          maxLength: 255
+
+    UserInfo:
+      type: object
+      description: 用户信息（管理员视角）
+      required:
+        - id
+        - username
+        - role
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: 用户 ID
+        username:
+          type: string
+          description: 用户名
+        displayName:
+          type: string
+          nullable: true
+          description: 显示名称
+        role:
+          type: string
+          enum: ["admin", "user"]
+          description: 用户角色
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: 软删除时间，null 表示未删除
+        createdAt:
+          type: string
+          format: date-time
+          description: 创建时间
+        updatedAt:
+          type: string
+          format: date-time
+          description: 更新时间
+
+    UserListPagination:
+      type: object
+      description: 用户列表分页数据
+      required:
+        - limit
+        - offset
+        - pageNo
+        - pageSize
+        - pages
+        - records
+        - totalCount
+      properties:
+        limit:
+          type: integer
+          description: 每页数量
+          example: 20
+        offset:
+          type: integer
+          description: 偏移量
+          example: 0
+        pageNo:
+          type: integer
+          description: 当前页码
+          example: 1
+        pageSize:
+          type: integer
+          description: 每页数量
+          example: 20
+        pages:
+          type: integer
+          description: 总页数
+          example: 1
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserInfo'
+          description: 用户列表
+        totalCount:
+          type: integer
+          description: 总记录数
+          example: 3
+
+    CreateUserRequest:
+      type: object
+      required:
+        - username
+        - password
+      properties:
+        username:
+          type: string
+          description: |
+            用户名。规则：
+            - 仅允许字母、数字、下划线
+            - 长度 3-30 个字符
+            - 系统内唯一（包括已软删除的用户）
+          minLength: 3
+          maxLength: 30
+          pattern: "^[a-zA-Z0-9_]+$"
+          example: "zhangsan"
+        password:
+          type: string
+          description: |
+            初始密码。要求：
+            - 长度至少 8 位，最多 128 位
+            - 必须包含大写字母、小写字母和数字
+          minLength: 8
+          maxLength: 128
+          format: password
+          example: "Init@12345"
+        displayName:
+          type: string
+          nullable: true
+          description: 显示名称（可选）
+          maxLength: 50
+          example: "张三"
+        role:
+          type: string
+          enum: ["admin", "user"]
+          default: "user"
+          description: 用户角色，默认为 user
+
+    ResetPasswordRequest:
+      type: object
+      required:
+        - newPassword
+      properties:
+        newPassword:
+          type: string
+          description: |
+            新密码。要求：
+            - 长度至少 8 位，最多 128 位
+            - 必须包含大写字母、小写字母和数字
+          minLength: 8
+          maxLength: 128
+          format: password
+          example: "Reset@12345"
+
+    JwtPayload:
+      type: object
+      description: |
+        JWT Token Payload 结构（仅供参考，不作为 API 响应）。
+        前端不应解析 Token 内容来获取用户信息，应使用 /api/user/profile 接口。
+      properties:
+        sub:
+          type: string
+          description: 用户 ID（字符串形式）
+          example: "1"
+        username:
+          type: string
+          description: 用户名
+          example: "admin"
+        role:
+          type: string
+          enum: ["admin", "user"]
+          description: 用户角色
+        iat:
+          type: integer
+          description: Token 签发时间（Unix 时间戳）
+        exp:
+          type: integer
+          description: Token 过期时间（Unix 时间戳）
+
+# -------------------------------------------------------------------
+# 对抗验证记录
+# -------------------------------------------------------------------
+#
+# ===== 第一轮验证（安全视角） =====
+#
+# 1. 未认证接口暴露检查
+#    - /health: 无需认证 ✓（健康检查不含敏感信息）
+#    - /api/auth/login: 无需认证 ✓（登录入口）
+#    - 其余所有接口均要求 BearerAuth ✓
+#    结论: 无未授权暴露风险
+#
+# 2. 权限绕过风险检查
+#    - /api/admin/* 接口均标注需要 admin 角色 ✓
+#    - /api/user/* 接口通过 JWT 中的 sub 字段确定当前用户，无法越权访问他人数据 ✓
+#    - DELETE /api/admin/users/{id} 增加了"不能删除自己"的校验 ✓
+#    - PUT /api/admin/users/{id}/reset-password 增加了"不能重置自己密码"的校验 ✓
+#    结论: 已覆盖常见权限绕过场景
+#
+# 3. 输入验证完整性检查
+#    - username: 正则 ^[a-zA-Z0-9_]+$, 长度 3-30 ✓
+#    - password: 长度 8-128, 复杂度要求（大小写+数字） ✓
+#    - displayName: 长度限制 1-50 ✓
+#    - gitlabHost: URL 格式验证 ✓
+#    - Token 字段: maxLength 255 ✓
+#    - 分页参数: pageNo >= 1, pageSize 1-100 ✓
+#    - keyword 搜索: maxLength 50 ✓
+#    结论: 所有输入字段均有验证规则
+#
+# 4. 敏感数据泄露检查
+#    - password_hash: 所有用户响应 Schema 中均不包含此字段 ✓
+#    - Token 明文: GET /api/user/config 返回脱敏值（前4后4位）+ hasXxxToken 布尔标识 ✓
+#    - JWT Secret: 仅存在于环境变量，不在任何响应中出现 ✓
+#    - 登录失败: 统一返回"用户名或密码错误"，不区分用户名不存在/密码错误 ✓
+#    结论: 无敏感数据泄露风险
+#
+# 5. Rate Limit 覆盖检查
+#    - POST /api/auth/login: 同一用户名 5次/分钟 + 同一 IP 20次/分钟 ✓
+#    - 其他接口: 已认证接口通过 JWT 绑定用户身份，恶意调用可通过审计日志追溯
+#    - 建议（Phase 1 后补充）: 全局 API rate limit 100次/分钟/IP
+#    结论: 核心高风险接口已覆盖 rate limit
+#
+# ===== 第二轮验证（前端消费视角） =====
+#
+# 1. 响应格式一致性检查
+#    - 所有成功响应: { data: T, success: true, retCode: "0", retMsg: "..." } ✓
+#    - 所有错误响应: { data: null, success: false, retCode: "XXX", retMsg: "...", showType: N } ✓
+#    - 分页接口: data 为 PaginationData 结构 ✓
+#    结论: 响应格式完全统一
+#
+# 2. 分页参数统一性检查
+#    - 请求参数: pageNo + pageSize（query string） ✓
+#    - 响应结构: limit, offset, pageNo, pageSize, pages, records, totalCount ✓
+#    - 默认值: pageNo=1, pageSize=20 ✓
+#    结论: 分页协议统一
+#
+# 3. 错误码覆盖检查
+#    - AUTH_001 (401): 未登录/Token过期/密码错误 ✓
+#    - AUTH_002 (403): 非 admin 访问管理接口 ✓
+#    - BIZ_001 (400): 参数校验失败 ✓
+#    - BIZ_002 (404): 用户不存在 ✓
+#    - BIZ_003 (409): 用户名重复/rate limit ✓
+#    - SYS_001 (500): 系统内部错误 ✓
+#    结论: Phase 1 场景错误码已全覆盖
+#
+# 4. 字段命名一致性检查
+#    - 全部使用 camelCase ✓ (displayName, createdAt, updatedAt, deletedAt,
+#      gitlabToken, gitlabHost, githubToken, hasGitlabToken, hasGithubToken,
+#      pageNo, pageSize, totalCount, retCode, retMsg, showType, expiresAt)
+#    - 时间字段统一使用 ISO 8601 格式 (date-time) ✓
+#    - ID 字段统一使用 integer/int64 ✓
+#    结论: 命名规范统一
+#
+# 5. 前端必要字段检查
+#    - 登录响应包含 user 基本信息（避免登录后额外请求） ✓
+#    - 登录响应包含 expiresAt（前端可设置自动刷新/跳转） ✓
+#    - 用户配置包含 hasXxxToken 布尔值（前端判断是否已配置，无需解析脱敏字符串） ✓
+#    - 用户列表包含 deletedAt（前端可展示删除状态标记） ✓
+#    - 分页响应包含 pages 总页数（前端分页组件直接使用） ✓
+#    结论: 前端所需字段已完整覆盖
+#
+# ===== 验证修正记录 =====
+#
+# 修正 1: UserConfig 增加 hasGitlabToken/hasGithubToken 布尔字段
+#   原因: 前端需要快速判断是否已配置 Token，脱敏字符串为 null 时无法区分"未配置"和"配置为空"
+#
+# 修正 2: LoginResponse 增加 user 对象
+#   原因: 前端登录成功后需要立即获取用户角色以决定路由跳转，避免额外请求 /api/user/profile
+#
+# 修正 3: 登录失败统一返回 AUTH_001 + "用户名或密码错误"
+#   原因: 防止通过不同错误信息枚举有效用户名
+#
+# 修正 4: DELETE /api/admin/users/{id} 增加"不能删除自己"校验
+#   原因: 防止管理员误删自己导致系统无管理员
+#
+# 修正 5: PUT /api/admin/users/{id}/reset-password 增加"不能重置自己密码"校验
+#   原因: 管理员修改自己密码应走 /api/auth/password（需验证旧密码），重置接口不验证旧密码
+#
+# 修正 6: UserConfig.gitlabToken 返回脱敏值而非 null/完整明文
+#   原因: 前端需要展示"已配置的 Token 前后几位"帮助用户确认是哪个 Token
+#
+# 修正 7: 分页接口增加 keyword 搜索参数和 role 筛选参数
+#   原因: 前端用户管理页面需要搜索和筛选功能
+#
+# 修正 8: CreateUserRequest.username 增加 pattern 正则约束
+#   原因: 明确前后端统一的用户名格式校验规则，避免前端校验通过但后端拒绝

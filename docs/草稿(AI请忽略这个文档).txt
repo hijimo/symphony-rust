@@ -1,32 +1,22 @@
+1.这是我的完整设计方案/Users/zhaojimo/Documents/git/symphony-rust/docs/方案/web-management-platform.md，我现在已经实现了phase1、2、3、4， 请帮我 实现方案/Users/zhaojimo/Documents/git/symphony-rust/docs/里程碑/phase1-基础框架.md   的phase5部分
 
-当前项目已经实现了从issue到codex执行到pr的完整流程，我需要基于此服务设计一个web管理系统，用来管理我的项目、服务、和需求。
-
-
-目前支持gitlab、github的issue来源。
-按设计，每一个gitlab或者github 项目你需要启动一个独立的服务rulst-symphony-rust.
-
-我的目标是我可以直接在web上创建issue，并看到每个issue的进度和状，所以需要一个看板。看板默认读取前50条待处理的issue 和 近一周内完成的issue和关联的pr. 这里有一个问题，gitlab和github的接口是否支持直接获取issue和pr的关联关系？我希望可以看到 待处理issue、处理中(codex cli 回复了这个issue就表示 在处理中) 、pr 这三个状态的看板。同时，在pr看板详情中我希望可以看得到所有关联的issue
+使用 3个rust agent 、2个web前端开发agent、 2个测试agent 组成 agent team
 
 
-我希望可以管理很多个项目，所以我需要一个项目管理。可以管理所有的项目，并且每个项目我可以知道它的服务是不是在运行。我应该只需要输入gitlab或才github地址，你就可以知道我的项目名、应该关联gitlab还是github地址等.你应该在创建项目的时读取这个项目的描述或者readme，同时这也是验证git地址是否正确的一种方式。如果你要删除项目，必须先停止服务。
+rsut agent 先根据文档完成接口文档设计，并经过至少两轮对抗验证确认无误后再开始底层架构开发和业务开发。
 
-我有足够的codex额度，我希望系统可以支持控制并行。支持同时最多x个 codex同时工作，x的默认值为5，允许用户配置。
+测试agent 设计完整的前、后端自动化框架。 rust端除了单元测试、集成测试、e2e测试之外还要对每个接口进行接口测试。 前端设计完成的单元测试、集成测试、e2e测试。
 
-另外我们的git项目都是多人协做的，平台需要支持多人协做。通过配置每个人自己的gitlab、github token，每个人issue显示作者tag,pr是否可以识别到是属于谁的？
+前端开发必须等到后端接口文档产出之后才开始开发，。
 
-实现用户管理，但不对外开放入口，只对管理员账号开放。由管理员添加管理账号，不可注册。
+所有的文档、设计资源等产出都保存到 docs/Phase4/目录下
 
-其他用户登录后可以编辑个人信息和gitlab、github配置。
+在你写入的时候一定要注意，文档可能会太大，你要分批写入
 
+我需要补充一下测试的gitlab信息
 
-项目很小，你可以使用sqlite 做为数据库。
+ gitlab地址 http://gitlab.jushuitan-inc.com:8081/
 
-sqlite 需要管理用户信息和用户配置
-sqlite 需要管理项目
-sqlite 保存一些系统全局配置
+项目名称 /zimei10525/symphony_e2e_test_repo
 
-
-看板里的issue数据直接在线获取gitlab即可。
-
-
-
+GITLAB_TOKEN='gitlab-token-example'

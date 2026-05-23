@@ -1,2 +1,45 @@
-rust-platform/target/
+# Rust
+target/
+workspaces/
+**/*.rs.bk
+*.pdb
+
+# Node
+node_modules/
+dist/
+dist-node/
+*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
 .env
+.env.*
+!.env.example
+
+# SQLite
+*.db
+*.db-journal
+*.db-wal
+data/
+
+# Logs
+*.log
+
+# Coverage
+coverage/
+lcov.info
+
+# Playwright
+web-frontend/e2e/.auth/
+web-frontend/test-results/
+web-frontend/playwright-report/
