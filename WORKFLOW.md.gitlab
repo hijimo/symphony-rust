@@ -13,6 +13,9 @@ tracker:
     - Canceled
     - Duplicate
     - Done
+  workflow_labels:
+    - Backlog
+    - Human Review
 polling:
   interval_ms: 5000
 workspace:

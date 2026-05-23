@@ -29,8 +29,8 @@ use symphony_platform::config::watcher::{ConfigHolder, EffectiveConfig};
 use symphony_platform::config::workflow_loader::load_workflow;
 use symphony_platform::logging::init_logging;
 use symphony_platform::models::OrchestratorEvent as ModelOrchestratorEvent;
-use symphony_platform::orchestrator::scheduler::DispatchConfig;
 use symphony_platform::orchestrator::Orchestrator;
+use symphony_platform::orchestrator::scheduler::DispatchConfig;
 use symphony_platform::platform::github::GithubAdapter;
 use symphony_platform::platform::gitlab::GitlabAdapter;
 use symphony_platform::prompt::PromptEngine;
@@ -412,6 +412,9 @@ fn build_workflow_states(
     for s in &service_config.terminal_states {
         states.insert(s.to_lowercase().replace(' ', "_"), s.clone());
     }
+    for s in &service_config.workflow_labels {
+        states.insert(s.to_lowercase().replace(' ', "_"), s.clone());
+    }
     states
 }
 
@@ -451,6 +454,36 @@ mod tests {
         assert_eq!(platform_config.owner, "openai");
         assert_eq!(platform_config.repo, "codex");
         assert_eq!(platform_config.project_id, None);
+    }
+
+    #[test]
+    fn platform_config_includes_non_dispatch_workflow_labels() {
+        let mut service_config = ServiceConfig::default();
+        service_config.active_states = vec!["Todo".to_string(), "In Progress".to_string()];
+        service_config.terminal_states = vec!["Done".to_string()];
+        service_config.workflow_labels = vec!["Backlog".to_string(), "Human Review".to_string()];
+
+        let platform_config = build_platform_config(&service_config, "github");
+
+        assert_eq!(
+            platform_config.workflow.active_states,
+            vec!["Todo", "In Progress"]
+        );
+        assert_eq!(platform_config.workflow.terminal_states, vec!["Done"]);
+        assert!(
+            platform_config
+                .workflow
+                .states
+                .values()
+                .any(|label| label == "Backlog")
+        );
+        assert!(
+            platform_config
+                .workflow
+                .states
+                .values()
+                .any(|label| label == "Human Review")
+        );
     }
 }
 

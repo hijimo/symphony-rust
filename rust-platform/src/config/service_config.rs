@@ -81,6 +81,7 @@ pub struct ServiceConfig {
     pub tracker_project_slug: String,
     pub active_states: Vec<String>,
     pub terminal_states: Vec<String>,
+    pub workflow_labels: Vec<String>,
 
     // -- polling --
     pub poll_interval_ms: u64,
@@ -122,6 +123,7 @@ impl Default for ServiceConfig {
                 "Duplicate".to_string(),
                 "Done".to_string(),
             ],
+            workflow_labels: default_workflow_labels(),
             poll_interval_ms: 30_000,
             workspace_root: std::env::temp_dir().join("symphony_workspaces"),
             hooks: HooksConfig::default(),
@@ -136,6 +138,10 @@ impl Default for ServiceConfig {
             max_concurrent_agents_per_host: None,
         }
     }
+}
+
+fn default_workflow_labels() -> Vec<String> {
+    vec!["Backlog".to_string(), "Human Review".to_string()]
 }
 
 /// Errors from service config parsing.
@@ -194,6 +200,8 @@ impl ServiceConfig {
                 "Done".to_string(),
             ],
         );
+        let workflow_labels =
+            get_string_list_or_default(&tracker, "workflow_labels", default_workflow_labels());
 
         // -- polling section --
         let polling = get_section(config, "polling");
@@ -243,6 +251,7 @@ impl ServiceConfig {
             tracker_project_slug,
             active_states,
             terminal_states,
+            workflow_labels,
             poll_interval_ms,
             workspace_root,
             hooks,
@@ -659,6 +668,7 @@ mod tests {
         assert_eq!(config.tracker_endpoint, "https://api.linear.app/graphql");
         assert_eq!(config.tracker_api_key, "test-key");
         assert_eq!(config.tracker_project_slug, "my-project");
+        assert_eq!(config.workflow_labels, vec!["Backlog", "Human Review"]);
         assert_eq!(config.poll_interval_ms, 30_000);
         assert_eq!(config.max_concurrent_agents, 10);
         assert_eq!(config.max_turns, 20);
@@ -684,6 +694,9 @@ tracker:
     - Working
   terminal_states:
     - Done
+  workflow_labels:
+    - Backlog
+    - Human Review
 polling:
   interval_ms: 10000
 agent:
@@ -706,6 +719,7 @@ Custom prompt.
         assert_eq!(config.tracker_endpoint, "https://custom.endpoint/graphql");
         assert_eq!(config.active_states, vec!["Todo", "Working"]);
         assert_eq!(config.terminal_states, vec!["Done"]);
+        assert_eq!(config.workflow_labels, vec!["Backlog", "Human Review"]);
         assert_eq!(config.poll_interval_ms, 10_000);
         assert_eq!(config.max_concurrent_agents, 5);
         assert_eq!(config.max_turns, 10);
