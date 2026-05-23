@@ -1,4 +1,3 @@
-use std::process::Command;
 use tracing::debug;
 
 /// Verify that a PID corresponds to the expected Symphony process.
@@ -37,6 +36,8 @@ fn process_exists(pid: u32) -> bool {
 /// Check if the process command line contains "symphony".
 #[cfg(target_os = "macos")]
 fn process_is_symphony(pid: u32) -> bool {
+    use std::process::Command;
+
     let output = Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "comm="])
         .output();
