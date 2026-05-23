@@ -57,6 +57,7 @@ pub trait TokenBlacklistRepository: Send + Sync {
 }
 
 #[async_trait]
+#[allow(clippy::too_many_arguments)]
 pub trait ProjectRepository: Send + Sync {
     async fn create_project(&self, project: &NewProject) -> Result<Project>;
     async fn get_project(&self, id: i64) -> Result<Option<Project>>;
@@ -97,6 +98,7 @@ pub trait ProjectMemberRepository: Send + Sync {
 }
 
 #[async_trait]
+#[allow(clippy::too_many_arguments)]
 pub trait ConcurrencyRepository: Send + Sync {
     async fn record_concurrency_event(
         &self,

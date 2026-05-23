@@ -402,7 +402,7 @@ async fn test_update_channels_add_dingtalk() {
     assert_eq!(channels[0]["name"], "My DingTalk Bot");
     assert_eq!(channels[0]["channelType"], "dingtalk");
     // Should have a generated channel_id
-    assert!(channels[0]["channelId"].as_str().unwrap().len() > 0);
+    assert!(!channels[0]["channelId"].as_str().unwrap().is_empty());
 }
 
 #[tokio::test]

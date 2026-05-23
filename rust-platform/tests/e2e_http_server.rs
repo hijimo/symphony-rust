@@ -14,9 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio_util::sync::CancellationToken;
-
-use symphony_platform::platform::{make_test_issue, FetchOptions, IssueId, MemoryAdapter, Platform};
+use symphony_platform::platform::{make_test_issue, FetchOptions, MemoryAdapter, Platform};
 
 // ============================================================================
 // Test: HTTP server health endpoint contract
@@ -111,7 +109,11 @@ async fn e2e_http_server_concurrent_requests_non_blocking() {
     // Seed issues
     for i in 1..=5 {
         adapter
-            .seed_issue(make_test_issue(i, &format!("Issue {}", i), Some("workflow::todo")))
+            .seed_issue(make_test_issue(
+                i,
+                &format!("Issue {}", i),
+                Some("workflow::todo"),
+            ))
             .await;
     }
 
@@ -227,7 +229,11 @@ async fn e2e_http_server_state_snapshot_concurrent_safety() {
     let writer = tokio::spawn(async move {
         for i in 0..50 {
             adapter_w
-                .seed_issue(make_test_issue(i, &format!("Issue {}", i), Some("workflow::todo")))
+                .seed_issue(make_test_issue(
+                    i,
+                    &format!("Issue {}", i),
+                    Some("workflow::todo"),
+                ))
                 .await;
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -241,7 +247,11 @@ async fn e2e_http_server_state_snapshot_concurrent_safety() {
             let snap = adapter_r.snapshot().await;
             // Snapshot should always be consistent (no partial state)
             let issue_count = snap.issues.len();
-            assert!(issue_count <= 50, "More issues than expected: {}", issue_count);
+            assert!(
+                issue_count <= 50,
+                "More issues than expected: {}",
+                issue_count
+            );
             snapshots += 1;
             tokio::time::sleep(Duration::from_millis(8)).await;
         }
