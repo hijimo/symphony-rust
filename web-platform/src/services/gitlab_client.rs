@@ -78,6 +78,24 @@ impl GitLabClient {
         Ok(url)
     }
 
+    fn create_issue_body(req: &CreateIssueRequest) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "title": req.title,
+        });
+
+        if let Some(ref desc) = req.description {
+            body["description"] = serde_json::Value::String(desc.clone());
+        }
+
+        body["labels"] = serde_json::Value::String(req.labels_with_default_todo().join(","));
+
+        if let Some(ref assignee) = req.assignee {
+            body["assignee_username"] = serde_json::Value::String(assignee.clone());
+        }
+
+        body
+    }
+
     async fn fetch_closing_issue_iids(
         &self,
         token: &str,
@@ -251,21 +269,7 @@ impl GitPlatformClient for GitLabClient {
         let encoded = Self::encode_project_path(project_path);
         let url = format!("{}/api/v4/projects/{}/issues", self.base_url, encoded);
 
-        let mut body = serde_json::json!({
-            "title": req.title,
-        });
-
-        if let Some(ref desc) = req.description {
-            body["description"] = serde_json::Value::String(desc.clone());
-        }
-
-        if !req.labels.is_empty() {
-            body["labels"] = serde_json::Value::String(req.labels.join(","));
-        }
-
-        if let Some(ref assignee) = req.assignee {
-            body["assignee_username"] = serde_json::Value::String(assignee.clone());
-        }
+        let body = Self::create_issue_body(req);
 
         let response = self
             .http
@@ -631,5 +635,33 @@ mod tests {
             url.as_str(),
             "https://gitlab.example.com/api/v4/projects/group%2Fproject/issues?per_page=25&order_by=created_at&sort=desc&state=opened&labels=needs+review%2C%E4%B8%AD%E6%96%87&not%5Blabels%5D=symphony+claimed&assignee_username=alice%2Bbob&search=foo+%26+bar&in=title"
         );
+    }
+
+    #[test]
+    fn create_issue_body_adds_default_todo_label() {
+        let req = CreateIssueRequest {
+            title: "New issue".to_string(),
+            description: None,
+            labels: vec!["bug".to_string()],
+            assignee: None,
+        };
+
+        let body = GitLabClient::create_issue_body(&req);
+
+        assert_eq!(body["labels"], serde_json::json!("bug,Todo"));
+    }
+
+    #[test]
+    fn create_issue_body_does_not_duplicate_todo_label() {
+        let req = CreateIssueRequest {
+            title: "New issue".to_string(),
+            description: None,
+            labels: vec!["Todo".to_string()],
+            assignee: None,
+        };
+
+        let body = GitLabClient::create_issue_body(&req);
+
+        assert_eq!(body["labels"], serde_json::json!("Todo"));
     }
 }

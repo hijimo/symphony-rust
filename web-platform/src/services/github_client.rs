@@ -207,6 +207,24 @@ impl GitHubClient {
         issue_iids.dedup();
         issue_iids
     }
+
+    fn create_issue_body(req: &CreateIssueRequest) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "title": req.title,
+        });
+
+        if let Some(ref desc) = req.description {
+            body["body"] = serde_json::Value::String(desc.clone());
+        }
+
+        body["labels"] = serde_json::json!(req.labels_with_default_todo());
+
+        if let Some(ref assignee) = req.assignee {
+            body["assignees"] = serde_json::json!([assignee]);
+        }
+
+        body
+    }
 }
 
 #[async_trait]
@@ -314,21 +332,7 @@ impl GitPlatformClient for GitHubClient {
     ) -> Result<PlatformIssue, GitPlatformError> {
         let url = format!("{}/repos/{}/issues", Self::BASE_URL, project_path);
 
-        let mut body = serde_json::json!({
-            "title": req.title,
-        });
-
-        if let Some(ref desc) = req.description {
-            body["body"] = serde_json::Value::String(desc.clone());
-        }
-
-        if !req.labels.is_empty() {
-            body["labels"] = serde_json::json!(req.labels);
-        }
-
-        if let Some(ref assignee) = req.assignee {
-            body["assignees"] = serde_json::json!([assignee]);
-        }
+        let body = Self::create_issue_body(req);
 
         let response = self
             .http
@@ -819,5 +823,33 @@ mod tests {
         ));
 
         assert_eq!(refs, vec![12, 34]);
+    }
+
+    #[test]
+    fn create_issue_body_adds_default_todo_label() {
+        let req = CreateIssueRequest {
+            title: "New issue".to_string(),
+            description: None,
+            labels: vec!["bug".to_string()],
+            assignee: None,
+        };
+
+        let body = GitHubClient::create_issue_body(&req);
+
+        assert_eq!(body["labels"], serde_json::json!(["bug", "Todo"]));
+    }
+
+    #[test]
+    fn create_issue_body_does_not_duplicate_todo_label() {
+        let req = CreateIssueRequest {
+            title: "New issue".to_string(),
+            description: None,
+            labels: vec!["Todo".to_string()],
+            assignee: None,
+        };
+
+        let body = GitHubClient::create_issue_body(&req);
+
+        assert_eq!(body["labels"], serde_json::json!(["Todo"]));
     }
 }
