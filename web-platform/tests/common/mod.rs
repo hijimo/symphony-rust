@@ -1,0 +1,185 @@
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use dashmap::DashMap;
+use reqwest::{Client, Response};
+use serde::Serialize;
+use tempfile::TempDir;
+use tokio::net::TcpListener;
+
+use web_platform::auth::password::hash_password;
+use web_platform::auth::rate_limit::RateLimiter;
+use web_platform::concurrency::ConcurrencyManager;
+use web_platform::db::init_pool;
+use web_platform::process_manager::ProcessManager;
+use web_platform::repository::{SqliteRepository, UserRepository};
+use web_platform::router::create_router;
+use web_platform::services::cache::ApiCache;
+use web_platform::{AppState, Phase3RateLimiter};
+
+pub struct TestApp {
+    pub addr: String,
+    pub client: Client,
+    pub admin_token: String,
+    _dir: TempDir,
+}
+
+impl TestApp {
+    pub async fn new() -> Self {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let pool = init_pool(db_path.to_str().unwrap());
+        let repo = SqliteRepository::new(pool);
+
+        let admin_hash = hash_password("admin123").unwrap();
+        repo.create_user("admin", &admin_hash, Some("Administrator"), "admin")
+            .await
+            .unwrap();
+
+        let state = AppState {
+            repo,
+            jwt_secret: "test-jwt-secret-key-at-least-32-characters-long".to_string(),
+            encryption_key: [0x42u8; 32],
+            token_blacklist: Arc::new(DashMap::new()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            process_manager: ProcessManager::new(),
+            api_cache: Arc::new(ApiCache::new(10, 3, 10000)),
+            ai_service: None,
+            phase3_rate_limiter: Arc::new(Phase3RateLimiter::new()),
+            concurrency_manager: Arc::new(ConcurrencyManager::new(10)),
+            symphony_bin: "/usr/bin/false".to_string(),
+            workspace_root: dir.path().to_str().unwrap().to_string(),
+            alert_manager: None,
+        };
+
+        let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base_url = format!("http://{}", addr);
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = Client::new();
+
+        let login_resp = client
+            .post(format!("{}/api/auth/login", base_url))
+            .json(&serde_json::json!({
+                "username": "admin",
+                "password": "admin123"
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        let login_body: serde_json::Value = login_resp.json().await.unwrap();
+        let admin_token = login_body["data"]["token"].as_str().unwrap().to_string();
+
+        Self {
+            addr: base_url,
+            client,
+            admin_token,
+            _dir: dir,
+        }
+    }
+
+    pub fn url(&self, path: &str) -> String {
+        format!("{}{}", self.addr, path)
+    }
+
+    pub async fn get(&self, path: &str, token: Option<&str>) -> Response {
+        let mut req = self.client.get(self.url(path));
+        if let Some(t) = token {
+            req = req.header("Authorization", format!("Bearer {}", t));
+        }
+        req.send().await.unwrap()
+    }
+
+    pub async fn post<T: Serialize>(&self, path: &str, body: &T, token: Option<&str>) -> Response {
+        let mut req = self.client.post(self.url(path)).json(body);
+        if let Some(t) = token {
+            req = req.header("Authorization", format!("Bearer {}", t));
+        }
+        req.send().await.unwrap()
+    }
+
+    pub async fn put<T: Serialize>(&self, path: &str, body: &T, token: Option<&str>) -> Response {
+        let mut req = self.client.put(self.url(path)).json(body);
+        if let Some(t) = token {
+            req = req.header("Authorization", format!("Bearer {}", t));
+        }
+        req.send().await.unwrap()
+    }
+
+    pub async fn delete(&self, path: &str, token: Option<&str>) -> Response {
+        let mut req = self.client.delete(self.url(path));
+        if let Some(t) = token {
+            req = req.header("Authorization", format!("Bearer {}", t));
+        }
+        req.send().await.unwrap()
+    }
+
+    pub async fn login(&self, username: &str, password: &str) -> Response {
+        self.post(
+            "/api/auth/login",
+            &serde_json::json!({
+                "username": username,
+                "password": password
+            }),
+            None,
+        )
+        .await
+    }
+
+    pub async fn login_get_token(&self, username: &str, password: &str) -> String {
+        let resp = self.login(username, password).await;
+        let body: serde_json::Value = resp.json().await.unwrap();
+        body["data"]["token"].as_str().unwrap().to_string()
+    }
+
+    pub async fn create_test_user(&self, username: &str, password: &str, role: &str) {
+        self.post(
+            "/api/admin/users",
+            &serde_json::json!({
+                "username": username,
+                "password": password,
+                "role": role
+            }),
+            Some(&self.admin_token),
+        )
+        .await;
+    }
+
+    /// Create a test project and return the full response body.
+    pub async fn create_test_project(&self, git_url: &str, token: &str) -> serde_json::Value {
+        let resp = self
+            .post(
+                "/api/projects",
+                &serde_json::json!({
+                    "git_url": git_url
+                }),
+                Some(token),
+            )
+            .await;
+        resp.json().await.unwrap()
+    }
+
+    /// Extract the project ID from a create-project response body.
+    pub fn get_project_id(&self, response: &serde_json::Value) -> i64 {
+        response["data"]["id"].as_i64().unwrap()
+    }
+
+    /// Get the user ID for a given username by searching the admin users list.
+    pub async fn get_user_id(&self, username: &str) -> i64 {
+        let resp = self
+            .get(
+                &format!("/api/admin/users?search={}", username),
+                Some(&self.admin_token),
+            )
+            .await;
+        let body: serde_json::Value = resp.json().await.unwrap();
+        body["data"]["records"][0]["id"].as_i64().unwrap()
+    }
+}
