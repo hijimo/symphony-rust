@@ -6,10 +6,12 @@
 
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::error::PlatformError;
-use crate::platform::{CreatePrParams, IssueId, Platform};
+use crate::platform::{CreatePrParams, Issue, IssueId, IssueStatus, Platform};
 
 /// Actions that the platform_api tool is allowed to execute.
 const ALLOWED_ACTIONS: &[&str] = &[
@@ -17,6 +19,7 @@ const ALLOWED_ACTIONS: &[&str] = &[
     "create_pull_request",
     "add_comment",
     "get_issue",
+    "close_issue",
     "list_pull_requests",
     "get_pull_request_status",
 ];
@@ -60,7 +63,12 @@ impl PlatformApiTool {
             "get_issue" => {
                 let issue_id = extract_issue_id(&sanitized)?;
                 let issue = self.platform.fetch_issue(issue_id).await?;
-                Ok(serde_json::to_value(issue).unwrap_or(Value::Null))
+                Ok(serde_json::to_value(IssueDetail::from(issue)).unwrap_or(Value::Null))
+            }
+            "close_issue" => {
+                let issue_id = extract_issue_id(&sanitized)?;
+                let issue = self.platform.close_issue(issue_id).await?;
+                Ok(serde_json::to_value(IssueDetail::from(issue)).unwrap_or(Value::Null))
             }
             "add_comment" => {
                 let issue_id = extract_issue_id(&sanitized)?;
@@ -81,6 +89,47 @@ impl PlatformApiTool {
                 )))
             }
             _ => Err(PlatformError::UnknownAction(action.to_string())),
+        }
+    }
+}
+
+/// Stable issue detail shape returned by platform_api issue actions.
+#[derive(Debug, Serialize)]
+struct IssueDetail {
+    id: u64,
+    number: u64,
+    title: String,
+    description: Option<String>,
+    status: IssueStatus,
+    workflow_state: Option<String>,
+    url: String,
+    assignee: Option<String>,
+    branch_name: String,
+    priority: Option<u8>,
+    labels: Vec<String>,
+    blocked_by: Vec<u64>,
+    created_at: Option<DateTime<Utc>>,
+    updated_at: Option<DateTime<Utc>>,
+}
+
+impl From<Issue> for IssueDetail {
+    fn from(issue: Issue) -> Self {
+        let status = issue.status();
+        Self {
+            id: issue.id.0,
+            number: issue.number,
+            title: issue.title,
+            description: issue.description,
+            status,
+            workflow_state: issue.workflow_state,
+            url: issue.url,
+            assignee: issue.assignee,
+            branch_name: issue.branch_name,
+            priority: issue.priority,
+            labels: issue.labels,
+            blocked_by: issue.blocked_by.into_iter().map(|id| id.0).collect(),
+            created_at: issue.created_at,
+            updated_at: issue.updated_at,
         }
     }
 }

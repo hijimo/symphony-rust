@@ -1,3 +1,19 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    clippy::bind_instead_of_map,
+    clippy::derivable_impls,
+    clippy::manual_range_contains,
+    clippy::needless_borrows_for_generic_args,
+    clippy::ptr_arg,
+    clippy::duplicated_attributes,
+    clippy::approx_constant,
+    clippy::bool_assert_comparison,
+    clippy::len_zero,
+    clippy::let_and_return
+)]
+
 //! GitHost trait — abstracts git hosting platform operations for E2E tests.
 //!
 //! Implementations: GithubHost, GitlabHost
@@ -56,13 +72,7 @@ pub trait GitHost: Send + Sync {
     ) -> Result<()>;
 
     /// Create a pull request / merge request.
-    async fn create_pr(
-        &self,
-        title: &str,
-        body: &str,
-        head: &str,
-        base: &str,
-    ) -> Result<PrInfo>;
+    async fn create_pr(&self, title: &str, body: &str, head: &str, base: &str) -> Result<PrInfo>;
 
     /// Returns a clone URL with embedded authentication.
     fn clone_url(&self) -> String;

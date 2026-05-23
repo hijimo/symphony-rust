@@ -10,6 +10,14 @@ pub struct IssueId(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CommentId(pub u64);
 
+/// Native issue open/closed status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IssueStatus {
+    Open,
+    Closed,
+}
+
 impl fmt::Display for IssueId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
@@ -46,6 +54,26 @@ pub struct Issue {
     pub blocked_by: Vec<IssueId>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
+}
+
+impl Issue {
+    /// Infer an open/closed status from the normalized workflow state currently available.
+    pub fn status(&self) -> IssueStatus {
+        let Some(state) = &self.workflow_state else {
+            return IssueStatus::Open;
+        };
+
+        let normalized = state
+            .trim()
+            .trim_start_matches("workflow::")
+            .to_lowercase()
+            .replace([' ', '-'], "_");
+
+        match normalized.as_str() {
+            "closed" | "done" => IssueStatus::Closed,
+            _ => IssueStatus::Open,
+        }
+    }
 }
 
 /// A comment or note on an issue.

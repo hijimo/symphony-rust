@@ -106,11 +106,6 @@ impl GitlabAdapter {
         format!("/projects/{}", urlencoding::encode(&self.project_id))
     }
 
-    /// Build the comma-separated labels filter string from issue_filter config.
-    fn active_labels_filter(&self) -> String {
-        self.http.config().issue_filter.labels.join(",")
-    }
-
     /// Parse a GitLab API issue response into our standardized Issue type.
     fn parse_issue(&self, gi: GitlabIssue) -> Issue {
         let workflow_state = self.detect_workflow_state(&gi.labels);
@@ -298,6 +293,16 @@ impl Platform for GitlabAdapter {
         let path = format!("{}/issues/{}", self.project_path(), issue_id.0);
         let gi: GitlabIssue = self.get_json(&path).await?;
         Ok(self.parse_issue(gi))
+    }
+
+    async fn close_issue(&self, issue_id: IssueId) -> Result<Issue, PlatformError> {
+        let path = format!("{}/issues/{}", self.project_path(), issue_id.0);
+        let body = serde_json::json!({
+            "state_event": "close",
+        });
+
+        self.put_json(&path, &body).await?;
+        self.fetch_issue(issue_id).await
     }
 
     async fn fetch_issue_states_by_ids(

@@ -1,3 +1,19 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    clippy::bind_instead_of_map,
+    clippy::derivable_impls,
+    clippy::manual_range_contains,
+    clippy::needless_borrows_for_generic_args,
+    clippy::ptr_arg,
+    clippy::duplicated_attributes,
+    clippy::approx_constant,
+    clippy::bool_assert_comparison,
+    clippy::len_zero,
+    clippy::let_and_return
+)]
+
 //! Config Reload E2E Tests
 //!
 //! Tests that verify dynamic configuration reload behavior:
@@ -13,7 +29,9 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
-use symphony_platform::config::workflow_loader::{load_workflow, parse_workflow, WorkflowDefinition};
+use symphony_platform::config::workflow_loader::{
+    load_workflow, parse_workflow, WorkflowDefinition,
+};
 
 // ============================================================================
 // Test: Valid WORKFLOW.md reload
@@ -234,9 +252,7 @@ Concurrent test prompt.
     // Spawn 10 concurrent readers
     for _ in 0..10 {
         let p = path.clone();
-        handles.push(tokio::spawn(async move {
-            load_workflow(&p)
-        }));
+        handles.push(tokio::spawn(async move { load_workflow(&p) }));
     }
 
     // All should succeed
@@ -321,8 +337,8 @@ This is retry attempt {{attempt}}. Review previous failures before proceeding.
 /// Verifies that the test fixture files parse correctly.
 #[tokio::test]
 async fn e2e_config_reload_fixture_valid_workflow() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/valid_workflow.md");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/valid_workflow.md");
 
     let def = load_workflow(&path).unwrap();
 
@@ -339,8 +355,8 @@ async fn e2e_config_reload_fixture_valid_workflow() {
 
 #[tokio::test]
 async fn e2e_config_reload_fixture_minimal_workflow() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/minimal_workflow.md");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/minimal_workflow.md");
 
     let def = load_workflow(&path).unwrap();
 

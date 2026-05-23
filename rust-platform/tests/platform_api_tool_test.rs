@@ -1,3 +1,19 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    clippy::bind_instead_of_map,
+    clippy::derivable_impls,
+    clippy::manual_range_contains,
+    clippy::needless_borrows_for_generic_args,
+    clippy::ptr_arg,
+    clippy::duplicated_attributes,
+    clippy::approx_constant,
+    clippy::bool_assert_comparison,
+    clippy::len_zero,
+    clippy::let_and_return
+)]
+
 //! Tests for the `platform_api` tool module.
 //!
 //! Verifies action validation, input sanitization, and correct routing
@@ -5,6 +21,7 @@
 
 use std::sync::Arc;
 
+use chrono::Duration;
 use serde_json::json;
 
 use symphony_platform::error::PlatformError;
@@ -44,11 +61,7 @@ async fn test_disallowed_actions_rejected() {
 
     for action in disallowed {
         let result = tool.execute(action, json!({})).await;
-        assert!(
-            result.is_err(),
-            "Action '{}' should be rejected",
-            action
-        );
+        assert!(result.is_err(), "Action '{}' should be rejected", action);
     }
 }
 
@@ -133,11 +146,44 @@ async fn test_get_issue_routes_correctly() {
         .unwrap();
 
     // Should return serialized issue
-    assert_eq!(result.get("title").unwrap().as_str().unwrap(), "Test routing");
+    assert_eq!(
+        result.get("title").unwrap().as_str().unwrap(),
+        "Test routing"
+    );
     assert_eq!(result.get("number").unwrap().as_u64().unwrap(), 42);
+    assert_eq!(result.get("status").unwrap().as_str().unwrap(), "open");
 
     // Verify the platform method was called
     assert_eq!(adapter.call_count("fetch_issue").await, 1);
+}
+
+/// Test: get_issue returns full detail fields expected by the tool contract.
+#[tokio::test]
+async fn test_get_issue_returns_detail_fields() {
+    let adapter = Arc::new(MemoryAdapter::new());
+    let mut issue = make_test_issue(43, "Detailed issue", Some("workflow::todo"));
+    issue.description = Some("Body text".to_string());
+    adapter.seed_issue(issue).await;
+
+    let tool = PlatformApiTool::new(adapter as Arc<dyn Platform>);
+
+    let result = tool
+        .execute("get_issue", json!({ "issue_id": 43 }))
+        .await
+        .unwrap();
+
+    assert_eq!(result.get("id").unwrap().as_u64().unwrap(), 43);
+    assert_eq!(
+        result.get("title").unwrap().as_str().unwrap(),
+        "Detailed issue"
+    );
+    assert_eq!(
+        result.get("description").unwrap().as_str().unwrap(),
+        "Body text"
+    );
+    assert_eq!(result.get("status").unwrap().as_str().unwrap(), "open");
+    assert!(result.get("created_at").unwrap().as_str().is_some());
+    assert!(result.get("updated_at").unwrap().as_str().is_some());
 }
 
 /// Test: add_comment routes correctly to Platform::create_comment.
@@ -145,7 +191,11 @@ async fn test_get_issue_routes_correctly() {
 async fn test_add_comment_routes_correctly() {
     let adapter = Arc::new(MemoryAdapter::new());
     adapter
-        .seed_issue(make_test_issue(10, "Comment target", Some("workflow::todo")))
+        .seed_issue(make_test_issue(
+            10,
+            "Comment target",
+            Some("workflow::todo"),
+        ))
         .await;
 
     let tool = PlatformApiTool::new(adapter.clone() as Arc<dyn Platform>);
@@ -192,18 +242,112 @@ async fn test_get_issue_missing_id() {
     }
 }
 
+/// Test: get_issue with a nonexistent issue_id returns a clear NotFound error.
+#[tokio::test]
+async fn test_get_issue_nonexistent_id() {
+    let adapter = Arc::new(MemoryAdapter::new());
+    let tool = PlatformApiTool::new(adapter as Arc<dyn Platform>);
+
+    let result = tool.execute("get_issue", json!({ "issue_id": 404 })).await;
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        PlatformError::NotFound(msg) => {
+            assert!(msg.contains("issue 404"));
+        }
+        other => panic!("Expected NotFound, got: {:?}", other),
+    }
+}
+
+/// Test: close_issue marks an open issue closed and persists updated detail.
+#[tokio::test]
+async fn test_close_issue_closes_open_issue() {
+    let adapter = Arc::new(MemoryAdapter::new());
+    let mut issue = make_test_issue(55, "Close me", Some("workflow::todo"));
+    issue.updated_at = issue.updated_at.map(|dt| dt - Duration::minutes(5));
+    let previous_updated_at = issue.updated_at;
+    adapter.seed_issue(issue).await;
+
+    let tool = PlatformApiTool::new(adapter.clone() as Arc<dyn Platform>);
+
+    let result = tool
+        .execute("close_issue", json!({ "issue_id": 55 }))
+        .await
+        .unwrap();
+
+    assert_eq!(result.get("id").unwrap().as_u64().unwrap(), 55);
+    assert_eq!(result.get("status").unwrap().as_str().unwrap(), "closed");
+    assert_eq!(
+        adapter
+            .fetch_issue(IssueId(55))
+            .await
+            .unwrap()
+            .workflow_state
+            .as_deref(),
+        Some("closed")
+    );
+    assert!(adapter.fetch_issue(IssueId(55)).await.unwrap().updated_at > previous_updated_at);
+}
+
+/// Test: close_issue with a nonexistent issue_id returns a clear NotFound error.
+#[tokio::test]
+async fn test_close_issue_nonexistent_id() {
+    let adapter = Arc::new(MemoryAdapter::new());
+    let tool = PlatformApiTool::new(adapter as Arc<dyn Platform>);
+
+    let result = tool
+        .execute("close_issue", json!({ "issue_id": 404 }))
+        .await;
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        PlatformError::NotFound(msg) => {
+            assert!(msg.contains("issue 404"));
+        }
+        other => panic!("Expected NotFound, got: {:?}", other),
+    }
+}
+
+/// Test: closing an already closed issue is idempotent and returns closed detail.
+#[tokio::test]
+async fn test_close_issue_is_idempotent() {
+    let adapter = Arc::new(MemoryAdapter::new());
+    adapter
+        .seed_issue(make_test_issue(56, "Already closed", Some("closed")))
+        .await;
+
+    let tool = PlatformApiTool::new(adapter.clone() as Arc<dyn Platform>);
+
+    let first = tool
+        .execute("close_issue", json!({ "issue_id": 56 }))
+        .await
+        .unwrap();
+    let second = tool
+        .execute("close_issue", json!({ "issue_id": 56 }))
+        .await
+        .unwrap();
+
+    assert_eq!(first.get("status").unwrap().as_str().unwrap(), "closed");
+    assert_eq!(second.get("status").unwrap().as_str().unwrap(), "closed");
+    assert_eq!(
+        adapter
+            .fetch_issue(IssueId(56))
+            .await
+            .unwrap()
+            .workflow_state
+            .as_deref(),
+        Some("closed")
+    );
+}
+
 /// Test: add_comment with missing body returns Unprocessable error.
 #[tokio::test]
 async fn test_add_comment_missing_body() {
     let adapter = Arc::new(MemoryAdapter::new());
-    adapter
-        .seed_issue(make_test_issue(1, "Test", None))
-        .await;
+    adapter.seed_issue(make_test_issue(1, "Test", None)).await;
     let tool = PlatformApiTool::new(adapter as Arc<dyn Platform>);
 
-    let result = tool
-        .execute("add_comment", json!({ "issue_id": 1 }))
-        .await;
+    let result = tool.execute("add_comment", json!({ "issue_id": 1 })).await;
     assert!(result.is_err());
 
     match result.unwrap_err() {

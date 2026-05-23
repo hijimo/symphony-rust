@@ -1,3 +1,19 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    clippy::bind_instead_of_map,
+    clippy::derivable_impls,
+    clippy::manual_range_contains,
+    clippy::needless_borrows_for_generic_args,
+    clippy::ptr_arg,
+    clippy::duplicated_attributes,
+    clippy::approx_constant,
+    clippy::bool_assert_comparison,
+    clippy::len_zero,
+    clippy::let_and_return
+)]
+
 //! Cooldown queue unit tests.
 //!
 //! Tests the DashMap-based cooldown queue that prevents repeatedly processing
@@ -54,19 +70,13 @@ impl CooldownQueue {
     /// Place an issue into cooldown for the specified number of polling cycles.
     fn cooldown(&self, issue_id: IssueId, reason: String, cycles: u32) {
         let cooldown_duration = self.polling_interval.saturating_mul(cycles);
-        let skip_until =
-            Utc::now() + TimeDelta::seconds(cooldown_duration.as_secs() as i64);
+        let skip_until = Utc::now() + TimeDelta::seconds(cooldown_duration.as_secs() as i64);
         self.entries
             .insert(issue_id, CooldownEntry { reason, skip_until });
     }
 
     /// Place an issue into cooldown with a specific expiry time (for testing).
-    fn cooldown_until(
-        &self,
-        issue_id: IssueId,
-        reason: String,
-        skip_until: chrono::DateTime<Utc>,
-    ) {
+    fn cooldown_until(&self, issue_id: IssueId, reason: String, skip_until: chrono::DateTime<Utc>) {
         self.entries
             .insert(issue_id, CooldownEntry { reason, skip_until });
     }
@@ -206,10 +216,7 @@ async fn test_multiple_issues_independent() {
 
     assert!(queue.should_skip(issue_a));
     assert!(queue.should_skip(issue_b));
-    assert!(
-        !queue.should_skip(issue_c),
-        "Issue C was never cooled down"
-    );
+    assert!(!queue.should_skip(issue_c), "Issue C was never cooled down");
 }
 
 #[tokio::test]

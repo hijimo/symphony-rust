@@ -281,6 +281,41 @@ impl Platform for GithubAdapter {
         Ok(self.convert_issue(gh_issue))
     }
 
+    /// Closes a single GitHub issue and returns the updated issue details.
+    ///
+    /// GitHub API: `PATCH /repos/:owner/:repo/issues/:number` with `state=closed`.
+    async fn close_issue(&self, issue_id: IssueId) -> Result<Issue, PlatformError> {
+        let path = format!("{}/issues/{}", self.repo_path(), issue_id.0);
+        let url = format!("{}{}", self.http.base_url(), path);
+        let body = serde_json::json!({ "state": "closed" });
+
+        let response = self
+            .http
+            .inner()
+            .patch(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    PlatformError::Timeout
+                } else if e.is_connect() {
+                    PlatformError::ConnectionRefused
+                } else {
+                    PlatformError::Network(e)
+                }
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(PlatformError::from_status(status.as_u16(), &body));
+        }
+
+        let gh_issue: GhIssue = response.json().await?;
+        Ok(self.convert_issue(gh_issue))
+    }
+
     /// Fetches multiple issues by ID (batch call to fetch_issue).
     ///
     /// GitHub does not have a batch endpoint, so this calls fetch_issue for each ID.

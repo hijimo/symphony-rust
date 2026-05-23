@@ -1,3 +1,19 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    clippy::bind_instead_of_map,
+    clippy::derivable_impls,
+    clippy::manual_range_contains,
+    clippy::needless_borrows_for_generic_args,
+    clippy::ptr_arg,
+    clippy::duplicated_attributes,
+    clippy::approx_constant,
+    clippy::bool_assert_comparison,
+    clippy::len_zero,
+    clippy::let_and_return
+)]
+
 //! Orchestrator integration tests using the event-driven API.
 //!
 //! These tests verify the orchestrator's dispatch logic, shutdown behavior,
@@ -9,8 +25,8 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use symphony_platform::models::Issue;
-use symphony_platform::orchestrator::Orchestrator;
 use symphony_platform::orchestrator::scheduler::DispatchConfig;
+use symphony_platform::orchestrator::Orchestrator;
 
 /// Helper to create a test issue (models::Issue).
 fn make_issue(id: &str, title: &str, state: &str, priority: Option<i32>) -> Issue {

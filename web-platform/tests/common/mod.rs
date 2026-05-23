@@ -1,18 +1,38 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    clippy::bind_instead_of_map,
+    clippy::derivable_impls,
+    clippy::manual_range_contains,
+    clippy::needless_borrows_for_generic_args,
+    clippy::ptr_arg,
+    clippy::duplicated_attributes,
+    clippy::approx_constant,
+    clippy::bool_assert_comparison,
+    clippy::len_zero,
+    clippy::let_and_return
+)]
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use dashmap::DashMap;
 use reqwest::{Client, Response};
 use serde::Serialize;
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 
 use web_platform::auth::password::hash_password;
 use web_platform::auth::rate_limit::RateLimiter;
 use web_platform::concurrency::ConcurrencyManager;
+use web_platform::crypto;
 use web_platform::db::init_pool;
 use web_platform::process_manager::ProcessManager;
-use web_platform::repository::{SqliteRepository, UserRepository};
+use web_platform::repository::{SqliteRepository, UserConfigRepository, UserRepository};
 use web_platform::router::create_router;
 use web_platform::services::cache::ApiCache;
 use web_platform::{AppState, Phase3RateLimiter};
@@ -32,9 +52,19 @@ impl TestApp {
         let repo = SqliteRepository::new(pool);
 
         let admin_hash = hash_password("admin123").unwrap();
-        repo.create_user("admin", &admin_hash, Some("Administrator"), "admin")
+        let admin = repo
+            .create_user("admin", &admin_hash, Some("Administrator"), "admin")
             .await
             .unwrap();
+        let encrypted_github_token = crypto::encrypt("ghp_test", &[0x42u8; 32]).unwrap();
+        repo.upsert_config(admin.id, None, None, Some(&encrypted_github_token))
+            .await
+            .unwrap();
+
+        let mock_symphony_bin = dir.path().join("mock-symphony");
+        fs::write(&mock_symphony_bin, "#!/bin/sh\nsleep 3600\n").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&mock_symphony_bin, fs::Permissions::from_mode(0o755)).unwrap();
 
         let state = AppState {
             repo,
@@ -47,7 +77,7 @@ impl TestApp {
             ai_service: None,
             phase3_rate_limiter: Arc::new(Phase3RateLimiter::new()),
             concurrency_manager: Arc::new(ConcurrencyManager::new(10)),
-            symphony_bin: "/usr/bin/false".to_string(),
+            symphony_bin: mock_symphony_bin.to_string_lossy().to_string(),
             workspace_root: dir.path().to_str().unwrap().to_string(),
             alert_manager: None,
         };

@@ -1,3 +1,19 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    clippy::bind_instead_of_map,
+    clippy::derivable_impls,
+    clippy::manual_range_contains,
+    clippy::needless_borrows_for_generic_args,
+    clippy::ptr_arg,
+    clippy::duplicated_attributes,
+    clippy::approx_constant,
+    clippy::bool_assert_comparison,
+    clippy::len_zero,
+    clippy::let_and_return
+)]
+
 //! Phase 3 integration tests: GitLab client against real GitLab instance.
 //!
 //! These tests require the following environment:
@@ -23,6 +39,7 @@ fn gitlab_token() -> &'static str {
 }
 
 #[tokio::test]
+#[ignore = "requires GITLAB_TOKEN and a real GitLab test project"]
 async fn test_gitlab_list_issues() {
     let client = GitLabClient::new(GITLAB_HOST.to_string());
 
@@ -51,6 +68,7 @@ async fn test_gitlab_list_issues() {
 }
 
 #[tokio::test]
+#[ignore = "requires GITLAB_TOKEN and a real GitLab test project"]
 async fn test_gitlab_list_issues_with_label_filter() {
     let client = GitLabClient::new(GITLAB_HOST.to_string());
 
@@ -83,6 +101,7 @@ async fn test_gitlab_list_issues_with_label_filter() {
 }
 
 #[tokio::test]
+#[ignore = "requires GITLAB_TOKEN and a real GitLab test project"]
 async fn test_gitlab_list_issues_exclude_label() {
     let client = GitLabClient::new(GITLAB_HOST.to_string());
 
@@ -117,6 +136,7 @@ async fn test_gitlab_list_issues_exclude_label() {
 }
 
 #[tokio::test]
+#[ignore = "requires GITLAB_TOKEN and a real GitLab test project"]
 async fn test_gitlab_create_and_get_issue() {
     let client = GitLabClient::new(GITLAB_HOST.to_string());
 
@@ -161,6 +181,7 @@ async fn test_gitlab_create_and_get_issue() {
 }
 
 #[tokio::test]
+#[ignore = "requires GITLAB_TOKEN and a real GitLab test project"]
 async fn test_gitlab_get_issue_not_found() {
     let client = GitLabClient::new(GITLAB_HOST.to_string());
 
@@ -177,6 +198,7 @@ async fn test_gitlab_get_issue_not_found() {
 }
 
 #[tokio::test]
+#[ignore = "requires GITLAB_TOKEN and a real GitLab test project"]
 async fn test_gitlab_invalid_token() {
     let client = GitLabClient::new(GITLAB_HOST.to_string());
 
@@ -203,6 +225,7 @@ async fn test_gitlab_invalid_token() {
 }
 
 #[tokio::test]
+#[ignore = "requires GITLAB_TOKEN and a real GitLab test project"]
 async fn test_gitlab_get_issue_merge_requests() {
     let client = GitLabClient::new(GITLAB_HOST.to_string());
 
@@ -242,6 +265,7 @@ async fn test_gitlab_get_issue_merge_requests() {
 }
 
 #[tokio::test]
+#[ignore = "requires GITLAB_TOKEN and a real GitLab test project"]
 async fn test_gitlab_search_issues() {
     let client = GitLabClient::new(GITLAB_HOST.to_string());
 

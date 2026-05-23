@@ -179,10 +179,8 @@ impl WorkflowStateMachine {
             }
             // Multiple workflow labels — remove extras
             n if n > 1 => {
-                let extra: Vec<String> = labels
-                    .into_iter()
-                    .filter(|l| l != expected_label)
-                    .collect();
+                let extra: Vec<String> =
+                    labels.into_iter().filter(|l| l != expected_label).collect();
 
                 tracing::warn!(
                     issue_id = %issue_id,
@@ -291,6 +289,12 @@ mod tests {
             Ok(self.issue.lock().unwrap().clone())
         }
 
+        async fn close_issue(&self, _issue_id: IssueId) -> Result<Issue, PlatformError> {
+            let mut issue = self.issue.lock().unwrap();
+            issue.workflow_state = Some("closed".to_string());
+            Ok(issue.clone())
+        }
+
         async fn fetch_issue_states_by_ids(
             &self,
             _ids: &[IssueId],
@@ -374,10 +378,7 @@ mod tests {
             Ok(None)
         }
 
-        async fn list_comments(
-            &self,
-            _issue_id: IssueId,
-        ) -> Result<Vec<Comment>, PlatformError> {
+        async fn list_comments(&self, _issue_id: IssueId) -> Result<Vec<Comment>, PlatformError> {
             Ok(Vec::new())
         }
 

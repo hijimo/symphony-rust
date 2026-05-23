@@ -1,3 +1,19 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    clippy::bind_instead_of_map,
+    clippy::derivable_impls,
+    clippy::manual_range_contains,
+    clippy::needless_borrows_for_generic_args,
+    clippy::ptr_arg,
+    clippy::duplicated_attributes,
+    clippy::approx_constant,
+    clippy::bool_assert_comparison,
+    clippy::len_zero,
+    clippy::let_and_return
+)]
+
 //! Graceful Shutdown E2E Tests
 //!
 //! Tests that verify clean shutdown behavior:
@@ -11,8 +27,8 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
-use symphony_platform::orchestrator::Orchestrator;
 use symphony_platform::orchestrator::scheduler::DispatchConfig;
+use symphony_platform::orchestrator::Orchestrator;
 
 /// Helper to create a default Orchestrator for shutdown tests.
 fn make_orchestrator(cancel: CancellationToken) -> Orchestrator {
@@ -94,7 +110,10 @@ async fn e2e_shutdown_idle_service() {
     cancel.cancel();
 
     let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
-    assert!(result.is_ok(), "Idle orchestrator did not shut down quickly");
+    assert!(
+        result.is_ok(),
+        "Idle orchestrator did not shut down quickly"
+    );
 }
 
 // ============================================================================

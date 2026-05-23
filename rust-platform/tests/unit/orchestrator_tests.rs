@@ -1,3 +1,19 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    clippy::bind_instead_of_map,
+    clippy::derivable_impls,
+    clippy::manual_range_contains,
+    clippy::needless_borrows_for_generic_args,
+    clippy::ptr_arg,
+    clippy::duplicated_attributes,
+    clippy::approx_constant,
+    clippy::bool_assert_comparison,
+    clippy::len_zero,
+    clippy::let_and_return
+)]
+
 //! Unit tests for orchestrator logic.
 //!
 //! Tests cover:
@@ -16,7 +32,7 @@ use tokio_util::sync::CancellationToken;
 use symphony_platform::config::{Config, PlatformConfig, PollingConfig, WorkflowConfig};
 use symphony_platform::orchestrator::Orchestrator;
 use symphony_platform::platform::cooldown_queue::CooldownQueue;
-use symphony_platform::platform::{Issue, IssueId, Dispatchable, make_test_issue, MemoryAdapter};
+use symphony_platform::platform::{make_test_issue, Dispatchable, Issue, IssueId, MemoryAdapter};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Sort for Dispatch Tests
@@ -82,7 +98,7 @@ mod sort_for_dispatch {
         // Issues with priority come first
         assert_eq!(issues[0].id, IssueId(2)); // priority 1
         assert_eq!(issues[1].id, IssueId(4)); // priority 5
-        // Issues without priority come last
+                                              // Issues without priority come last
         assert!(issues[2].priority.is_none());
         assert!(issues[3].priority.is_none());
     }
@@ -344,11 +360,7 @@ mod compute_retry_delay {
     ///
     /// - Continuation: always 1000ms (SPEC §8.4)
     /// - Failure: 10_000ms * 2^(attempt-1), capped at max_retry_backoff_ms
-    fn compute_retry_delay_ms(
-        kind: &RetryKind,
-        attempt: u32,
-        max_retry_backoff_ms: u64,
-    ) -> u64 {
+    fn compute_retry_delay_ms(kind: &RetryKind, attempt: u32, max_retry_backoff_ms: u64) -> u64 {
         match kind {
             RetryKind::Continuation => 1_000,
             RetryKind::Failure => {

@@ -1,3 +1,19 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    clippy::bind_instead_of_map,
+    clippy::derivable_impls,
+    clippy::manual_range_contains,
+    clippy::needless_borrows_for_generic_args,
+    clippy::ptr_arg,
+    clippy::duplicated_attributes,
+    clippy::approx_constant,
+    clippy::bool_assert_comparison,
+    clippy::len_zero,
+    clippy::let_and_return
+)]
+
 //! Integration tests for workspace management.
 //!
 //! Tests cover:
@@ -78,28 +94,22 @@ impl TestWorkspaceManager {
     /// Run the after_create hook (only on new workspace creation).
     fn run_after_create_hook(&mut self, workspace: &WorkspaceInfo) {
         if workspace.created_now {
-            self.hook_log.push(format!(
-                "after_create:{}",
-                workspace.workspace_key
-            ));
+            self.hook_log
+                .push(format!("after_create:{}", workspace.workspace_key));
         }
     }
 
     /// Run the before_run hook (every time before agent launch).
     fn run_before_run_hook(&mut self, workspace: &WorkspaceInfo) -> Result<(), String> {
-        self.hook_log.push(format!(
-            "before_run:{}",
-            workspace.workspace_key
-        ));
+        self.hook_log
+            .push(format!("before_run:{}", workspace.workspace_key));
         Ok(())
     }
 
     /// Run the after_run hook (after agent completes).
     fn run_after_run_hook(&mut self, workspace: &WorkspaceInfo) {
-        self.hook_log.push(format!(
-            "after_run:{}",
-            workspace.workspace_key
-        ));
+        self.hook_log
+            .push(format!("after_run:{}", workspace.workspace_key));
     }
 
     /// Clean up a workspace (for terminal issues).
@@ -118,7 +128,10 @@ impl TestWorkspaceManager {
     /// Validate that a path is contained within the workspace root.
     fn is_contained(&self, path: &Path) -> bool {
         // Canonicalize the root (it always exists)
-        let canonical_root = self.root.canonicalize().unwrap_or_else(|_| self.root.clone());
+        let canonical_root = self
+            .root
+            .canonicalize()
+            .unwrap_or_else(|_| self.root.clone());
 
         // For the path, we need to check if it would be under root
         // after resolving any ".." components. We walk up to find an
@@ -140,9 +153,7 @@ impl TestWorkspaceManager {
             }
         }
 
-        let canonical_ancestor = check_path
-            .canonicalize()
-            .unwrap_or(check_path);
+        let canonical_ancestor = check_path.canonicalize().unwrap_or(check_path);
 
         let mut resolved = canonical_ancestor;
         for part in remaining_parts.into_iter().rev() {

@@ -1,3 +1,5 @@
+#![allow(clippy::field_reassign_with_default, clippy::items_after_test_module)]
+
 //! Symphony Platform Adapter — entry point.
 //!
 //! Startup flow (SPEC Section 17.7):

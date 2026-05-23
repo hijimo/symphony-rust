@@ -1,3 +1,19 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    clippy::bind_instead_of_map,
+    clippy::derivable_impls,
+    clippy::manual_range_contains,
+    clippy::needless_borrows_for_generic_args,
+    clippy::ptr_arg,
+    clippy::duplicated_attributes,
+    clippy::approx_constant,
+    clippy::bool_assert_comparison,
+    clippy::len_zero,
+    clippy::let_and_return
+)]
+
 //! Unit tests for the prompt template engine.
 //!
 //! Tests cover:
@@ -151,10 +167,9 @@ mod issue_rendering {
 
     #[test]
     fn test_render_labels() {
-        let engine = PromptEngine::compile(
-            "{% for label in issue.labels %}{{ label }} {% endfor %}",
-        )
-        .unwrap();
+        let engine =
+            PromptEngine::compile("{% for label in issue.labels %}{{ label }} {% endfor %}")
+                .unwrap();
         let ctx = make_test_context();
 
         let result = engine.render(&ctx, None, 1, 20).unwrap();
@@ -191,10 +206,9 @@ mod issue_rendering {
 
     #[test]
     fn test_render_blockers() {
-        let engine = PromptEngine::compile(
-            "{% for b in issue.blocked_by %}{{ b.identifier }}{% endfor %}",
-        )
-        .unwrap();
+        let engine =
+            PromptEngine::compile("{% for b in issue.blocked_by %}{{ b.identifier }}{% endfor %}")
+                .unwrap();
         let mut ctx = make_test_context();
         ctx.blocked_by = vec![BlockerContext {
             id: Some("uuid-999".to_string()),

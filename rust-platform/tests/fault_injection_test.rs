@@ -1,3 +1,19 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    clippy::bind_instead_of_map,
+    clippy::derivable_impls,
+    clippy::manual_range_contains,
+    clippy::needless_borrows_for_generic_args,
+    clippy::ptr_arg,
+    clippy::duplicated_attributes,
+    clippy::approx_constant,
+    clippy::bool_assert_comparison,
+    clippy::len_zero,
+    clippy::let_and_return
+)]
+
 //! Fault injection tests for the Platform adapter.
 //!
 //! These tests use the MemoryAdapter with fault injection to verify error handling,
@@ -64,7 +80,11 @@ async fn test_add_labels_failure_triggers_compensation() {
 async fn test_rate_limit_triggers_retry() {
     let adapter = MemoryAdapter::new();
     adapter
-        .seed_issue(make_test_issue(1, "Rate limited issue", Some("workflow::todo")))
+        .seed_issue(make_test_issue(
+            1,
+            "Rate limited issue",
+            Some("workflow::todo"),
+        ))
         .await;
 
     // Inject rate limit error
@@ -172,7 +192,10 @@ async fn test_multiple_workflow_labels_cleaned() {
     let labels = adapter.get_issue_labels(IssueId(1)).await.unwrap();
 
     // Should have exactly one workflow label (the new one)
-    let workflow_labels: Vec<&String> = labels.iter().filter(|l| l.starts_with("workflow::")).collect();
+    let workflow_labels: Vec<&String> = labels
+        .iter()
+        .filter(|l| l.starts_with("workflow::"))
+        .collect();
     assert_eq!(
         workflow_labels.len(),
         1,
@@ -250,7 +273,11 @@ async fn test_concurrent_fault_injection() {
     let adapter = MemoryAdapter::new();
     for i in 1..=10 {
         adapter
-            .seed_issue(make_test_issue(i, &format!("Issue {}", i), Some("workflow::todo")))
+            .seed_issue(make_test_issue(
+                i,
+                &format!("Issue {}", i),
+                Some("workflow::todo"),
+            ))
             .await;
     }
 
@@ -284,7 +311,11 @@ async fn test_concurrent_fault_injection() {
 async fn test_persistent_fault_survives_multiple_calls() {
     let adapter = MemoryAdapter::new();
     adapter
-        .seed_issue(make_test_issue(1, "Persistent test", Some("workflow::todo")))
+        .seed_issue(make_test_issue(
+            1,
+            "Persistent test",
+            Some("workflow::todo"),
+        ))
         .await;
 
     adapter

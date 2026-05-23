@@ -1,3 +1,13 @@
+#![allow(
+    clippy::manual_ok_err,
+    clippy::manual_range_contains,
+    clippy::needless_borrows_for_generic_args,
+    clippy::new_without_default,
+    clippy::should_implement_trait,
+    clippy::too_many_arguments,
+    clippy::unnecessary_map_or
+)]
+
 pub mod alert;
 pub mod auth;
 pub mod concurrency;

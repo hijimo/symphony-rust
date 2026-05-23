@@ -1,3 +1,19 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    clippy::bind_instead_of_map,
+    clippy::derivable_impls,
+    clippy::manual_range_contains,
+    clippy::needless_borrows_for_generic_args,
+    clippy::ptr_arg,
+    clippy::duplicated_attributes,
+    clippy::approx_constant,
+    clippy::bool_assert_comparison,
+    clippy::len_zero,
+    clippy::let_and_return
+)]
+
 //! MockTracker — configurable tracker mock for integration tests.
 //!
 //! Simulates the issue tracker (Linear/GitHub/GitLab) with configurable
@@ -225,10 +241,7 @@ mod tests {
         tracker.set_issue_state(1, "workflow::done");
 
         let result = tracker.fetch_candidates().unwrap();
-        assert_eq!(
-            result[0].workflow_state,
-            Some("workflow::done".to_string())
-        );
+        assert_eq!(result[0].workflow_state, Some("workflow::done".to_string()));
     }
 
     #[test]

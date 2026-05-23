@@ -1,3 +1,19 @@
+#![allow(
+    unused_imports,
+    unused_variables,
+    dead_code,
+    clippy::bind_instead_of_map,
+    clippy::derivable_impls,
+    clippy::manual_range_contains,
+    clippy::needless_borrows_for_generic_args,
+    clippy::ptr_arg,
+    clippy::duplicated_attributes,
+    clippy::approx_constant,
+    clippy::bool_assert_comparison,
+    clippy::len_zero,
+    clippy::let_and_return
+)]
+
 //! Real Integration Tests — Linear API smoke tests.
 //!
 //! These tests require a valid LINEAR_API_KEY environment variable and
@@ -108,7 +124,11 @@ async fn real_linear_fetch_candidate_issues() {
                 data
             );
             let nodes = data["data"]["issues"]["nodes"].as_array().unwrap();
-            println!("Fetched {} candidate issues from '{}'", nodes.len(), project);
+            println!(
+                "Fetched {} candidate issues from '{}'",
+                nodes.len(),
+                project
+            );
 
             if let Some(first) = nodes.first() {
                 assert!(first["id"].is_string());
@@ -169,9 +189,7 @@ async fn real_linear_fetch_issue_states_by_ids() {
         assert!(issue["state"]["name"].is_string());
         println!(
             "  {}: state={} ({})",
-            issue["identifier"],
-            issue["state"]["name"],
-            issue["state"]["type"]
+            issue["identifier"], issue["state"]["name"], issue["state"]["type"]
         );
     }
 }
@@ -276,7 +294,12 @@ async fn real_linear_pagination() {
             .as_bool()
             .unwrap_or(false);
 
-        println!("  Page {}: {} issues, hasNextPage={}", page + 1, nodes.len(), has_next);
+        println!(
+            "  Page {}: {} issues, hasNextPage={}",
+            page + 1,
+            nodes.len(),
+            has_next
+        );
         all_issues.extend(nodes.iter().cloned());
 
         if !has_next {
