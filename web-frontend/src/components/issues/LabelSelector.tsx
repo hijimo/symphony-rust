@@ -14,6 +14,25 @@ export default function LabelSelector({
 }: LabelSelectorProps) {
   const [inputValue, setInputValue] = useState('');
 
+  const parseLabels = (rawValue: string) =>
+    rawValue
+      .split(',')
+      .map((label) => label.trim())
+      .filter((label) => label.length > 0);
+
+  const normalizeLabels = (labels: string[]) =>
+    labels
+      .flatMap(parseLabels)
+      .filter((label, index, labels) => labels.indexOf(label) === index);
+
+  const commitInputValue = () => {
+    const parsedInput = parseLabels(inputValue);
+    if (parsedInput.length === 0) return;
+
+    onChange(normalizeLabels([...value, ...parsedInput]));
+    setInputValue('');
+  };
+
   return (
     <Autocomplete
       multiple
@@ -25,7 +44,8 @@ export default function LabelSelector({
         setInputValue(newInputValue);
       }}
       onChange={(_, newValue) => {
-        onChange(newValue as string[]);
+        onChange(normalizeLabels(newValue as string[]));
+        setInputValue('');
       }}
       disabled={disabled}
       renderTags={(tagValue, getTagProps) =>
@@ -54,6 +74,7 @@ export default function LabelSelector({
           label="标签"
           placeholder="输入标签后按回车添加"
           helperText="输入标签名后按 Enter 添加，需为仓库中已存在的标签"
+          onBlur={commitInputValue}
         />
       )}
     />

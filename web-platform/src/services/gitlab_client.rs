@@ -152,6 +152,26 @@ impl GitLabClient {
             )),
         }
     }
+
+    fn create_issue_body(req: &CreateIssueRequest) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "title": req.title,
+        });
+
+        if let Some(ref desc) = req.description {
+            body["description"] = serde_json::Value::String(desc.clone());
+        }
+
+        if !req.labels.is_empty() {
+            body["labels"] = serde_json::Value::String(req.labels.join(","));
+        }
+
+        if let Some(ref assignee) = req.assignee {
+            body["assignee_username"] = serde_json::Value::String(assignee.clone());
+        }
+
+        body
+    }
 }
 
 #[async_trait]
@@ -250,22 +270,7 @@ impl GitPlatformClient for GitLabClient {
     ) -> Result<PlatformIssue, GitPlatformError> {
         let encoded = Self::encode_project_path(project_path);
         let url = format!("{}/api/v4/projects/{}/issues", self.base_url, encoded);
-
-        let mut body = serde_json::json!({
-            "title": req.title,
-        });
-
-        if let Some(ref desc) = req.description {
-            body["description"] = serde_json::Value::String(desc.clone());
-        }
-
-        if !req.labels.is_empty() {
-            body["labels"] = serde_json::Value::String(req.labels.join(","));
-        }
-
-        if let Some(ref assignee) = req.assignee {
-            body["assignee_username"] = serde_json::Value::String(assignee.clone());
-        }
+        let body = Self::create_issue_body(req);
 
         let response = self
             .http
@@ -631,5 +636,22 @@ mod tests {
             url.as_str(),
             "https://gitlab.example.com/api/v4/projects/group%2Fproject/issues?per_page=25&order_by=created_at&sort=desc&state=opened&labels=needs+review%2C%E4%B8%AD%E6%96%87&not%5Blabels%5D=symphony+claimed&assignee_username=alice%2Bbob&search=foo+%26+bar&in=title"
         );
+    }
+
+    #[test]
+    fn create_issue_body_includes_labels_as_comma_separated_string() {
+        let req = CreateIssueRequest {
+            title: "Issue with labels".to_string(),
+            description: Some("body".to_string()),
+            labels: vec!["Todo".to_string(), "In Progress".to_string()],
+            assignee: Some("alice".to_string()),
+        };
+
+        let body = GitLabClient::create_issue_body(&req);
+
+        assert_eq!(body["title"], "Issue with labels");
+        assert_eq!(body["description"], "body");
+        assert_eq!(body["labels"], "Todo,In Progress");
+        assert_eq!(body["assignee_username"], "alice");
     }
 }

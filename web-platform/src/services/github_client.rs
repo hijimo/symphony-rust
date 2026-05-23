@@ -207,6 +207,26 @@ impl GitHubClient {
         issue_iids.dedup();
         issue_iids
     }
+
+    fn create_issue_body(req: &CreateIssueRequest) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "title": req.title,
+        });
+
+        if let Some(ref desc) = req.description {
+            body["body"] = serde_json::Value::String(desc.clone());
+        }
+
+        if !req.labels.is_empty() {
+            body["labels"] = serde_json::json!(req.labels);
+        }
+
+        if let Some(ref assignee) = req.assignee {
+            body["assignees"] = serde_json::json!([assignee]);
+        }
+
+        body
+    }
 }
 
 #[async_trait]
@@ -313,22 +333,7 @@ impl GitPlatformClient for GitHubClient {
         req: &CreateIssueRequest,
     ) -> Result<PlatformIssue, GitPlatformError> {
         let url = format!("{}/repos/{}/issues", Self::BASE_URL, project_path);
-
-        let mut body = serde_json::json!({
-            "title": req.title,
-        });
-
-        if let Some(ref desc) = req.description {
-            body["body"] = serde_json::Value::String(desc.clone());
-        }
-
-        if !req.labels.is_empty() {
-            body["labels"] = serde_json::json!(req.labels);
-        }
-
-        if let Some(ref assignee) = req.assignee {
-            body["assignees"] = serde_json::json!([assignee]);
-        }
+        let body = Self::create_issue_body(req);
 
         let response = self
             .http
@@ -819,5 +824,22 @@ mod tests {
         ));
 
         assert_eq!(refs, vec![12, 34]);
+    }
+
+    #[test]
+    fn create_issue_body_includes_labels_as_array() {
+        let req = CreateIssueRequest {
+            title: "Issue with labels".to_string(),
+            description: Some("body".to_string()),
+            labels: vec!["Todo".to_string(), "In Progress".to_string()],
+            assignee: Some("alice".to_string()),
+        };
+
+        let body = GitHubClient::create_issue_body(&req);
+
+        assert_eq!(body["title"], "Issue with labels");
+        assert_eq!(body["body"], "body");
+        assert_eq!(body["labels"], serde_json::json!(["Todo", "In Progress"]));
+        assert_eq!(body["assignees"], serde_json::json!(["alice"]));
     }
 }
