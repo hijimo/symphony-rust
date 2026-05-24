@@ -16,16 +16,77 @@ use crate::models::concurrency::{
     ConcurrencyConfigResponse, ConcurrencyStatus, ProjectConcurrencyDetail, SseTicketResponse,
     UpdateConcurrencyConfigRequest, UpdateProjectConcurrencyRequest,
 };
+use crate::models::ProjectConcurrencyInfo;
 use crate::models::ResponseData;
+use crate::process_manager::ProcessManager;
 use crate::repository::{ConcurrencyRepository, ProjectMemberRepository, ProjectRepository};
 use crate::AppState;
+
+async fn get_live_concurrency_status(
+    state: &AppState,
+) -> Result<ConcurrencyStatus, WebPlatformError> {
+    let global_max = state
+        .concurrency_manager
+        .global_max
+        .load(std::sync::atomic::Ordering::Relaxed);
+
+    let process_entries: Vec<(i64, crate::process_manager::ProcessState)> = state
+        .process_manager
+        .processes
+        .iter()
+        .map(|entry| (*entry.key(), entry.value().clone()))
+        .collect();
+
+    let mut projects = Vec::new();
+    for (project_id, process_state) in process_entries {
+        if !ProcessManager::is_active_process(&process_state) {
+            continue;
+        }
+
+        if let Some(project) = state.repo.get_project(project_id).await? {
+            projects.push(ProjectConcurrencyInfo {
+                project_id,
+                project_name: project.name,
+                active_agents: 1,
+                max_agents: Some(project.max_concurrent_agents),
+                queued_tasks: 0,
+                service_status: project.service_status,
+            });
+        }
+    }
+
+    let global_active = state.process_manager.active_process_count();
+    state
+        .concurrency_manager
+        .global_active
+        .store(global_active, std::sync::atomic::Ordering::Relaxed);
+
+    let utilization_percent = if global_max > 0 {
+        (global_active as f64 / global_max as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let data_freshness_seconds = state
+        .concurrency_manager
+        .get_status()
+        .data_freshness_seconds;
+
+    Ok(ConcurrencyStatus {
+        global_max,
+        global_active,
+        utilization_percent,
+        projects,
+        data_freshness_seconds,
+    })
+}
 
 /// GET /api/admin/concurrency
 pub async fn get_global_concurrency(
     State(state): State<AppState>,
     _claims: axum::Extension<Claims>,
 ) -> Result<Json<ResponseData<ConcurrencyStatus>>, WebPlatformError> {
-    let status = state.concurrency_manager.get_status();
+    let status = get_live_concurrency_status(&state).await?;
     Ok(Json(ResponseData::success(status)))
 }
 
@@ -81,7 +142,30 @@ pub async fn get_project_concurrency(
         .await?
         .ok_or_else(|| WebPlatformError::NotFound("Project not found".to_string()))?;
 
-    let info = state.concurrency_manager.get_project_status(project_id);
+    let info = if state
+        .process_manager
+        .get_state(project_id)
+        .as_ref()
+        .is_some_and(ProcessManager::is_active_process)
+    {
+        Some(ProjectConcurrencyInfo {
+            project_id,
+            project_name: project.name.clone(),
+            active_agents: 1,
+            max_agents: Some(project.max_concurrent_agents),
+            queued_tasks: 0,
+            service_status: project.service_status.clone(),
+        })
+    } else {
+        Some(ProjectConcurrencyInfo {
+            project_id,
+            project_name: project.name.clone(),
+            active_agents: 0,
+            max_agents: Some(project.max_concurrent_agents),
+            queued_tasks: 0,
+            service_status: project.service_status.clone(),
+        })
+    };
     let (today_started, today_completed, avg_duration) =
         state.repo.get_today_stats(project_id).await?;
 
