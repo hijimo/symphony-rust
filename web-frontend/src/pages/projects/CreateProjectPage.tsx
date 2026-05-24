@@ -56,7 +56,7 @@ export default function CreateProjectPage() {
         description: description.trim() || undefined,
         default_branch: defaultBranch.trim() || undefined,
       });
-      navigate(`/projects/${project.id}`, { replace: true });
+      navigate(`/projects/${project.id}/kanban`, { replace: true });
     } catch (err: any) {
       setSnackError(err?.message || '创建项目失败');
     } finally {

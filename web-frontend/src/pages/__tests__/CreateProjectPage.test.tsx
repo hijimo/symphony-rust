@@ -87,7 +87,7 @@ describe('CreateProjectPage', () => {
     });
   });
 
-  it('submits form and navigates on success', async () => {
+  it('submits form and navigates to kanban on success', async () => {
     const user = userEvent.setup();
     renderCreateProject();
 
@@ -98,7 +98,7 @@ describe('CreateProjectPage', () => {
     await user.click(submitBtn);
 
     await waitFor(() => {
-      expect(mockNavigate).toHaveBeenCalledWith('/projects/3', { replace: true });
+      expect(mockNavigate).toHaveBeenCalledWith('/projects/3/kanban', { replace: true });
     });
   });
 
