@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use crate::auth::jwt::Claims;
 use crate::error::WebPlatformError;
+use crate::handlers::network_proxy::load_effective_proxy_config;
 use crate::models::alert::{
     AlertChannelsResponse, AlertHistoryQuery, AlertHistoryRecord, AlertRule, AlertRulesResponse,
     ChannelTypeInfo, ConfigFieldSchema, NotificationChannelConfig, NotificationChannelRow,
@@ -284,10 +285,13 @@ pub async fn test_notification(
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
-            let channel = crate::notification::DingTalkChannel::new(
+            let proxy_config =
+                load_effective_proxy_config(&state.repo, &state.encryption_key).await?;
+            let channel = crate::notification::DingTalkChannel::new_with_proxy(
                 row.channel_id.clone(),
                 webhook_url,
                 secret,
+                Some(&proxy_config),
             );
 
             channel

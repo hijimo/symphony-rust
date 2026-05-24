@@ -139,6 +139,13 @@ mod sanitize_key {
         let result = sanitize_workspace_key("feature/ABC-123_impl").unwrap();
         assert_eq!(result, "feature_ABC-123_impl");
     }
+
+    #[test]
+    fn test_issue_id_path_key_uses_lowercase_hex() {
+        assert_eq!(WorkspaceManager::issue_id_path_key("6"), "i-36");
+        assert_eq!(WorkspaceManager::issue_id_path_key("Ab"), "i-4162");
+        assert_eq!(WorkspaceManager::issue_id_path_key("#6"), "i-2336");
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

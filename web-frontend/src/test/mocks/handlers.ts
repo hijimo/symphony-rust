@@ -86,6 +86,59 @@ const mockMembers = [
   },
 ];
 
+type MockProxyMode = 'disabled' | 'inherit_env' | 'manual';
+
+interface MockProxySecret {
+  configured: boolean;
+  displayValue: string;
+  updatedAt: string | null;
+}
+
+interface MockNetworkProxy {
+  mode: MockProxyMode;
+  version: string;
+  source: string;
+  httpProxy: MockProxySecret;
+  httpsProxy: MockProxySecret;
+  allProxy: MockProxySecret;
+  noProxy: string;
+  autoBypassLocal: boolean;
+  needsRestartProjectCount: number;
+  updatedAt: string | null;
+  warnings: Array<{
+    code: string;
+    severity: 'info' | 'warning' | 'error';
+    blocking: boolean;
+    message: string;
+  }>;
+}
+
+let mockNetworkProxy: MockNetworkProxy = {
+  mode: 'disabled',
+  version: 'proxy-v1',
+  source: 'database',
+  httpProxy: {
+    configured: true,
+    displayValue: 'http://us***@proxy.internal:8080',
+    updatedAt: '2026-05-01T00:00:00Z',
+  },
+  httpsProxy: {
+    configured: false,
+    displayValue: '',
+    updatedAt: null,
+  },
+  allProxy: {
+    configured: false,
+    displayValue: '',
+    updatedAt: null,
+  },
+  noProxy: 'localhost,127.0.0.1,::1',
+  autoBypassLocal: true,
+  needsRestartProjectCount: 2,
+  updatedAt: '2026-05-01T00:00:00Z',
+  warnings: [],
+};
+
 export const handlers = [
   // Auth - login
   http.post(`${BASE_URL}/auth/login`, async ({ request }) => {
@@ -247,6 +300,162 @@ export const handlers = [
       );
     }
     return HttpResponse.json({ success: true, retCode: 'SUCCESS', retMsg: 'ok', data: null });
+  }),
+
+  // Admin - system config
+  http.get(`${BASE_URL}/admin/config`, ({ request }) => {
+    const token = request.headers.get('Authorization');
+    if (!token) {
+      return HttpResponse.json(
+        { success: false, retCode: 'AUTH_001', retMsg: '未授权', data: null },
+        { status: 401 },
+      );
+    }
+    return HttpResponse.json({
+      success: true,
+      retCode: 'SUCCESS',
+      retMsg: 'ok',
+      data: [
+        {
+          key: 'global_concurrency_limit',
+          value: '10',
+          description: '全局并发上限',
+          updatedAt: '2026-05-01T00:00:00Z',
+        },
+      ],
+    });
+  }),
+
+  http.put(`${BASE_URL}/admin/config`, async ({ request }) => {
+    const token = request.headers.get('Authorization');
+    if (!token) {
+      return HttpResponse.json(
+        { success: false, retCode: 'AUTH_001', retMsg: '未授权', data: null },
+        { status: 401 },
+      );
+    }
+    const body = (await request.json()) as {
+      configs: Array<{ key: string; value: string }>;
+    };
+    return HttpResponse.json({
+      success: true,
+      retCode: 'SUCCESS',
+      retMsg: 'ok',
+      data: body.configs.map((config) => ({
+        ...config,
+        description: config.key === 'global_concurrency_limit' ? '全局并发上限' : null,
+        updatedAt: '2026-05-02T00:00:00Z',
+      })),
+    });
+  }),
+
+  http.get(`${BASE_URL}/admin/stats`, ({ request }) => {
+    const token = request.headers.get('Authorization');
+    if (!token) {
+      return HttpResponse.json(
+        { success: false, retCode: 'AUTH_001', retMsg: '未授权', data: null },
+        { status: 401 },
+      );
+    }
+    return HttpResponse.json({
+      success: true,
+      retCode: 'SUCCESS',
+      retMsg: 'ok',
+      data: {
+        totalProjects: mockProjects.length,
+        runningServices: mockProjects.filter((project) => project.service_status === 'running').length,
+        totalUsers: mockUsersList.length,
+        globalConcurrencyLimit: 10,
+        globalConcurrencyUsed: 1,
+      },
+    });
+  }),
+
+  // Admin - network proxy
+  http.get(`${BASE_URL}/admin/network-proxy`, ({ request }) => {
+    const token = request.headers.get('Authorization');
+    if (!token) {
+      return HttpResponse.json(
+        { success: false, retCode: 'AUTH_001', retMsg: '未授权', data: null },
+        { status: 401 },
+      );
+    }
+    return HttpResponse.json({
+      success: true,
+      retCode: 'SUCCESS',
+      retMsg: 'ok',
+      data: mockNetworkProxy,
+    });
+  }),
+
+  http.put(`${BASE_URL}/admin/network-proxy`, async ({ request }) => {
+    const token = request.headers.get('Authorization');
+    if (!token) {
+      return HttpResponse.json(
+        { success: false, retCode: 'AUTH_001', retMsg: '未授权', data: null },
+        { status: 401 },
+      );
+    }
+    const body = (await request.json()) as {
+      mode: MockProxyMode;
+      httpProxy: { action: 'keep' | 'set' | 'clear' };
+      httpsProxy: { action: 'keep' | 'set' | 'clear' };
+      allProxy: { action: 'keep' | 'set' | 'clear' };
+      noProxy: string;
+      autoBypassLocal: boolean;
+    };
+
+    const nextSecret = (
+      current: MockProxySecret,
+      update: { action: 'keep' | 'set' | 'clear' },
+      displayValue: string,
+    ) => {
+      if (update.action === 'keep') return current;
+      if (update.action === 'clear') return { configured: false, displayValue: '', updatedAt: null };
+      return { configured: true, displayValue, updatedAt: '2026-05-02T00:00:00Z' };
+    };
+
+    mockNetworkProxy = {
+      ...mockNetworkProxy,
+      mode: body.mode,
+      version: 'proxy-v2',
+      httpProxy: nextSecret(mockNetworkProxy.httpProxy, body.httpProxy, 'http://ne***@proxy.internal:8080'),
+      httpsProxy: nextSecret(mockNetworkProxy.httpsProxy, body.httpsProxy, 'http://ht***@proxy.internal:8443'),
+      allProxy: nextSecret(mockNetworkProxy.allProxy, body.allProxy, 'socks5://al***@proxy.internal:1080'),
+      noProxy: body.noProxy,
+      autoBypassLocal: body.autoBypassLocal,
+      updatedAt: '2026-05-02T00:00:00Z',
+    };
+
+    return HttpResponse.json({
+      success: true,
+      retCode: 'SUCCESS',
+      retMsg: 'ok',
+      data: mockNetworkProxy,
+    });
+  }),
+
+  http.post(`${BASE_URL}/admin/network-proxy/test`, ({ request }) => {
+    const token = request.headers.get('Authorization');
+    if (!token) {
+      return HttpResponse.json(
+        { success: false, retCode: 'AUTH_001', retMsg: '未授权', data: null },
+        { status: 401 },
+      );
+    }
+    return HttpResponse.json({
+      success: true,
+      retCode: 'SUCCESS',
+      retMsg: 'ok',
+      data: {
+        status: 'success',
+        targetHost: 'github.com',
+        proxyUsed: mockNetworkProxy.mode === 'manual',
+        proxySummary: mockNetworkProxy.mode === 'manual' ? 'HTTP proxy' : 'direct',
+        durationMs: 42,
+        message: '连接成功',
+      },
+    });
   }),
 
   // ===== Phase 2: Projects =====

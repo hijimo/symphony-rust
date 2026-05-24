@@ -9,6 +9,7 @@ pub mod issue_mrs;
 pub mod issues;
 pub mod kanban;
 pub mod merge_requests;
+pub mod network_proxy;
 pub mod project_members;
 pub mod project_service;
 pub mod project_workflow;

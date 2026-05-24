@@ -15,9 +15,11 @@ use crate::models::{
     NewProject, Project, ProjectMember, ProjectUpdate, ServiceStatusUpdate, SyncMember, SyncResult,
     TokenBlacklistEntry, User, UserConfig,
 };
+use crate::proxy::{ProxySecret, ProxySecretMutation, VERSION_KEY};
 use crate::repository::{
-    AlertRepository, ConcurrencyRepository, ProjectMemberRepository, ProjectRepository,
-    SystemConfigRepository, TokenBlacklistRepository, UserConfigRepository, UserRepository,
+    AlertRepository, ConcurrencyRepository, NetworkProxyRepository, ProjectMemberRepository,
+    ProjectRepository, SystemConfigRepository, TokenBlacklistRepository, UserConfigRepository,
+    UserRepository,
 };
 
 #[derive(Clone)]
@@ -384,10 +386,24 @@ fn row_to_project(row: &rusqlite::Row) -> rusqlite::Result<Project> {
         codex_command: row.get(24)?,
         codex_approval_policy: row.get(25)?,
         codex_sandbox: row.get(26)?,
+        web_instance_id: row.get(27)?,
+        lifecycle_op_id: row.get(28)?,
+        lifecycle_lease_expires_at: row.get(29)?,
+        service_owner_web_instance_id: row.get(30)?,
+        service_owner_lease_expires_at: row.get(31)?,
+        service_owner_heartbeat_at: row.get(32)?,
+        service_generation: row.get(33)?,
+        service_instance_id: row.get(34)?,
+        service_pgid: row.get(35)?,
+        service_session_id: row.get(36)?,
+        service_cmdline_hash: row.get(37)?,
+        service_workdir: row.get(38)?,
+        last_lifecycle_op: row.get(39)?,
+        service_proxy_config_version: row.get(40)?,
     })
 }
 
-const PROJECT_COLUMNS: &str = "id, name, description, git_url, platform, platform_host, namespace, repo_name, default_branch, workflow_template, workflow_content, service_status, service_pid, max_concurrent_agents, auto_restart, restart_count, last_started_at, last_stopped_at, error_message, created_by, created_at, updated_at, hooks_after_create, hooks_before_remove, codex_command, codex_approval_policy, codex_sandbox";
+const PROJECT_COLUMNS: &str = "id, name, description, git_url, platform, platform_host, namespace, repo_name, default_branch, workflow_template, workflow_content, service_status, service_pid, max_concurrent_agents, auto_restart, restart_count, last_started_at, last_stopped_at, error_message, created_by, created_at, updated_at, hooks_after_create, hooks_before_remove, codex_command, codex_approval_policy, codex_sandbox, web_instance_id, lifecycle_op_id, lifecycle_lease_expires_at, service_owner_web_instance_id, service_owner_lease_expires_at, service_owner_heartbeat_at, service_generation, service_instance_id, service_pgid, service_session_id, service_cmdline_hash, service_workdir, last_lifecycle_op, service_proxy_config_version";
 
 #[async_trait]
 impl ProjectRepository for SqliteRepository {
@@ -519,7 +535,7 @@ impl ProjectRepository for SqliteRepository {
 
             // Query with member_count subquery
             let query_sql = format!(
-                "SELECT p.id, p.name, p.description, p.git_url, p.platform, p.platform_host, p.namespace, p.repo_name, p.default_branch, p.workflow_template, p.workflow_content, p.service_status, p.service_pid, p.max_concurrent_agents, p.auto_restart, p.restart_count, p.last_started_at, p.last_stopped_at, p.error_message, p.created_by, p.created_at, p.updated_at, p.hooks_after_create, p.hooks_before_remove, p.codex_command, p.codex_approval_policy, p.codex_sandbox, \
+                "SELECT p.id, p.name, p.description, p.git_url, p.platform, p.platform_host, p.namespace, p.repo_name, p.default_branch, p.workflow_template, p.workflow_content, p.service_status, p.service_pid, p.max_concurrent_agents, p.auto_restart, p.restart_count, p.last_started_at, p.last_stopped_at, p.error_message, p.created_by, p.created_at, p.updated_at, p.hooks_after_create, p.hooks_before_remove, p.codex_command, p.codex_approval_policy, p.codex_sandbox, p.web_instance_id, p.lifecycle_op_id, p.lifecycle_lease_expires_at, p.service_owner_web_instance_id, p.service_owner_lease_expires_at, p.service_owner_heartbeat_at, p.service_generation, p.service_instance_id, p.service_pgid, p.service_session_id, p.service_cmdline_hash, p.service_workdir, p.last_lifecycle_op, p.service_proxy_config_version, \
                  (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id) as member_count, \
                  (SELECT pm2.role FROM project_members pm2 WHERE pm2.project_id = p.id AND pm2.user_id = ?{}) as my_role \
                  FROM projects p {} ORDER BY p.id DESC LIMIT ?{} OFFSET ?{}",
@@ -538,8 +554,8 @@ impl ProjectRepository for SqliteRepository {
                     rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
                     |row| {
                         let mut p = row_to_project(row)?;
-                        p.member_count = row.get(27)?;
-                        p.my_role = row.get(28)?;
+                        p.member_count = row.get(41)?;
+                        p.my_role = row.get(42)?;
                         Ok(p)
                     },
                 )?
@@ -673,6 +689,55 @@ impl ProjectRepository for SqliteRepository {
             let rows = conn.execute(
                 &sql,
                 rusqlite::params![status_str, pid, error_message, id],
+            )?;
+            if rows == 0 {
+                return Err(WebPlatformError::NotFound("Project not found".to_string()));
+            }
+            Ok(())
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn update_service_lifecycle(
+        &self,
+        id: i64,
+        lifecycle: &crate::models::ServiceLifecycleUpdate,
+    ) -> Result<()> {
+        let pool = self.pool.clone();
+        let lifecycle = lifecycle.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get()?;
+            let rows = conn.execute(
+                "UPDATE projects
+                 SET web_instance_id = ?1,
+                     lifecycle_op_id = ?2,
+                     service_owner_web_instance_id = ?3,
+                     service_owner_heartbeat_at = datetime('now'),
+                     service_generation = ?4,
+                     service_instance_id = ?5,
+                     service_pgid = ?6,
+                     service_session_id = ?7,
+                     service_cmdline_hash = ?8,
+                     service_workdir = ?9,
+                     last_lifecycle_op = ?10,
+                     service_proxy_config_version = ?11,
+                     updated_at = datetime('now')
+                 WHERE id = ?12",
+                rusqlite::params![
+                    lifecycle.web_instance_id,
+                    lifecycle.lifecycle_op_id,
+                    lifecycle.service_owner_web_instance_id,
+                    lifecycle.service_generation,
+                    lifecycle.service_instance_id,
+                    lifecycle.service_pgid,
+                    lifecycle.service_session_id,
+                    lifecycle.service_cmdline_hash,
+                    lifecycle.service_workdir,
+                    lifecycle.last_lifecycle_op,
+                    lifecycle.service_proxy_config_version,
+                    id,
+                ],
             )?;
             if rows == 0 {
                 return Err(WebPlatformError::NotFound("Project not found".to_string()));
@@ -1655,6 +1720,173 @@ impl SystemConfigRepository for SqliteRepository {
                 |row| row.get(0),
             )?;
             Ok((total_projects, running_services, total_users))
+        })
+        .await
+        .unwrap()
+    }
+}
+
+#[async_trait]
+impl NetworkProxyRepository for SqliteRepository {
+    async fn get_proxy_secret(&self, key: &str) -> Result<Option<ProxySecret>> {
+        let pool = self.pool.clone();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get()?;
+            let result = conn
+                .query_row(
+                    "SELECT key, encrypted_value, kind, updated_at FROM secret_configs WHERE key = ?1",
+                    [&key],
+                    |row| {
+                        Ok(ProxySecret {
+                            key: row.get(0)?,
+                            encrypted_value: row.get(1)?,
+                            kind: row.get(2)?,
+                            updated_at: row.get(3)?,
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(result)
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn upsert_proxy_secret(
+        &self,
+        key: &str,
+        encrypted_value: &str,
+        kind: &str,
+    ) -> Result<()> {
+        let pool = self.pool.clone();
+        let key = key.to_string();
+        let encrypted_value = encrypted_value.to_string();
+        let kind = kind.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get()?;
+            conn.execute(
+                "INSERT INTO secret_configs (key, encrypted_value, kind)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET
+                    encrypted_value = excluded.encrypted_value,
+                    kind = excluded.kind,
+                    updated_at = datetime('now')",
+                rusqlite::params![key, encrypted_value, kind],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn delete_proxy_secret(&self, key: &str) -> Result<()> {
+        let pool = self.pool.clone();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get()?;
+            conn.execute("DELETE FROM secret_configs WHERE key = ?1", [&key])?;
+            Ok(())
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn update_network_proxy_config(
+        &self,
+        expected_version: &str,
+        configs: Vec<(String, String)>,
+        secret_mutations: Vec<ProxySecretMutation>,
+    ) -> Result<()> {
+        let pool = self.pool.clone();
+        let expected_version = expected_version.to_string();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = pool.get()?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+
+            let current_version: Option<String> = tx
+                .query_row(
+                    "SELECT value FROM system_configs WHERE key = ?1",
+                    [VERSION_KEY],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let current_version = current_version.unwrap_or_else(|| "1".to_string());
+            if current_version != expected_version {
+                return Err(WebPlatformError::Conflict(
+                    "network proxy config version conflict".to_string(),
+                ));
+            }
+
+            for mutation in secret_mutations {
+                if let Some(encrypted_value) = mutation.encrypted_value {
+                    tx.execute(
+                        "INSERT INTO secret_configs (key, encrypted_value, kind)
+                         VALUES (?1, ?2, ?3)
+                         ON CONFLICT(key) DO UPDATE SET
+                            encrypted_value = excluded.encrypted_value,
+                            kind = excluded.kind,
+                            updated_at = datetime('now')",
+                        rusqlite::params![mutation.key, encrypted_value, mutation.kind],
+                    )?;
+                } else {
+                    tx.execute("DELETE FROM secret_configs WHERE key = ?1", [mutation.key])?;
+                }
+            }
+
+            for (key, value) in configs {
+                tx.execute(
+                    "INSERT INTO system_configs (key, value, updated_at)
+                     VALUES (?1, ?2, datetime('now'))
+                     ON CONFLICT(key) DO UPDATE SET
+                        value = excluded.value,
+                        updated_at = datetime('now')",
+                    rusqlite::params![key, value],
+                )?;
+            }
+
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn count_running_services_with_stale_proxy_version(
+        &self,
+        current_version: &str,
+    ) -> Result<i64> {
+        let pool = self.pool.clone();
+        let current_version = current_version.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get()?;
+            let count = conn.query_row(
+                "SELECT COUNT(*)
+                 FROM projects
+                 WHERE service_status = 'running'
+                   AND COALESCE(service_proxy_config_version, '') <> ?1",
+                [current_version],
+                |row| row.get(0),
+            )?;
+            Ok(count)
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn current_network_proxy_version(&self) -> Result<String> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get()?;
+            let version = conn
+                .query_row(
+                    "SELECT value FROM system_configs WHERE key = ?1",
+                    [VERSION_KEY],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or_else(|| "1".to_string());
+            Ok(version)
         })
         .await
         .unwrap()

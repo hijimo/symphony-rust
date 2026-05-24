@@ -7,6 +7,7 @@ use sha2::Sha256;
 
 use super::channel::{NotificationChannel, NotificationResult};
 use super::{AlertEvent, NotificationError, Severity};
+use crate::proxy::EffectiveProxyConfig;
 
 /// DingTalk group robot notification channel.
 pub struct DingTalkChannel {
@@ -18,11 +19,32 @@ pub struct DingTalkChannel {
 
 impl DingTalkChannel {
     pub fn new(channel_id: String, webhook_url: String, secret: Option<String>) -> Self {
+        Self::new_with_proxy(channel_id, webhook_url, secret, None)
+    }
+
+    pub fn new_with_proxy(
+        channel_id: String,
+        webhook_url: String,
+        secret: Option<String>,
+        proxy_config: Option<&EffectiveProxyConfig>,
+    ) -> Self {
+        let builder = proxy_config
+            .and_then(|config| {
+                config
+                    .apply_to_reqwest_builder(reqwest::Client::builder())
+                    .map_err(|e| {
+                        tracing::warn!(error = %e, "failed to apply proxy config to DingTalk client");
+                        e
+                    })
+                    .ok()
+            })
+            .unwrap_or_else(reqwest::Client::builder);
+
         Self {
             channel_id,
             webhook_url,
             secret,
-            http_client: reqwest::Client::builder()
+            http_client: builder
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
                 .unwrap_or_default(),

@@ -10,6 +10,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::auth::jwt::Claims;
 use crate::error::WebPlatformError;
+use crate::handlers::network_proxy::load_effective_proxy_config;
 use crate::middleware::project_access::require_project_member;
 use crate::models::kanban::{AIGenerateRequest, SseEvent};
 use crate::repository::ProjectRepository;
@@ -144,6 +145,7 @@ pub async fn generate_issue(
 
     // Mark generation as active
     state.phase3_rate_limiter.start_generation(user_id);
+    let proxy_config = load_effective_proxy_config(&state.repo, &state.encryption_key).await?;
 
     // Create SSE stream
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::io::Error>>(32);
@@ -159,7 +161,7 @@ pub async fn generate_issue(
         let mut full_content = String::new();
 
         match ai_service
-            .generate_stream(&system_prompt, &user_prompt)
+            .generate_stream_with_proxy(&proxy_config, &system_prompt, &user_prompt)
             .await
         {
             Ok(mut stream) => {

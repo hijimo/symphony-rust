@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::auth::jwt::Claims;
 use crate::error::WebPlatformError;
+use crate::handlers::network_proxy::load_effective_proxy_config;
 use crate::models::concurrency::{ValidateTokenRequest, ValidateTokenResponse};
 use crate::models::ResponseData;
 use crate::repository::UserConfigRepository;
@@ -50,7 +51,8 @@ pub async fn validate_token(
     };
 
     // Call platform API to validate
-    let result = validate_with_platform(&req.platform, &req.token, &host).await;
+    let proxy_config = load_effective_proxy_config(&state.repo, &state.encryption_key).await?;
+    let result = validate_with_platform(&req.platform, &req.token, &host, &proxy_config).await;
 
     // Enforce minimum 500ms response time
     let elapsed = start.elapsed();
@@ -80,8 +82,13 @@ async fn validate_with_platform(
     platform: &str,
     token: &str,
     host: &str,
+    proxy_config: &crate::proxy::EffectiveProxyConfig,
 ) -> Result<(String, Vec<String>), String> {
-    let client = reqwest::Client::new();
+    let client = proxy_config
+        .apply_to_reqwest_builder(reqwest::Client::builder())
+        .map_err(|e| e.to_string())?
+        .build()
+        .map_err(|e| e.to_string())?;
 
     match platform {
         "gitlab" => {

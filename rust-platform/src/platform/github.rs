@@ -349,7 +349,8 @@ impl Platform for GithubAdapter {
             .collect();
 
         // Step 1: Add the target label (ensures issue always has at least one workflow label)
-        self.add_labels(issue_id, &[target_label.clone()]).await?;
+        self.add_labels(issue_id, std::slice::from_ref(&target_label))
+            .await?;
 
         // Step 2: Remove stale workflow labels
         let stale: Vec<String> = current_workflow_labels

@@ -6,11 +6,12 @@ use axum::{
 use crate::auth::jwt::Claims;
 use crate::error::WebPlatformError;
 use crate::handlers::issues::{get_user_platform_token, map_platform_error};
+use crate::handlers::network_proxy::load_effective_proxy_config;
 use crate::middleware::project_access::require_project_member;
 use crate::models::issue::MergeRequestSummary;
 use crate::models::ResponseData;
 use crate::repository::ProjectRepository;
-use crate::services::git_platform::create_platform_client;
+use crate::services::git_platform::create_platform_client_with_proxy;
 use crate::AppState;
 
 /// GET /api/projects/:id/issues/:iid/mrs
@@ -56,7 +57,13 @@ pub async fn get_issue_mrs(
     }
 
     // Create platform client
-    let client = create_platform_client(&project.platform, project.platform_host.as_deref());
+    let proxy_config = load_effective_proxy_config(&state.repo, &state.encryption_key).await?;
+    let client = create_platform_client_with_proxy(
+        &project.platform,
+        project.platform_host.as_deref(),
+        Some(&proxy_config),
+    )
+    .map_err(map_platform_error)?;
 
     // Fetch related MRs
     let platform_mrs = client

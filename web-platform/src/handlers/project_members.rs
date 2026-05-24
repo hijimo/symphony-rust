@@ -6,12 +6,13 @@ use axum::{
 use crate::auth::jwt::Claims;
 use crate::error::WebPlatformError;
 use crate::handlers::issues::{get_user_platform_token, map_platform_error};
+use crate::handlers::network_proxy::load_effective_proxy_config;
 use crate::middleware::project_access::{require_project_member, require_project_owner};
 use crate::models::{
     AddMemberRequest, ProjectMember, ResponseData, SyncMember, SyncResult, UpdateMemberRoleRequest,
 };
 use crate::repository::{ProjectMemberRepository, ProjectRepository, UserRepository};
-use crate::services::git_platform::create_platform_client;
+use crate::services::git_platform::create_platform_client_with_proxy;
 use crate::AppState;
 
 /// GET /api/projects/:id/members - List project members.
@@ -182,7 +183,13 @@ pub async fn sync_members(
 
     let (platform_token, _) = get_user_platform_token(&state, user_id, &project).await?;
 
-    let client = create_platform_client(&project.platform, project.platform_host.as_deref());
+    let proxy_config = load_effective_proxy_config(&state.repo, &state.encryption_key).await?;
+    let client = create_platform_client_with_proxy(
+        &project.platform,
+        project.platform_host.as_deref(),
+        Some(&proxy_config),
+    )
+    .map_err(map_platform_error)?;
     let project_path = format!("{}/{}", project.namespace, project.repo_name);
 
     let platform_members_raw = client

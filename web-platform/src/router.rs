@@ -9,8 +9,8 @@ use utoipa_swagger_ui::SwaggerUi;
 use crate::auth::middleware::{jwt_auth, require_admin};
 use crate::handlers::{
     admin_config, admin_users, ai_generate, alerts, auth, concurrency, contributors, issue_mrs,
-    issues, kanban, merge_requests, project_members, project_service, project_workflow, projects,
-    token_validation, user_profile,
+    issues, kanban, merge_requests, network_proxy, project_members, project_service,
+    project_workflow, projects, token_validation, user_profile,
 };
 use crate::AppState;
 
@@ -118,6 +118,22 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/admin/config", get(admin_config::get_system_config))
         .route("/api/admin/config", put(admin_config::update_system_config))
         .route("/api/admin/stats", get(admin_config::get_system_stats))
+        .route(
+            "/api/admin/network-proxy",
+            get(network_proxy::get_network_proxy),
+        )
+        .route(
+            "/api/admin/network-proxy",
+            put(network_proxy::update_network_proxy),
+        )
+        .route(
+            "/api/admin/network-proxy/effective",
+            get(network_proxy::get_effective_network_proxy),
+        )
+        .route(
+            "/api/admin/network-proxy/test",
+            post(network_proxy::test_network_proxy),
+        )
         .layer(middleware::from_fn(require_admin))
         .layer(middleware::from_fn_with_state(state.clone(), jwt_auth));
 
@@ -145,6 +161,10 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/projects/{id}/status",
             get(project_service::get_service_status),
+        )
+        .route(
+            "/api/projects/{id}/diagnostics",
+            get(project_service::get_diagnostics),
         )
         // Members
         .route(

@@ -24,7 +24,7 @@ export SERVER_PORT="${SERVER_PORT:-3000}"
 export ADMIN_INIT_PASSWORD="${ADMIN_INIT_PASSWORD:-admin123}"
 export RUST_LOG="${RUST_LOG:-web_platform=debug,tower_http=debug}"
 export SYMPHONY_BIN="${SYMPHONY_BIN:-$PROJECT_ROOT/target/debug/symphony-platform}"
-export SYMPHONY_WORKSPACE_ROOT="${SYMPHONY_WORKSPACE_ROOT:-$PROJECT_ROOT/workspaces}"
+export SYMPHONY_WORKSPACE_ROOT="/Users/zhaojimo/Documents/symphony-workspaces"
 
 # AI Issue 生成配置。AZURE_OPENAI_BASEURL 和 AZURE_OPENAI_API_KEY 都存在时才启用。
 # Azure 示例：
@@ -80,14 +80,14 @@ else
 fi
 echo ""
 
-# 编译后端
-echo -e "${YELLOW}Building backend...${NC}"
-cargo build -p web-platform 2>&1
+# 编译后端和被后端拉起的 Symphony worker
+echo -e "${YELLOW}Building backend and Symphony worker...${NC}"
+cargo build -p web-platform -p symphony-platform 2>&1
 if [ $? -ne 0 ]; then
-    echo -e "${RED}Backend build failed${NC}"
+    echo -e "${RED}Backend or Symphony worker build failed${NC}"
     exit 1
 fi
-echo -e "${GREEN}Backend build OK${NC}"
+echo -e "${GREEN}Backend and Symphony worker build OK${NC}"
 
 # 启动后端
 echo -e "${YELLOW}Starting backend on :${SERVER_PORT}...${NC}"

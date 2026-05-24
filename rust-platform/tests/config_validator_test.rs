@@ -40,21 +40,11 @@ struct WorkflowConfig {
     terminal_states: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct IssueFilter {
     labels: Vec<String>,
     assignee: Option<String>,
     milestone: Option<String>,
-}
-
-impl Default for IssueFilter {
-    fn default() -> Self {
-        Self {
-            labels: vec![],
-            assignee: None,
-            milestone: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -117,15 +107,17 @@ fn validate_token_reference(token: &str) -> Result<(), ConfigValidationError> {
     }
     let var_name = &token[1..];
     match std::env::var(var_name) {
-        Ok(val) if val.is_empty() => Err(ConfigValidationError::MissingEnvVar(var_name.to_string())),
+        Ok(val) if val.is_empty() => {
+            Err(ConfigValidationError::MissingEnvVar(var_name.to_string()))
+        }
         Err(_) => Err(ConfigValidationError::MissingEnvVar(var_name.to_string())),
         Ok(_) => Ok(()),
     }
 }
 
 fn validate_base_url(url_str: &str, allow_custom_host: bool) -> Result<(), ConfigValidationError> {
-    let url = url::Url::parse(url_str)
-        .map_err(|e| ConfigValidationError::InvalidUrl(e.to_string()))?;
+    let url =
+        url::Url::parse(url_str).map_err(|e| ConfigValidationError::InvalidUrl(e.to_string()))?;
 
     let host = url.host_str().unwrap_or("");
 
@@ -191,8 +183,14 @@ fn valid_workflow() -> WorkflowConfig {
     let mut states = HashMap::new();
     states.insert("backlog".to_string(), "workflow::backlog".to_string());
     states.insert("todo".to_string(), "workflow::todo".to_string());
-    states.insert("in_progress".to_string(), "workflow::in-progress".to_string());
-    states.insert("human_review".to_string(), "workflow::human-review".to_string());
+    states.insert(
+        "in_progress".to_string(),
+        "workflow::in-progress".to_string(),
+    );
+    states.insert(
+        "human_review".to_string(),
+        "workflow::human-review".to_string(),
+    );
     states.insert("rework".to_string(), "workflow::rework".to_string());
     states.insert("merging".to_string(), "workflow::merging".to_string());
     states.insert("done".to_string(), "workflow::done".to_string());
@@ -376,7 +374,10 @@ fn test_undefined_active_states_rejected() {
 
     let mut platform = valid_github_platform();
     // Add a state to active_states that doesn't exist in the states map
-    platform.workflow.active_states.push("nonexistent_state".to_string());
+    platform
+        .workflow
+        .active_states
+        .push("nonexistent_state".to_string());
 
     let config = Config {
         platform: Some(platform),
@@ -426,7 +427,11 @@ fn test_valid_github_config_passes() {
     };
 
     let result = validate_platform_config(&config);
-    assert!(result.is_ok(), "Valid GitHub config should pass: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Valid GitHub config should pass: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -439,7 +444,11 @@ fn test_valid_gitlab_config_passes() {
     };
 
     let result = validate_platform_config(&config);
-    assert!(result.is_ok(), "Valid GitLab config should pass: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Valid GitLab config should pass: {:?}",
+        result.err()
+    );
 }
 
 // --- Additional edge case tests ---
@@ -459,7 +468,11 @@ fn test_localhost_http_allowed() {
     };
 
     let result = validate_platform_config(&config);
-    assert!(result.is_ok(), "localhost HTTP should be allowed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "localhost HTTP should be allowed: {:?}",
+        result.err()
+    );
 }
 
 #[test]
@@ -476,7 +489,11 @@ fn test_custom_host_with_opt_in_passes() {
     };
 
     let result = validate_platform_config(&config);
-    assert!(result.is_ok(), "Custom host with opt-in should pass: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Custom host with opt-in should pass: {:?}",
+        result.err()
+    );
 }
 
 #[test]

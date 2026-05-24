@@ -7,6 +7,7 @@ use crate::models::issue::PlatformUser;
 use crate::models::kanban::{
     CreateIssueRequest, PlatformIssue, PlatformMergeRequest, PlatformReviewer,
 };
+use crate::proxy::EffectiveProxyConfig;
 use crate::services::git_platform::{
     GitPlatformClient, GitPlatformError, ListIssuesOptions, PlatformMember,
 };
@@ -19,13 +20,26 @@ pub struct GitLabClient {
 
 impl GitLabClient {
     pub fn new(base_url: String) -> Self {
-        let http = Client::builder()
+        Self::new_with_proxy(base_url, None).expect("failed to build reqwest client")
+    }
+
+    pub fn new_with_proxy(
+        base_url: String,
+        proxy: Option<&EffectiveProxyConfig>,
+    ) -> Result<Self, GitPlatformError> {
+        let builder = match proxy {
+            Some(proxy) => proxy
+                .apply_to_reqwest_builder(Client::builder())
+                .map_err(|e| GitPlatformError::RequestError(e.to_string()))?,
+            None => Client::builder(),
+        };
+        let http = builder
             .timeout(Duration::from_secs(10))
             .user_agent("Symphony-WebPlatform/0.3.0")
             .build()
-            .expect("failed to build reqwest client");
+            .map_err(|e| GitPlatformError::RequestError(e.to_string()))?;
 
-        Self { base_url, http }
+        Ok(Self { base_url, http })
     }
 
     fn list_issues_url(

@@ -8,6 +8,8 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
 
+use crate::proxy::proxy_aware_client_builder;
+
 use super::{BlockerRef, Tracker, TrackerError, TrackerIssue};
 
 /// Default page size for paginated Linear queries.
@@ -42,7 +44,10 @@ impl LinearClient {
             return Err(TrackerError::MissingProjectSlug);
         }
 
-        let http = Client::builder()
+        let http = proxy_aware_client_builder()
+            .map_err(|e| TrackerError::UnknownPayload {
+                detail: format!("failed to apply proxy config: {}", e),
+            })?
             .timeout(Duration::from_millis(DEFAULT_TIMEOUT_MS))
             .build()
             .map_err(|e| TrackerError::ApiRequest { source: e })?;
@@ -405,13 +410,9 @@ fn normalize_linear_issue(node: &Value) -> Option<TrackerIssue> {
         .map(|s| s.to_string());
 
     // Priority: integer only
-    let priority = node.get("priority").and_then(|v| {
-        if let Some(n) = v.as_i64() {
-            Some(n as i32)
-        } else {
-            None
-        }
-    });
+    let priority = node
+        .get("priority")
+        .and_then(|v| v.as_i64().map(|n| n as i32));
 
     let state = node
         .get("state")

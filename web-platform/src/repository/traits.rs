@@ -5,9 +5,10 @@ use crate::models::alert::{
 };
 use crate::models::concurrency::ConcurrencySnapshot;
 use crate::models::{
-    NewProject, Project, ProjectMember, ProjectUpdate, ServiceStatusUpdate, SyncMember, SyncResult,
-    TokenBlacklistEntry, User, UserConfig,
+    NewProject, Project, ProjectMember, ProjectUpdate, ServiceLifecycleUpdate, ServiceStatusUpdate,
+    SyncMember, SyncResult, TokenBlacklistEntry, User, UserConfig,
 };
+use crate::proxy::{ProxySecret, ProxySecretMutation};
 use async_trait::async_trait;
 
 #[async_trait]
@@ -73,6 +74,11 @@ pub trait ProjectRepository: Send + Sync {
     async fn update_project(&self, id: i64, updates: &ProjectUpdate) -> Result<()>;
     async fn delete_project(&self, id: i64) -> Result<()>;
     async fn update_service_status(&self, id: i64, status: &ServiceStatusUpdate) -> Result<()>;
+    async fn update_service_lifecycle(
+        &self,
+        id: i64,
+        lifecycle: &ServiceLifecycleUpdate,
+    ) -> Result<()>;
     async fn update_workflow(&self, id: i64, template: &str, content: Option<&str>) -> Result<()>;
     async fn get_workflow_content(&self, id: i64) -> Result<Option<(String, Option<String>)>>;
 }
@@ -215,4 +221,23 @@ pub trait SystemConfigRepository: Send + Sync {
 
     /// Get global stats: (total_projects, running_services, total_users).
     async fn get_system_stats(&self) -> Result<(i64, i64, i64)>;
+}
+
+#[async_trait]
+pub trait NetworkProxyRepository: Send + Sync {
+    async fn get_proxy_secret(&self, key: &str) -> Result<Option<ProxySecret>>;
+    async fn upsert_proxy_secret(&self, key: &str, encrypted_value: &str, kind: &str)
+        -> Result<()>;
+    async fn delete_proxy_secret(&self, key: &str) -> Result<()>;
+    async fn update_network_proxy_config(
+        &self,
+        expected_version: &str,
+        configs: Vec<(String, String)>,
+        secret_mutations: Vec<ProxySecretMutation>,
+    ) -> Result<()>;
+    async fn count_running_services_with_stale_proxy_version(
+        &self,
+        current_version: &str,
+    ) -> Result<i64>;
+    async fn current_network_proxy_version(&self) -> Result<String>;
 }

@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::proxy::proxy_aware_client_builder;
+
 /// Tool specification advertised to the app-server session at startup.
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolSpec {
@@ -102,7 +104,8 @@ impl LinearGraphqlTool {
             return Err("Linear API key is required for linear_graphql tool".into());
         }
 
-        let http = Client::builder()
+        let http = proxy_aware_client_builder()
+            .map_err(|e| format!("failed to apply proxy config: {}", e))?
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| format!("failed to create HTTP client: {}", e))?;

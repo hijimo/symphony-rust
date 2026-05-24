@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::WebPlatformError;
 use crate::models::ResponseData;
+use crate::proxy::{filter_system_configs, is_network_proxy_key};
 use crate::repository::SystemConfigRepository;
 use crate::AppState;
 
@@ -45,7 +46,7 @@ pub async fn get_system_config(
     State(state): State<AppState>,
 ) -> Result<Json<ResponseData<Vec<SystemConfigItem>>>, WebPlatformError> {
     let configs = state.repo.list_system_configs().await?;
-    Ok(Json(ResponseData::success(configs)))
+    Ok(Json(ResponseData::success(filter_system_configs(configs))))
 }
 
 /// PUT /api/admin/config
@@ -65,6 +66,11 @@ pub async fn update_system_config(
                 "config key cannot be empty".to_string(),
             ));
         }
+        if is_network_proxy_key(&entry.key) {
+            return Err(WebPlatformError::BadRequest(
+                "network_proxy.* keys must be managed through /api/admin/network-proxy".to_string(),
+            ));
+        }
         if entry.value.is_empty() {
             return Err(WebPlatformError::BadRequest(format!(
                 "config value for '{}' cannot be empty",
@@ -82,7 +88,7 @@ pub async fn update_system_config(
     state.repo.update_system_configs(&pairs).await?;
 
     let configs = state.repo.list_system_configs().await?;
-    Ok(Json(ResponseData::success(configs)))
+    Ok(Json(ResponseData::success(filter_system_configs(configs))))
 }
 
 /// GET /api/admin/stats

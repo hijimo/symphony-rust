@@ -171,14 +171,27 @@ impl AgentRunner {
             "starting agent run attempt"
         );
 
-        // 1. Ensure workspace exists
-        let ws = self
+        // 1. Prepare an issue-id keyed workspace and hold the issue lock for
+        // the whole attempt.
+        let run_id = format!(
+            "{}-{}-{}",
+            WorkspaceManager::issue_id_path_key(&issue.id),
+            attempt.unwrap_or(0),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let service_instance_id = std::env::var("SYMPHONY_SERVICE_INSTANCE_ID")
+            .unwrap_or_else(|_| format!("standalone-{}", std::process::id()));
+        let lease = self
             .workspace_mgr
-            .ensure_workspace(&issue.identifier)
+            .prepare_issue_workspace(&issue.id, &issue.identifier, &run_id, &service_instance_id)
             .await?;
+        let ws = &lease.workspace;
         tracing::info!(
+            issue_id = %issue.id,
             identifier = %issue.identifier,
             path = %ws.path.display(),
+            workspace_key = %ws.workspace_key,
+            issue_id_path_key = %lease.issue_id_path_key,
             created_now = ws.created_now,
             "workspace ready"
         );

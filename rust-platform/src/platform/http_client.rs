@@ -16,6 +16,7 @@ use serde::de::DeserializeOwned;
 
 use crate::config::{Label, PlatformConfig};
 use crate::error::PlatformError;
+use crate::proxy::proxy_aware_client_builder;
 
 /// Maximum number of pages to fetch during automatic pagination.
 /// Safety limit to prevent runaway requests (10 pages * 100 items = 1000 max).
@@ -349,7 +350,7 @@ fn build_client_with_token(
         "gitlab" => {
             headers.insert(
                 HeaderName::from_static("private-token"),
-                HeaderValue::from_str(&token).map_err(|_| PlatformError::InvalidToken)?,
+                HeaderValue::from_str(token).map_err(|_| PlatformError::InvalidToken)?,
             );
         }
         _ => {
@@ -358,7 +359,7 @@ fn build_client_with_token(
         }
     }
 
-    let client = reqwest::Client::builder()
+    let client = proxy_aware_client_builder()?
         .default_headers(headers)
         .user_agent("symphony-platform/0.1")
         .timeout(Duration::from_secs(30))

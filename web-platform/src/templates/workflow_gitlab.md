@@ -14,14 +14,17 @@ tracker:
     - Canceled
     - Duplicate
     - Done
+  workflow_labels:
+    - Backlog
+    - Human Review
 polling:
   interval_ms: 5000
 workspace:
   root: "{{workspace_root}}"
-agent:
+{{hooks_section}}agent:
   max_concurrent_agents: {{max_concurrent_agents}}
   max_turns: 20
-{{hooks_section}}{{codex_section}}---
+{{codex_section}}---
 
 You are working on a GitLab issue `{{ issue.identifier }}`
 
@@ -61,7 +64,7 @@ Work only in the provided repository copy. Do not touch any other path.
 The agent must have `glab` CLI in PATH with a valid `GITLAB_TOKEN` (scope: `api`). Verify:
 ```bash
 command -v glab >/dev/null || { echo "glab CLI not found"; exit 1; }
-glab issue list --per-page 1 >/dev/null 2>&1 || { echo "glab not authenticated for this repository"; exit 1; }
+glab auth status || { echo "glab not authenticated"; exit 1; }
 ```
 If `glab` is not available or not authenticated, stop and report the blocker.
 
@@ -91,7 +94,7 @@ If `glab` is not available or not authenticated, stop and report the blocker.
 - `glab`: interact with GitLab (issues, MRs, API).
 - `commit`: produce clean, logical commits during implementation.
 - `push`: keep remote branch current and publish updates.
-- `pull`: keep branch updated with latest `origin/main` before handoff.
+- `pull`: keep branch updated with latest `origin/{{default_branch}}` before handoff.
 - `land`: when issue reaches `Merging`, explicitly open and follow `.codex/skills/land/SKILL.md`, which includes the `land` loop.
 
 ## Status management via labels
@@ -173,11 +176,19 @@ glab issue view <iid> --json labels,title,description,web_url
 4. Start work by writing/updating a hierarchical plan in the workpad comment.
 5. Ensure the workpad includes a compact environment stamp at the top as a code fence line:
     - Format: `<host>:<abs-workdir>@<short-sha>`
+    - Example: `devbox-01:/home/dev-user/code/symphony-workspaces/42@7bdde33bc`
     - Do not include metadata already inferable from issue fields (`issue ID`, `status`, `branch`, `MR link`).
 6. Add explicit acceptance criteria and TODOs in checklist form in the same comment.
+    - If changes are user-facing, include a UI walkthrough acceptance criterion that describes the end-to-end user path to validate.
+    - If changes touch app files or app behavior, add explicit app-specific flow checks to `Acceptance Criteria` in the workpad.
+    - If the issue description/comment context includes `Validation`, `Test Plan`, or `Testing` sections, copy those requirements into the workpad `Acceptance Criteria` and `Validation` sections as required checkboxes (no optional downgrade).
 7. Run a principal-style self-review of the plan and refine it in the comment.
-8. Before implementing, capture a concrete reproduction signal and record it in the workpad `Notes` section.
+8. Before implementing, capture a concrete reproduction signal and record it in the workpad `Notes` section (command/output, screenshot, or deterministic UI behavior).
 9. Run the `pull` skill to sync with latest `origin/{{default_branch}}` before any code edits, then record the pull/sync result in the workpad `Notes`.
+    - Include a `pull skill evidence` note with:
+      - merge source(s),
+      - result (`clean` or `conflicts resolved`),
+      - resulting `HEAD` short SHA.
 10. Compact context and proceed to execution.
 
 ## MR feedback sweep protocol (required)
@@ -201,33 +212,66 @@ When an issue has an attached MR, run this protocol before moving to `Human Revi
 5. Re-run validation after feedback-driven changes and push updates.
 6. Repeat this sweep until there are no outstanding actionable comments.
 
+## Blocked-access escape hatch (required behavior)
+
+Use this only when completion is blocked by missing required tools or missing auth/permissions that cannot be resolved in-session.
+
+- GitLab access is **not** a valid blocker by default. Always try fallback strategies first (alternate remote/auth mode, then continue publish/review flow).
+- Do not move to `Human Review` for GitLab access/auth until all fallback strategies have been attempted and documented in the workpad.
+- If a required tool is missing, or required auth is unavailable, move the issue to `Human Review` with a short blocker brief in the workpad that includes:
+  - what is missing,
+  - why it blocks required acceptance/validation,
+  - exact human action needed to unblock.
+- Keep the brief concise and action-oriented; do not add extra top-level comments outside the workpad.
+
 ## Step 2: Execution phase (Todo -> In Progress -> Human Review)
 
 1. Determine current repo state (`branch`, `git status`, `HEAD`) and verify the kickoff `pull` sync result is already recorded in the workpad before implementation continues.
 2. If current issue state is `Todo`, move it to `In Progress`; otherwise leave the current state unchanged.
 3. Load the existing workpad comment and treat it as the active execution checklist.
+    - Edit it liberally whenever reality changes (scope, risks, validation approach, discovered tasks).
 4. Implement against the hierarchical TODOs and keep the comment current:
     - Check off completed items.
     - Add newly discovered items in the appropriate section.
     - Keep parent/child structure intact as scope evolves.
     - Update the workpad immediately after each meaningful milestone.
+    - Never leave completed work unchecked in the plan.
+    - For issues that started as `Todo` with an attached MR, run the full MR feedback sweep protocol immediately after kickoff and before new feature work.
 5. Run validation/tests required for the scope.
+    - Mandatory gate: execute all issue-provided `Validation`/`Test Plan`/`Testing` requirements when present; treat unmet items as incomplete work.
+    - Prefer a targeted proof that directly demonstrates the behavior you changed.
+    - You may make temporary local proof edits to validate assumptions when this increases confidence.
+    - Revert every temporary proof edit before commit/push.
+    - Document these temporary proof steps and outcomes in the workpad `Validation`/`Notes` sections so reviewers can follow the evidence.
 6. Re-check all acceptance criteria and close any gaps.
-7. Before every `git push` attempt, run the required validation for your scope and confirm it passes.
+7. Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
 8. Create MR and attach to the issue:
     ```bash
     glab mr create --title "<title>" --description "Closes #<iid>" --label "symphony"
     ```
+    - Ensure the MR has label `symphony` (add it if missing).
 9. Merge latest `origin/{{default_branch}}` into branch, resolve conflicts, and rerun checks.
 10. Update the workpad comment with final checklist status and validation notes.
+    - Mark completed plan/acceptance/validation checklist items as checked.
+    - Add final handoff notes (commit + validation summary) in the same workpad comment.
+    - Do not include MR URL in the workpad comment; keep MR linkage on the issue via `Closes #<iid>` in MR description.
+    - Add a short `### Confusions` section at the bottom when any part of task execution was unclear/confusing, with concise bullets.
+    - Do not post any additional completion summary comment.
 11. Before moving to `Human Review`, poll MR feedback and checks:
     - Run the full MR feedback sweep protocol.
     - Confirm MR pipeline is passing (green) after the latest changes.
+    - Confirm every required issue-provided validation/test-plan item is explicitly marked complete in the workpad.
     - Repeat this check-address-verify loop until no outstanding comments remain and pipeline is fully passing.
+    - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
 12. Only then move issue to `Human Review`:
     ```bash
     glab issue update <iid> --label "Human Review" --unlabel "In Progress"
     ```
+    - Exception: if blocked by missing required tools/auth per the blocked-access escape hatch, move to `Human Review` with the blocker brief and explicit unblock actions.
+13. For `Todo` issues that already had an MR attached at kickoff:
+    - Ensure all existing MR feedback was reviewed and resolved, including inline diff comments (code changes or explicit, justified pushback response).
+    - Ensure branch was pushed with any required updates.
+    - Then move to `Human Review`.
 
 ## Step 3: Human Review and merge handling
 
@@ -239,7 +283,7 @@ When an issue has an attached MR, run this protocol before moving to `Human Revi
    ```
    Then follow the rework flow.
 4. If approved, human moves the issue to `Merging`.
-5. When the issue is in `Merging`, execute the land flow:
+5. When the issue is in `Merging`, open and follow `.codex/skills/land/SKILL.md`, then run the `land` skill in a loop until the MR is merged:
    ```bash
    glab mr merge <mr_iid> --squash
    ```
@@ -253,7 +297,7 @@ When an issue has an attached MR, run this protocol before moving to `Human Revi
 1. Treat `Rework` as a full approach reset, not incremental patching.
 2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
 3. Close the existing MR tied to the issue.
-4. Remove the existing `## Codex Workpad` comment from the issue:
+4. Remove the existing `## Codex Workpad` comment from the issue (delete the note):
    ```bash
    glab api DELETE "projects/:id/issues/<iid>/notes/<note_id>"
    ```
@@ -266,6 +310,16 @@ When an issue has an attached MR, run this protocol before moving to `Human Revi
    - Create a new bootstrap `## Codex Workpad` comment.
    - Build a fresh plan/checklist and execute end-to-end.
 
+## Completion bar before Human Review
+
+- Step 1/2 checklist is fully complete and accurately reflected in the single workpad comment.
+- Acceptance criteria and required issue-provided validation items are complete.
+- Validation/tests are green for the latest commit.
+- MR feedback sweep is complete and no actionable comments remain.
+- MR pipeline is green, branch is pushed, and MR is linked on the issue.
+- Required MR metadata is present (`symphony` label).
+- If app-touching, runtime validation/media requirements from `App runtime validation (required)` are complete.
+
 ## Guardrails
 
 - If the branch MR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
@@ -273,7 +327,51 @@ When an issue has an attached MR, run this protocol before moving to `Human Revi
 - If issue state is `Backlog`, do not modify it; wait for human to move to `Todo`.
 - Do not edit the issue body/description for planning or progress tracking.
 - Use exactly one persistent workpad comment (`## Codex Workpad`) per issue.
-- Do not move to `Human Review` unless the completion bar is satisfied.
+- Temporary proof edits are allowed only for local verification and must be reverted before commit.
+- If out-of-scope improvements are found, create a separate Backlog issue rather
+  than expanding current scope:
+  ```bash
+  glab issue create --title "<title>" --description "<description>" --label "Backlog"
+  ```
+- Do not move to `Human Review` unless the `Completion bar before Human Review` is satisfied.
 - In `Human Review`, do not make changes; wait and poll.
 - If state is terminal (`Done`), do nothing and shut down.
-- Avoid calling GitLab API in tight loops. GitLab rate limit: 300 req/min (authenticated).
+- Keep issue text concise, specific, and reviewer-oriented.
+- If blocked and no workpad exists yet, add one blocker comment describing blocker, impact, and next unblock action.
+- Avoid calling GitLab API in tight loops. Prefer batch operations (single label change command over multiple). GitLab rate limit: 300 req/min (authenticated).
+
+## Workpad template
+
+Use this exact structure for the persistent workpad comment and keep it updated in place throughout execution:
+
+````md
+## Codex Workpad
+
+```text
+<hostname>:<abs-path>@<short-sha>
+```
+
+### Plan
+
+- [ ] 1\. Parent task
+  - [ ] 1.1 Child task
+  - [ ] 1.2 Child task
+- [ ] 2\. Parent task
+
+### Acceptance Criteria
+
+- [ ] Criterion 1
+- [ ] Criterion 2
+
+### Validation
+
+- [ ] targeted tests: `<command>`
+
+### Notes
+
+- <short progress note with timestamp>
+
+### Confusions
+
+- <only include when something was confusing during execution>
+````
