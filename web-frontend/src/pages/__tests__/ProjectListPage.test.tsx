@@ -89,8 +89,8 @@ describe('ProjectListPage', () => {
 
     await waitFor(() => {
       expect(screen.getByText('暂无项目')).toBeInTheDocument();
+      expect(screen.getByText('创建你的第一个项目，开始使用 Symphony 工作流')).toBeInTheDocument();
     });
-    expect(screen.getByText('创建你的第一个项目，开始使用 Symphony 工作流')).toBeInTheDocument();
   });
 
   it('search filters projects', async () => {
@@ -146,6 +146,19 @@ describe('ProjectListPage', () => {
     await user.click(createButtons[0]);
 
     expect(mockNavigate).toHaveBeenCalledWith('/projects/new');
+  });
+
+  it('navigates to project kanban when a project card is clicked', async () => {
+    const user = userEvent.setup();
+    renderProjectList();
+
+    await waitFor(() => {
+      expect(screen.getByText('My GitLab Project')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('article', { name: '项目 My GitLab Project' }));
+
+    expect(mockNavigate).toHaveBeenCalledWith('/projects/1/kanban');
   });
 
   it('shows total count when projects exist', async () => {

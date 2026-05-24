@@ -28,7 +28,7 @@ export default function ProjectCard({ project, onStart, onStop }: ProjectCardPro
           borderColor: '#003ea8',
         },
       }}
-      onClick={() => navigate(`/projects/${project.id}`)}
+      onClick={() => navigate(`/projects/${project.id}/kanban`)}
       role="article"
       aria-label={`项目 ${project.name}`}
     >

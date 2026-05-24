@@ -140,13 +140,13 @@ describe('ProjectCard', () => {
     });
   });
 
-  it('navigates to project detail on card click', async () => {
+  it('navigates to project kanban on card click', async () => {
     const user = userEvent.setup();
     renderCard();
 
     await user.click(screen.getByRole('article', { name: '项目 Test Project' }));
 
-    expect(mockNavigate).toHaveBeenCalledWith('/projects/1');
+    expect(mockNavigate).toHaveBeenCalledWith('/projects/1/kanban');
   });
 
   it('does not show description when it is null', () => {
