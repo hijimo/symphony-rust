@@ -12,17 +12,53 @@ use crate::middleware::project_access::require_project_member;
 use crate::models::issue::KanbanIssue;
 use crate::models::merge_request::KanbanMergeRequest;
 use crate::models::{
-    InProgressColumn, KanbanData, KanbanQuery, PrColumn, ResponseData, TodoColumn,
+    InProgressColumn, KanbanData, KanbanQuery, PlatformIssue, PrColumn, ResponseData, TodoColumn,
 };
 use crate::repository::{ProjectRepository, UserConfigRepository};
 use crate::services::git_platform::{create_platform_client_with_proxy, ListIssuesOptions};
 use crate::AppState;
 
+const IN_PROGRESS_ISSUE_LABELS: &[&str] = &["symphony-claimed", "In Progree", "Merging", "Rework"];
+
+fn in_progress_issue_labels() -> &'static [&'static str] {
+    IN_PROGRESS_ISSUE_LABELS
+}
+
+fn issue_has_in_progress_label(issue: &PlatformIssue) -> bool {
+    issue
+        .labels
+        .iter()
+        .any(|label| in_progress_issue_labels().contains(&label.as_str()))
+}
+
+fn in_progress_issue_label_strings() -> Vec<String> {
+    in_progress_issue_labels()
+        .iter()
+        .map(|label| (*label).to_string())
+        .collect()
+}
+
+fn add_required_label(labels: Option<&[String]>, required_label: &str) -> Vec<String> {
+    let mut combined = labels.map_or_else(Vec::new, ToOwned::to_owned);
+    if !combined.iter().any(|label| label == required_label) {
+        combined.push(required_label.to_string());
+    }
+    combined
+}
+
+fn dedupe_platform_issues(issues: Vec<PlatformIssue>) -> Vec<PlatformIssue> {
+    let mut seen = std::collections::HashSet::new();
+    issues
+        .into_iter()
+        .filter(|issue| seen.insert(issue.iid))
+        .collect()
+}
+
 /// GET /api/projects/:id/kanban
 ///
 /// Fetches the three-column kanban board data:
-/// - todo: open issues without `symphony-claimed` label
-/// - in_progress: open issues with `symphony-claimed` label
+/// - todo: open issues without an in-progress workflow label
+/// - in_progress: open issues with any in-progress workflow label
 /// - pr: MRs associated with in-progress issues
 pub async fn get_kanban(
     State(state): State<AppState>,
@@ -116,9 +152,9 @@ pub async fn get_kanban(
     let todo_limit = query.effective_todo_limit();
     let parsed_labels = query.parsed_labels();
 
-    // Fetch todo issues (without symphony-claimed label)
+    // Fetch todo issues (without in-progress workflow labels)
     let mut todo_options = ListIssuesOptions {
-        exclude_labels: Some(vec!["symphony-claimed".to_string()]),
+        exclude_labels: Some(in_progress_issue_label_strings()),
         assignee: query.assignee.clone(),
         author: query.author.clone(),
         search: query.search.clone(),
@@ -152,28 +188,37 @@ pub async fn get_kanban(
         })
         .collect();
 
-    // Fetch in-progress issues (with symphony-claimed label)
-    let mut in_progress_options = ListIssuesOptions {
-        labels: Some(vec!["symphony-claimed".to_string()]),
-        assignee: query.assignee.clone(),
-        author: query.author.clone(),
-        search: query.search.clone(),
-        limit: 100, // Fetch all in-progress (usually limited)
-        state: Some("opened".to_string()),
-        ..Default::default()
-    };
-    if let Some(ref labels) = parsed_labels {
-        let mut combined = labels.clone();
-        combined.push("symphony-claimed".to_string());
-        in_progress_options.labels = Some(combined);
+    // Fetch in-progress issues once per workflow label because platform label filters require
+    // all requested labels rather than any one of them.
+    let mut in_progress_issue_groups = Vec::new();
+    for in_progress_label in in_progress_issue_labels() {
+        let in_progress_options = ListIssuesOptions {
+            labels: Some(add_required_label(
+                parsed_labels.as_deref(),
+                in_progress_label,
+            )),
+            assignee: query.assignee.clone(),
+            author: query.author.clone(),
+            search: query.search.clone(),
+            limit: 100, // Fetch all in-progress (usually limited)
+            state: Some("opened".to_string()),
+            ..Default::default()
+        };
+
+        let (issues, _) = client
+            .list_issues(&platform_token, &project_path, &in_progress_options)
+            .await
+            .map_err(map_platform_error)?;
+        in_progress_issue_groups.extend(issues);
     }
 
-    let in_progress_result = client
-        .list_issues(&platform_token, &project_path, &in_progress_options)
-        .await
-        .map_err(map_platform_error)?;
-
-    let (in_progress_issues, in_progress_total) = in_progress_result;
+    let in_progress_issues = dedupe_platform_issues(
+        in_progress_issue_groups
+            .into_iter()
+            .filter(issue_has_in_progress_label)
+            .collect(),
+    );
+    let in_progress_total = in_progress_issues.len() as u64;
 
     // Fetch related MRs for in-progress issues (parallel, max 10 concurrent)
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
@@ -282,6 +327,8 @@ fn query_hash(query: &KanbanQuery) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::kanban::PlatformIssue;
+    use crate::models::PlatformUser;
 
     #[test]
     fn query_hash_ignores_no_cache_flag() {
@@ -299,5 +346,55 @@ mod tests {
         };
 
         assert_eq!(query_hash(&base), query_hash(&no_cache));
+    }
+
+    fn platform_issue_with_labels(labels: Vec<&str>) -> PlatformIssue {
+        PlatformIssue {
+            iid: 1,
+            title: "Issue".to_string(),
+            description: None,
+            state: "opened".to_string(),
+            labels: labels.into_iter().map(str::to_string).collect(),
+            author: PlatformUser {
+                username: "alice".to_string(),
+                display_name: Some("Alice".to_string()),
+                avatar_url: None,
+            },
+            assignees: Vec::new(),
+            milestone: None,
+            created_at: "2026-05-24T00:00:00Z".to_string(),
+            updated_at: "2026-05-24T00:00:00Z".to_string(),
+            closed_at: None,
+            web_url: "https://example.com/issues/1".to_string(),
+            comment_count: None,
+        }
+    }
+
+    #[test]
+    fn in_progress_label_set_includes_issue_workflow_labels() {
+        let labels = in_progress_issue_labels();
+
+        assert!(labels.contains(&"In Progree"));
+        assert!(labels.contains(&"Merging"));
+        assert!(labels.contains(&"Rework"));
+    }
+
+    #[test]
+    fn issue_with_any_workflow_label_is_in_progress() {
+        for label in ["In Progree", "Merging", "Rework"] {
+            let issue = platform_issue_with_labels(vec!["bug", label]);
+
+            assert!(
+                issue_has_in_progress_label(&issue),
+                "expected {label} to classify issue as in_progress"
+            );
+        }
+    }
+
+    #[test]
+    fn issue_without_processing_label_is_not_in_progress() {
+        let issue = platform_issue_with_labels(vec!["Todo", "bug"]);
+
+        assert!(!issue_has_in_progress_label(&issue));
     }
 }
