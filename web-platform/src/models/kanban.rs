@@ -171,3 +171,56 @@ pub struct CreateIssueRequest {
     pub labels: Vec<String>,
     pub assignee: Option<String>,
 }
+
+pub const DEFAULT_ISSUE_LABEL: &str = "Todo";
+
+impl CreateIssueRequest {
+    pub fn labels_with_default_todo(&self) -> Vec<String> {
+        let mut labels = self.labels.clone();
+        if !labels.iter().any(|label| label == DEFAULT_ISSUE_LABEL) {
+            labels.push(DEFAULT_ISSUE_LABEL.to_string());
+        }
+        labels
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_request(labels: Vec<&str>) -> CreateIssueRequest {
+        CreateIssueRequest {
+            title: "New issue".to_string(),
+            description: None,
+            labels: labels.into_iter().map(str::to_string).collect(),
+            assignee: None,
+        }
+    }
+
+    #[test]
+    fn create_issue_labels_default_to_todo_when_empty() {
+        let req = create_request(vec![]);
+
+        assert_eq!(req.labels_with_default_todo(), vec!["Todo".to_string()]);
+    }
+
+    #[test]
+    fn create_issue_labels_preserve_existing_labels_and_add_todo() {
+        let req = create_request(vec!["bug", "backend"]);
+
+        assert_eq!(
+            req.labels_with_default_todo(),
+            vec!["bug".to_string(), "backend".to_string(), "Todo".to_string()]
+        );
+    }
+
+    #[test]
+    fn create_issue_labels_do_not_duplicate_existing_todo() {
+        let req = create_request(vec!["Todo", "bug"]);
+
+        assert_eq!(
+            req.labels_with_default_todo(),
+            vec!["Todo".to_string(), "bug".to_string()]
+        );
+    }
+}
