@@ -272,8 +272,8 @@ pub async fn get_kanban(
         .await
     {
         Ok(mrs) => (
-            mrs.into_iter()
-                .filter(|mr| is_pending_merge_request_state(&mr.state))
+            sort_pending_merge_requests(mrs)
+                .into_iter()
                 .map(|mr| KanbanMergeRequest {
                     iid: mr.iid,
                     title: mr.title,
@@ -333,6 +333,27 @@ fn is_pending_merge_request_state(state: &str) -> bool {
     )
 }
 
+fn sort_pending_merge_requests(
+    mut merge_requests: Vec<crate::models::PlatformMergeRequest>,
+) -> Vec<crate::models::PlatformMergeRequest> {
+    merge_requests.retain(|mr| is_pending_merge_request_state(&mr.state));
+    merge_requests.sort_by(|a, b| {
+        merge_request_timestamp(&b.updated_at)
+            .cmp(&merge_request_timestamp(&a.updated_at))
+            .then_with(|| {
+                merge_request_timestamp(&b.created_at).cmp(&merge_request_timestamp(&a.created_at))
+            })
+            .then_with(|| b.iid.cmp(&a.iid))
+    });
+    merge_requests
+}
+
+fn merge_request_timestamp(value: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|date| date.timestamp_millis())
+        .unwrap_or_default()
+}
+
 fn normalize_merge_request_state(state: &str) -> String {
     if state.trim().eq_ignore_ascii_case("open") {
         "opened".to_string()
@@ -358,7 +379,7 @@ fn query_hash(query: &KanbanQuery) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::kanban::PlatformIssue;
+    use crate::models::kanban::{PlatformIssue, PlatformMergeRequest};
     use crate::models::PlatformUser;
 
     #[test]
@@ -391,6 +412,81 @@ mod tests {
             );
         }
     }
+
+    fn platform_merge_request(
+        iid: u64,
+        title: &str,
+        state: &str,
+        updated_at: &str,
+        created_at: &str,
+    ) -> PlatformMergeRequest {
+        PlatformMergeRequest {
+            iid,
+            title: title.to_string(),
+            description: None,
+            state: state.to_string(),
+            author: PlatformUser {
+                username: "alice".to_string(),
+                display_name: Some("Alice".to_string()),
+                avatar_url: None,
+            },
+            source_branch: format!("feature/{iid}"),
+            target_branch: "main".to_string(),
+            ci_status: None,
+            ci_web_url: None,
+            review_status: None,
+            reviewers: Vec::new(),
+            merge_status: None,
+            related_issue_iids: Vec::new(),
+            additions: None,
+            deletions: None,
+            changed_files: None,
+            created_at: created_at.to_string(),
+            updated_at: updated_at.to_string(),
+            merged_at: None,
+            web_url: format!("https://example.test/pulls/{iid}"),
+        }
+    }
+
+    #[test]
+    fn pending_merge_requests_are_filtered_and_stably_sorted() {
+        let sorted = sort_pending_merge_requests(vec![
+            platform_merge_request(
+                3,
+                "closed terminal",
+                "closed",
+                "2026-05-24T11:00:00Z",
+                "2026-05-24T08:00:00Z",
+            ),
+            platform_merge_request(
+                4,
+                "older pending",
+                "opened",
+                "2026-05-24T10:00:00Z",
+                "2026-05-24T09:00:00Z",
+            ),
+            platform_merge_request(
+                2,
+                "merged terminal",
+                "merged",
+                "2026-05-24T12:00:00Z",
+                "2026-05-24T07:00:00Z",
+            ),
+            platform_merge_request(
+                1,
+                "newer pending",
+                "open",
+                "2026-05-24T10:00:00Z",
+                "2026-05-24T09:30:00Z",
+            ),
+        ]);
+
+        assert_eq!(
+            sorted.into_iter().map(|mr| mr.iid).collect::<Vec<_>>(),
+            vec![1, 4]
+        );
+    }
+
     fn platform_issue_with_labels(labels: Vec<&str>) -> PlatformIssue {
         PlatformIssue {
             iid: 1,
