@@ -26,6 +26,7 @@ pub struct TestApp {
     pub admin_token: String,
     pub db_path: PathBuf,
     pub repo: SqliteRepository,
+    pub process_manager: ProcessManager,
     _dir: TempDir,
 }
 
@@ -63,17 +64,20 @@ impl TestApp {
             .await
             .unwrap();
 
+        let process_manager = ProcessManager::new();
+        let concurrency_manager = Arc::new(ConcurrencyManager::new(10));
+
         let state = AppState {
             repo,
             jwt_secret: "test-jwt-secret-key-at-least-32-characters-long".to_string(),
             encryption_key,
             token_blacklist: Arc::new(DashMap::new()),
             rate_limiter: Arc::new(RateLimiter::new()),
-            process_manager: ProcessManager::new(),
+            process_manager: process_manager.clone(),
             api_cache: Arc::new(ApiCache::new(10, 3, 10000)),
             ai_service: None,
             phase3_rate_limiter: Arc::new(Phase3RateLimiter::new()),
-            concurrency_manager: Arc::new(ConcurrencyManager::new(10)),
+            concurrency_manager: concurrency_manager.clone(),
             symphony_bin: symphony_bin.to_string(),
             workspace_root: dir.path().to_str().unwrap().to_string(),
             alert_manager: None,
@@ -111,6 +115,7 @@ impl TestApp {
             admin_token,
             db_path,
             repo,
+            process_manager,
             _dir: dir,
         }
     }
