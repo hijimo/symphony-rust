@@ -12,7 +12,8 @@ use crate::middleware::project_access::require_project_member;
 use crate::models::issue::KanbanIssue;
 use crate::models::merge_request::KanbanMergeRequest;
 use crate::models::{
-    InProgressColumn, KanbanData, KanbanQuery, PlatformIssue, PrColumn, ResponseData, TodoColumn,
+    InProgressColumn, KanbanData, KanbanQuery, PlatformIssue, PlatformMergeRequest, PrColumn,
+    ResponseData, TodoColumn,
 };
 use crate::repository::{ProjectRepository, UserConfigRepository};
 use crate::services::git_platform::{
@@ -272,24 +273,7 @@ pub async fn get_kanban(
         .await
     {
         Ok(mrs) => (
-            mrs.into_iter()
-                .filter(|mr| is_pending_merge_request_state(&mr.state))
-                .map(|mr| KanbanMergeRequest {
-                    iid: mr.iid,
-                    title: mr.title,
-                    state: normalize_merge_request_state(&mr.state),
-                    repository: project_path.clone(),
-                    author: mr.author,
-                    source_branch: mr.source_branch,
-                    target_branch: mr.target_branch,
-                    ci_status: mr.ci_status,
-                    review_status: mr.review_status,
-                    related_issue_iids: mr.related_issue_iids,
-                    created_at: mr.created_at,
-                    updated_at: mr.updated_at,
-                    web_url: mr.web_url,
-                })
-                .collect(),
+            build_pending_kanban_merge_requests(mrs, &project_path),
             None,
         ),
         Err(err) => (Vec::new(), Some(format!("PR/MR 数据加载失败：{}", err))),
@@ -329,7 +313,7 @@ pub async fn get_kanban(
 fn is_pending_merge_request_state(state: &str) -> bool {
     matches!(
         state.trim().to_ascii_lowercase().as_str(),
-        "opened" | "open"
+        "opened" | "open" | "pending"
     )
 }
 
@@ -339,6 +323,40 @@ fn normalize_merge_request_state(state: &str) -> String {
     } else {
         state.to_string()
     }
+}
+
+fn build_pending_kanban_merge_requests(
+    mrs: Vec<PlatformMergeRequest>,
+    repository: &str,
+) -> Vec<KanbanMergeRequest> {
+    let mut pending_mrs: Vec<KanbanMergeRequest> = mrs
+        .into_iter()
+        .filter(|mr| is_pending_merge_request_state(&mr.state))
+        .map(|mr| KanbanMergeRequest {
+            iid: mr.iid,
+            title: mr.title,
+            state: normalize_merge_request_state(&mr.state),
+            repository: repository.to_string(),
+            author: mr.author,
+            source_branch: mr.source_branch,
+            target_branch: mr.target_branch,
+            ci_status: mr.ci_status,
+            review_status: mr.review_status,
+            related_issue_iids: mr.related_issue_iids,
+            created_at: mr.created_at,
+            updated_at: mr.updated_at,
+            web_url: mr.web_url,
+        })
+        .collect();
+
+    pending_mrs.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| b.created_at.cmp(&a.created_at))
+            .then_with(|| a.iid.cmp(&b.iid))
+    });
+
+    pending_mrs
 }
 
 /// Generate a simple hash of the query parameters for cache key differentiation.
@@ -390,6 +408,65 @@ mod tests {
                 "{state} should not be treated as pending"
             );
         }
+    }
+
+    #[test]
+    fn pending_merge_request_state_includes_pending_state() {
+        assert!(is_pending_merge_request_state("pending"));
+    }
+
+    fn platform_mr(
+        iid: u64,
+        state: &str,
+        created_at: &str,
+        updated_at: &str,
+    ) -> PlatformMergeRequest {
+        PlatformMergeRequest {
+            iid,
+            title: format!("MR {iid}"),
+            description: None,
+            state: state.to_string(),
+            author: PlatformUser {
+                username: "alice".to_string(),
+                display_name: Some("Alice".to_string()),
+                avatar_url: None,
+            },
+            source_branch: format!("feature/{iid}"),
+            target_branch: "main".to_string(),
+            ci_status: None,
+            ci_web_url: None,
+            review_status: None,
+            reviewers: Vec::new(),
+            merge_status: None,
+            related_issue_iids: Vec::new(),
+            additions: None,
+            deletions: None,
+            changed_files: None,
+            created_at: created_at.to_string(),
+            updated_at: updated_at.to_string(),
+            merged_at: None,
+            web_url: format!("https://example.com/mr/{iid}"),
+        }
+    }
+
+    #[test]
+    fn build_pending_kanban_merge_requests_filters_terminal_states_and_sorts_by_updated_time() {
+        let mrs = vec![
+            platform_mr(1, "closed", "2026-05-21T00:00:00Z", "2026-05-24T10:00:00Z"),
+            platform_mr(2, "opened", "2026-05-20T00:00:00Z", "2026-05-24T08:00:00Z"),
+            platform_mr(3, "merged", "2026-05-22T00:00:00Z", "2026-05-24T11:00:00Z"),
+            platform_mr(4, "pending", "2026-05-23T00:00:00Z", "2026-05-24T09:00:00Z"),
+            platform_mr(5, "open", "2026-05-22T00:00:00Z", "2026-05-24T09:00:00Z"),
+        ];
+
+        let pending = build_pending_kanban_merge_requests(mrs, "group/project");
+
+        assert_eq!(
+            pending.iter().map(|mr| mr.iid).collect::<Vec<_>>(),
+            vec![4, 5, 2]
+        );
+        assert_eq!(pending[1].state, "opened");
+        assert!(pending.iter().all(|mr| mr.repository == "group/project"));
     }
     fn platform_issue_with_labels(labels: Vec<&str>) -> PlatformIssue {
         PlatformIssue {

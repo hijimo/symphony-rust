@@ -4,7 +4,7 @@ import { ThemeProvider } from '@mui/material/styles';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import theme from '../../theme';
 import { useKanbanStore } from '../../store/kanbanStore';
-import type { KanbanData, KanbanIssue } from '../../types/kanban';
+import type { KanbanData, KanbanIssue, KanbanMergeRequest } from '../../types/kanban';
 import KanbanPage from '../projects/KanbanPage';
 
 const originalKanbanState = useKanbanStore.getState();
@@ -30,11 +30,37 @@ function createIssue(iid: number, title: string): KanbanIssue {
   };
 }
 
-function createKanbanData(issue: KanbanIssue): KanbanData {
+function createMergeRequest(
+  iid: number,
+  title: string,
+  state: KanbanMergeRequest['state'],
+): KanbanMergeRequest {
+  return {
+    iid,
+    title,
+    state,
+    repository: 'org/repo',
+    author,
+    source_branch: `feature/${iid}`,
+    target_branch: 'main',
+    ci_status: 'success',
+    review_status: 'pending',
+    related_issue_iids: [],
+    created_at: '2026-05-23T00:00:00Z',
+    updated_at: '2026-05-24T00:00:00Z',
+    web_url: `https://example.test/pulls/${iid}`,
+  };
+}
+
+function createKanbanData(
+  issue?: KanbanIssue,
+  mergeRequests: KanbanMergeRequest[] = [],
+  prError?: string,
+): KanbanData {
   return {
     todo: {
-      issues: [issue],
-      total_count: 1,
+      issues: issue ? [issue] : [],
+      total_count: issue ? 1 : 0,
       has_more: false,
     },
     in_progress: {
@@ -42,8 +68,9 @@ function createKanbanData(issue: KanbanIssue): KanbanData {
       total_count: 0,
     },
     pr: {
-      merge_requests: [],
-      total_count: 0,
+      merge_requests: mergeRequests,
+      total_count: mergeRequests.length,
+      error: prError,
     },
     cached: false,
     cached_at: null,
@@ -126,5 +153,70 @@ describe('KanbanPage', () => {
     });
 
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders PR column items with required fields', async () => {
+    const fetchKanban = vi.fn(async () => {});
+    const pendingPr = createMergeRequest(27, 'Review kanban PR filtering', 'pending');
+
+    useKanbanStore.setState({
+      kanbanData: createKanbanData(undefined, [pendingPr]),
+      loading: false,
+      error: null,
+      filters: {},
+      fetchKanban,
+      refresh: vi.fn(),
+      setFilters: vi.fn(),
+      clearError: vi.fn(),
+    });
+
+    renderKanbanPage();
+
+    expect(screen.getByRole('link', { name: /Review kanban PR filtering/ })).toHaveAttribute(
+      'href',
+      pendingPr.web_url,
+    );
+    expect(screen.getByText('Octocat')).toBeInTheDocument();
+    expect(screen.getByText('feature/27 → main')).toBeInTheDocument();
+    expect(screen.getAllByText('待处理').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/小时前|分钟前|刚刚|天前|个月前/)).toBeInTheDocument();
+  });
+
+  it('renders PR empty state', async () => {
+    const fetchKanban = vi.fn(async () => {});
+
+    useKanbanStore.setState({
+      kanbanData: createKanbanData(),
+      loading: false,
+      error: null,
+      filters: {},
+      fetchKanban,
+      refresh: vi.fn(),
+      setFilters: vi.fn(),
+      clearError: vi.fn(),
+    });
+
+    renderKanbanPage();
+
+    expect(screen.getByText('暂无待处理 PR')).toBeInTheDocument();
+  });
+
+  it('renders PR column error state', async () => {
+    const fetchKanban = vi.fn(async () => {});
+
+    useKanbanStore.setState({
+      kanbanData: createKanbanData(undefined, [], 'PR/MR 数据加载失败：mock failure'),
+      loading: false,
+      error: null,
+      filters: {},
+      fetchKanban,
+      refresh: vi.fn(),
+      setFilters: vi.fn(),
+      clearError: vi.fn(),
+    });
+
+    renderKanbanPage();
+
+    expect(screen.getByText('PR/MR 数据加载失败：mock failure')).toBeInTheDocument();
   });
 });

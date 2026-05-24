@@ -46,4 +46,10 @@ describe('PrCard', () => {
     expect(screen.getByText('开启')).toBeInTheDocument();
     expect(screen.getByText(/小时前|分钟前|刚刚/)).toBeInTheDocument();
   });
+
+  it('shows pending state label', () => {
+    renderCard({ ...pendingMr, state: 'pending' });
+
+    expect(screen.getByText('待处理')).toBeInTheDocument();
+  });
 });

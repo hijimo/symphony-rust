@@ -26,7 +26,7 @@ export type ReviewStatus = 'pending' | 'approved' | 'changes_requested';
 export interface KanbanMergeRequest {
   iid: number;
   title: string;
-  state: 'opened' | 'closed' | 'merged';
+  state: 'opened' | 'pending' | 'closed' | 'merged';
   repository: string;
   author: PlatformUser;
   source_branch: string;

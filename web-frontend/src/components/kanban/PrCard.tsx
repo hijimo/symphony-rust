@@ -53,6 +53,8 @@ function getStateLabel(state: KanbanMergeRequest['state']): string {
   switch (state) {
     case 'opened':
       return '开启';
+    case 'pending':
+      return '待处理';
     case 'merged':
       return '已合并';
     case 'closed':
