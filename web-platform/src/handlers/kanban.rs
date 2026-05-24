@@ -15,7 +15,9 @@ use crate::models::{
     InProgressColumn, KanbanData, KanbanQuery, PlatformIssue, PrColumn, ResponseData, TodoColumn,
 };
 use crate::repository::{ProjectRepository, UserConfigRepository};
-use crate::services::git_platform::{create_platform_client_with_proxy, ListIssuesOptions};
+use crate::services::git_platform::{
+    create_platform_client_with_proxy, ListIssuesOptions, ListMergeRequestsOptions,
+};
 use crate::AppState;
 
 const IN_PROGRESS_ISSUE_LABELS: &[&str] = &["symphony-claimed", "In Progree", "Merging", "Rework"];
@@ -244,7 +246,6 @@ pub async fn get_kanban(
 
     // Build in-progress kanban issues with mr_count
     let mut in_progress_kanban_issues: Vec<KanbanIssue> = Vec::new();
-    let mut all_mrs: Vec<KanbanMergeRequest> = Vec::new();
 
     for (issue, mrs) in in_progress_issues.into_iter().zip(mr_results) {
         let mr_count = mrs.len() as u64;
@@ -260,14 +261,24 @@ pub async fn get_kanban(
             web_url: issue.web_url,
             mr_count: Some(mr_count),
         });
+    }
 
-        for mr in mrs {
-            // Avoid duplicates (same MR might be linked to multiple issues)
-            if !all_mrs.iter().any(|existing| existing.iid == mr.iid) {
-                all_mrs.push(KanbanMergeRequest {
+    let pr_options = ListMergeRequestsOptions {
+        limit: 100,
+        state: Some("opened".to_string()),
+    };
+    let (all_mrs, pr_error) = match client
+        .list_merge_requests(&platform_token, &project_path, &pr_options)
+        .await
+    {
+        Ok(mrs) => (
+            mrs.into_iter()
+                .filter(|mr| is_pending_merge_request_state(&mr.state))
+                .map(|mr| KanbanMergeRequest {
                     iid: mr.iid,
                     title: mr.title,
-                    state: mr.state,
+                    state: normalize_merge_request_state(&mr.state),
+                    repository: project_path.clone(),
                     author: mr.author,
                     source_branch: mr.source_branch,
                     target_branch: mr.target_branch,
@@ -277,11 +288,12 @@ pub async fn get_kanban(
                     created_at: mr.created_at,
                     updated_at: mr.updated_at,
                     web_url: mr.web_url,
-                });
-            }
-        }
-    }
-
+                })
+                .collect(),
+            None,
+        ),
+        Err(err) => (Vec::new(), Some(format!("PR/MR 数据加载失败：{}", err))),
+    };
     let mr_total = all_mrs.len() as u64;
 
     let kanban_data = KanbanData {
@@ -297,6 +309,7 @@ pub async fn get_kanban(
         pr: PrColumn {
             merge_requests: all_mrs,
             total_count: mr_total,
+            error: pr_error,
         },
         platform: project.platform.clone(),
         cached: false,
@@ -304,11 +317,28 @@ pub async fn get_kanban(
     };
 
     // Store in cache
-    if let Ok(json) = serde_json::to_string(&kanban_data) {
-        state.api_cache.set(cache_key, json, false);
+    if kanban_data.pr.error.is_none() {
+        if let Ok(json) = serde_json::to_string(&kanban_data) {
+            state.api_cache.set(cache_key, json, false);
+        }
     }
 
     Ok(Json(ResponseData::success(kanban_data)))
+}
+
+fn is_pending_merge_request_state(state: &str) -> bool {
+    matches!(
+        state.trim().to_ascii_lowercase().as_str(),
+        "opened" | "open"
+    )
+}
+
+fn normalize_merge_request_state(state: &str) -> String {
+    if state.trim().eq_ignore_ascii_case("open") {
+        "opened".to_string()
+    } else {
+        state.to_string()
+    }
 }
 
 /// Generate a simple hash of the query parameters for cache key differentiation.
@@ -321,6 +351,7 @@ fn query_hash(query: &KanbanQuery) -> String {
     query.assignee.hash(&mut hasher);
     query.labels.hash(&mut hasher);
     query.search.hash(&mut hasher);
+    query.author.hash(&mut hasher);
     format!("{:x}", hasher.finish())
 }
 
@@ -348,6 +379,18 @@ mod tests {
         assert_eq!(query_hash(&base), query_hash(&no_cache));
     }
 
+    #[test]
+    fn pending_merge_request_state_excludes_terminal_states() {
+        assert!(is_pending_merge_request_state("opened"));
+        assert!(is_pending_merge_request_state("open"));
+
+        for state in ["merged", "closed", "rejected", "declined"] {
+            assert!(
+                !is_pending_merge_request_state(state),
+                "{state} should not be treated as pending"
+            );
+        }
+    }
     fn platform_issue_with_labels(labels: Vec<&str>) -> PlatformIssue {
         PlatformIssue {
             iid: 1,

@@ -1,4 +1,4 @@
-import { Box, Button, Typography } from '@mui/material';
+import { Alert, Box, Button, Typography } from '@mui/material';
 import KanbanColumn from './KanbanColumn';
 import IssueCard from './IssueCard';
 import PrCard from './PrCard';
@@ -78,8 +78,12 @@ export default function KanbanBoard({ data, onLoadMore, loadingMore }: KanbanBoa
         count={data.pr.total_count}
         headerColor="#832600"
       >
-        {data.pr.merge_requests.length === 0 ? (
-          <EmptyColumn message={`暂无关联 ${prColumnTitle}`} />
+        {data.pr.error ? (
+          <Alert severity="error" sx={{ borderRadius: '8px', fontSize: '12px' }}>
+            {data.pr.error}
+          </Alert>
+        ) : data.pr.merge_requests.length === 0 ? (
+          <EmptyColumn message={`暂无待处理 ${prColumnTitle}`} />
         ) : (
           data.pr.merge_requests.map((mr) => (
             <PrCard key={mr.iid} mr={mr} />

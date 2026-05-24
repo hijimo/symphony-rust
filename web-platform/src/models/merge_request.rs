@@ -11,6 +11,7 @@ pub struct KanbanMergeRequest {
     pub iid: u64,
     pub title: String,
     pub state: String,
+    pub repository: String,
     pub author: PlatformUser,
     pub source_branch: String,
     pub target_branch: String,
