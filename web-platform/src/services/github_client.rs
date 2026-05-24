@@ -17,6 +17,12 @@ pub struct GitHubClient {
     http: Client,
 }
 
+impl Default for GitHubClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GitHubClient {
     pub fn new() -> Self {
         Self::new_with_proxy(None).expect("failed to build reqwest client")

@@ -444,7 +444,10 @@ impl Orchestrator {
 
             // Revalidate issue state before dispatch (prevent stale dispatch)
             if let Some(tracker) = &self.tracker {
-                match tracker.fetch_issue_states_by_ids(&[issue.id.clone()]).await {
+                match tracker
+                    .fetch_issue_states_by_ids(std::slice::from_ref(&issue.id))
+                    .await
+                {
                     Ok(fresh) => {
                         if let Some(fresh_issue) = fresh.first() {
                             if is_terminal_state(

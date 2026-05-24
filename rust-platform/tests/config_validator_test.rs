@@ -40,21 +40,11 @@ struct WorkflowConfig {
     terminal_states: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct IssueFilter {
     labels: Vec<String>,
     assignee: Option<String>,
     milestone: Option<String>,
-}
-
-impl Default for IssueFilter {
-    fn default() -> Self {
-        Self {
-            labels: vec![],
-            assignee: None,
-            milestone: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

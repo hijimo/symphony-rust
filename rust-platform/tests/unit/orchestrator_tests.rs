@@ -7,16 +7,10 @@
 //! - concurrency control: global slots, per-state slots
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::{DateTime, TimeDelta, Utc};
-use tokio_util::sync::CancellationToken;
 
-use symphony_platform::config::{Config, PlatformConfig, PollingConfig, WorkflowConfig};
-use symphony_platform::orchestrator::Orchestrator;
-use symphony_platform::platform::cooldown_queue::CooldownQueue;
-use symphony_platform::platform::{make_test_issue, Dispatchable, Issue, IssueId, MemoryAdapter};
+use symphony_platform::platform::{make_test_issue, Issue, IssueId};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Sort for Dispatch Tests
@@ -26,7 +20,7 @@ mod sort_for_dispatch {
     use super::*;
 
     /// Sort issues by priority (lower number = higher priority), then by created_at.
-    fn sort_issues(issues: &mut Vec<Issue>) {
+    fn sort_issues(issues: &mut [Issue]) {
         issues.sort_by(|a, b| {
             // Priority: lower number = higher priority, None goes last
             let pri_cmp = match (a.priority, b.priority) {
@@ -329,7 +323,6 @@ mod should_dispatch {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 mod compute_retry_delay {
-    use super::*;
 
     /// Retry kind determines the delay strategy.
     #[derive(Debug, Clone, PartialEq)]

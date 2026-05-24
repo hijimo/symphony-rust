@@ -3,7 +3,6 @@
 //! These tests verify the orchestrator's dispatch logic, shutdown behavior,
 //! and state management using the actual DispatchConfig-based API.
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;

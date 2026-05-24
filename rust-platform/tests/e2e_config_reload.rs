@@ -7,11 +7,7 @@
 //!
 //! Run with: `cargo test --test e2e_config_reload`
 
-use std::sync::Arc;
-use std::time::Duration;
-
 use tempfile::TempDir;
-use tokio_util::sync::CancellationToken;
 
 use symphony_platform::config::workflow_loader::{
     load_workflow, parse_workflow, WorkflowDefinition,
@@ -378,8 +374,8 @@ async fn e2e_config_reload_fixture_custom_hooks() {
 
     assert!(def.config.contains_key("hooks"));
     let hooks = def.config["hooks"].as_mapping().unwrap();
-    assert!(hooks.contains_key(&serde_yaml::Value::String("after_create".to_string())));
-    assert!(hooks.contains_key(&serde_yaml::Value::String("before_run".to_string())));
-    assert!(hooks.contains_key(&serde_yaml::Value::String("after_run".to_string())));
-    assert!(hooks.contains_key(&serde_yaml::Value::String("before_remove".to_string())));
+    assert!(hooks.contains_key(serde_yaml::Value::String("after_create".to_string())));
+    assert!(hooks.contains_key(serde_yaml::Value::String("before_run".to_string())));
+    assert!(hooks.contains_key(serde_yaml::Value::String("after_run".to_string())));
+    assert!(hooks.contains_key(serde_yaml::Value::String("before_remove".to_string())));
 }

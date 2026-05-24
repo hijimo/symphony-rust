@@ -225,7 +225,7 @@ async fn real_linear_verify_normalization() {
 
         // Priority should be in range [0, 4]
         if let Some(priority) = issue["priority"].as_f64() {
-            assert!(priority >= 0.0 && priority <= 4.0);
+            assert!((0.0..=4.0).contains(&priority));
         }
 
         // Relations/blockers

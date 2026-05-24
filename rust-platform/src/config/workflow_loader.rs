@@ -89,10 +89,10 @@ pub fn parse_workflow(content: &str) -> Result<WorkflowDefinition, WorkflowLoadE
                 let body_start = pos + 3; // skip "---"
                                           // Skip the newline after closing delimiter
                 let body_rest = &rest[body_start..];
-                let body = if body_rest.starts_with('\n') {
-                    &body_rest[1..]
-                } else if body_rest.starts_with("\r\n") {
-                    &body_rest[2..]
+                let body = if let Some(stripped) = body_rest.strip_prefix('\n') {
+                    stripped
+                } else if let Some(stripped) = body_rest.strip_prefix("\r\n") {
+                    stripped
                 } else {
                     body_rest
                 };

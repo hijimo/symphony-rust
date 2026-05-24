@@ -249,15 +249,15 @@ async fn test_sanitize_preserves_primitives() {
     let input = json!({
         "count": 42,
         "enabled": true,
-        "ratio": 3.14,
+        "ratio": 3.125,
         "nothing": null
     });
 
     let sanitized = sanitize_value(input, 0);
 
     assert_eq!(sanitized.get("count").unwrap().as_u64().unwrap(), 42);
-    assert_eq!(sanitized.get("enabled").unwrap().as_bool().unwrap(), true);
-    assert_eq!(sanitized.get("ratio").unwrap().as_f64().unwrap(), 3.14);
+    assert!(sanitized.get("enabled").unwrap().as_bool().unwrap());
+    assert_eq!(sanitized.get("ratio").unwrap().as_f64().unwrap(), 3.125);
     // null is preserved in objects (only filtered from arrays)
     assert!(sanitized.get("nothing").unwrap().is_null());
 }

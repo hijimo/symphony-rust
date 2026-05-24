@@ -29,7 +29,7 @@ pub struct FaultConfig {
 }
 
 /// Internal state held behind `Arc<Mutex<_>>`.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct MemoryState {
     pub issues: HashMap<IssueId, Issue>,
     pub comments: HashMap<IssueId, Vec<Comment>>,
@@ -38,18 +38,6 @@ pub struct MemoryState {
     pub faults: HashMap<String, FaultConfig>,
     /// Call counts per method name.
     pub call_counts: HashMap<String, usize>,
-}
-
-impl Default for MemoryState {
-    fn default() -> Self {
-        Self {
-            issues: HashMap::new(),
-            comments: HashMap::new(),
-            pull_requests: Vec::new(),
-            faults: HashMap::new(),
-            call_counts: HashMap::new(),
-        }
-    }
 }
 
 /// In-memory Platform adapter for testing.

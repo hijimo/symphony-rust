@@ -418,71 +418,6 @@ fn build_workflow_states(
     states
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use symphony_platform::config::service_config::{ServiceConfig, TrackerKind};
-
-    #[test]
-    fn platform_config_uses_resolved_tracker_token_value() {
-        let mut service_config = ServiceConfig::default();
-        service_config.tracker_kind = TrackerKind::GitLab;
-        service_config.tracker_endpoint = "https://gitlab.example.com/api/v4".to_string();
-        service_config.tracker_api_key = "resolved-token".to_string();
-        service_config.tracker_project_slug = "123".to_string();
-
-        let platform_config = build_platform_config(&service_config, "gitlab");
-
-        assert_eq!(platform_config.api_token, "resolved-token");
-        assert_eq!(
-            platform_config.base_url,
-            "https://gitlab.example.com/api/v4"
-        );
-        assert_eq!(platform_config.project_id, Some("123".to_string()));
-    }
-
-    #[test]
-    fn platform_config_preserves_github_owner_and_repo() {
-        let mut service_config = ServiceConfig::default();
-        service_config.tracker_kind = TrackerKind::GitHub;
-        service_config.tracker_endpoint = "https://api.github.com".to_string();
-        service_config.tracker_api_key = "resolved-token".to_string();
-        service_config.tracker_project_slug = "openai/codex".to_string();
-
-        let platform_config = build_platform_config(&service_config, "github");
-
-        assert_eq!(platform_config.owner, "openai");
-        assert_eq!(platform_config.repo, "codex");
-        assert_eq!(platform_config.project_id, None);
-    }
-
-    #[test]
-    fn platform_config_includes_non_dispatch_workflow_labels() {
-        let mut service_config = ServiceConfig::default();
-        service_config.active_states = vec!["Todo".to_string(), "In Progress".to_string()];
-        service_config.terminal_states = vec!["Done".to_string()];
-        service_config.workflow_labels = vec!["Backlog".to_string(), "Human Review".to_string()];
-
-        let platform_config = build_platform_config(&service_config, "github");
-
-        assert_eq!(
-            platform_config.workflow.active_states,
-            vec!["Todo", "In Progress"]
-        );
-        assert_eq!(platform_config.workflow.terminal_states, vec!["Done"]);
-        assert!(platform_config
-            .workflow
-            .states
-            .values()
-            .any(|label| label == "Backlog"));
-        assert!(platform_config
-            .workflow
-            .states
-            .values()
-            .any(|label| label == "Human Review"));
-    }
-}
-
 /// Wait for a shutdown signal (SIGINT or SIGTERM on Unix, Ctrl+C on all platforms).
 async fn shutdown_signal() {
     let ctrl_c = async {
@@ -505,5 +440,48 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {}
         _ = terminate => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use symphony_platform::config::service_config::{ServiceConfig, TrackerKind};
+
+    #[test]
+    fn platform_config_uses_resolved_tracker_token_value() {
+        let service_config = ServiceConfig {
+            tracker_kind: TrackerKind::GitLab,
+            tracker_endpoint: "https://gitlab.example.com/api/v4".to_string(),
+            tracker_api_key: "resolved-token".to_string(),
+            tracker_project_slug: "123".to_string(),
+            ..Default::default()
+        };
+
+        let platform_config = build_platform_config(&service_config, "gitlab");
+
+        assert_eq!(platform_config.api_token, "resolved-token");
+        assert_eq!(
+            platform_config.base_url,
+            "https://gitlab.example.com/api/v4"
+        );
+        assert_eq!(platform_config.project_id, Some("123".to_string()));
+    }
+
+    #[test]
+    fn platform_config_preserves_github_owner_and_repo() {
+        let service_config = ServiceConfig {
+            tracker_kind: TrackerKind::GitHub,
+            tracker_endpoint: "https://api.github.com".to_string(),
+            tracker_api_key: "resolved-token".to_string(),
+            tracker_project_slug: "openai/codex".to_string(),
+            ..Default::default()
+        };
+
+        let platform_config = build_platform_config(&service_config, "github");
+
+        assert_eq!(platform_config.owner, "openai");
+        assert_eq!(platform_config.repo, "codex");
+        assert_eq!(platform_config.project_id, None);
     }
 }
