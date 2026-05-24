@@ -272,7 +272,7 @@ pub async fn update_project(
         }
     }
     if let Some(max_agents) = req.max_concurrent_agents {
-        if max_agents < 1 || max_agents > 20 {
+        if !(1..=20).contains(&max_agents) {
             return Err(WebPlatformError::BadRequest(
                 "max_concurrent_agents must be 1-20".to_string(),
             ));

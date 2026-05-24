@@ -95,7 +95,7 @@ async fn test_e2e_user_full_flow() {
     // Verify config
     let get_config = app.get("/api/user/config", Some(&token)).await;
     let cfg_body: serde_json::Value = get_config.json().await.unwrap();
-    assert_eq!(cfg_body["data"]["hasGitlabToken"].as_bool().unwrap(), true);
+    assert!(cfg_body["data"]["hasGitlabToken"].as_bool().unwrap());
 
     // User changes password
     let chg_resp = app
