@@ -108,7 +108,11 @@ async fn real_linear_fetch_candidate_issues() {
                 data
             );
             let nodes = data["data"]["issues"]["nodes"].as_array().unwrap();
-            println!("Fetched {} candidate issues from '{}'", nodes.len(), project);
+            println!(
+                "Fetched {} candidate issues from '{}'",
+                nodes.len(),
+                project
+            );
 
             if let Some(first) = nodes.first() {
                 assert!(first["id"].is_string());
@@ -169,9 +173,7 @@ async fn real_linear_fetch_issue_states_by_ids() {
         assert!(issue["state"]["name"].is_string());
         println!(
             "  {}: state={} ({})",
-            issue["identifier"],
-            issue["state"]["name"],
-            issue["state"]["type"]
+            issue["identifier"], issue["state"]["name"], issue["state"]["type"]
         );
     }
 }
@@ -223,7 +225,7 @@ async fn real_linear_verify_normalization() {
 
         // Priority should be in range [0, 4]
         if let Some(priority) = issue["priority"].as_f64() {
-            assert!(priority >= 0.0 && priority <= 4.0);
+            assert!((0.0..=4.0).contains(&priority));
         }
 
         // Relations/blockers
@@ -276,7 +278,12 @@ async fn real_linear_pagination() {
             .as_bool()
             .unwrap_or(false);
 
-        println!("  Page {}: {} issues, hasNextPage={}", page + 1, nodes.len(), has_next);
+        println!(
+            "  Page {}: {} issues, hasNextPage={}",
+            page + 1,
+            nodes.len(),
+            has_next
+        );
         all_issues.extend(nodes.iter().cloned());
 
         if !has_next {

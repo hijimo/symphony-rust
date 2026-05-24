@@ -2,6 +2,20 @@ mod common;
 
 use reqwest::StatusCode;
 use serde_json::json;
+use web_platform::models::{ServiceStatus, ServiceStatusUpdate};
+use web_platform::repository::ProjectRepository;
+
+async fn mark_project_running(app: &common::TestApp, project_id: i64) {
+    let status_update = ServiceStatusUpdate {
+        status: ServiceStatus::Running,
+        pid: Some(12345),
+        error_message: None,
+    };
+    app.repo
+        .update_service_status(project_id, &status_update)
+        .await
+        .unwrap();
+}
 
 #[tokio::test]
 async fn test_start_service() {
@@ -35,13 +49,7 @@ async fn test_start_service_already_running() {
         .await;
     let project_id = app.get_project_id(&create_body);
 
-    // Start once
-    app.post(
-        &format!("/api/projects/{}/start", project_id),
-        &json!({}),
-        Some(&app.admin_token),
-    )
-    .await;
+    mark_project_running(&app, project_id).await;
 
     // Try to start again
     let resp = app
@@ -64,13 +72,7 @@ async fn test_stop_service() {
         .await;
     let project_id = app.get_project_id(&create_body);
 
-    // Start first
-    app.post(
-        &format!("/api/projects/{}/start", project_id),
-        &json!({}),
-        Some(&app.admin_token),
-    )
-    .await;
+    mark_project_running(&app, project_id).await;
 
     // Stop
     let resp = app
@@ -122,13 +124,7 @@ async fn test_restart_service() {
         .await;
     let project_id = app.get_project_id(&create_body);
 
-    // Start first
-    app.post(
-        &format!("/api/projects/{}/start", project_id),
-        &json!({}),
-        Some(&app.admin_token),
-    )
-    .await;
+    mark_project_running(&app, project_id).await;
 
     // Restart
     let resp = app

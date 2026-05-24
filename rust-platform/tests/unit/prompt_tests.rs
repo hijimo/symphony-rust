@@ -151,10 +151,9 @@ mod issue_rendering {
 
     #[test]
     fn test_render_labels() {
-        let engine = PromptEngine::compile(
-            "{% for label in issue.labels %}{{ label }} {% endfor %}",
-        )
-        .unwrap();
+        let engine =
+            PromptEngine::compile("{% for label in issue.labels %}{{ label }} {% endfor %}")
+                .unwrap();
         let ctx = make_test_context();
 
         let result = engine.render(&ctx, None, 1, 20).unwrap();
@@ -191,10 +190,9 @@ mod issue_rendering {
 
     #[test]
     fn test_render_blockers() {
-        let engine = PromptEngine::compile(
-            "{% for b in issue.blocked_by %}{{ b.identifier }}{% endfor %}",
-        )
-        .unwrap();
+        let engine =
+            PromptEngine::compile("{% for b in issue.blocked_by %}{{ b.identifier }}{% endfor %}")
+                .unwrap();
         let mut ctx = make_test_context();
         ctx.blocked_by = vec![BlockerContext {
             id: Some("uuid-999".to_string()),

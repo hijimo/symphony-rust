@@ -127,7 +127,10 @@ impl GithubTestClient {
 
         let status = resp.status().as_u16();
         if status == 404 {
-            return Err(AdapterError::NotFound(format!("Issue #{} not found", number)));
+            return Err(AdapterError::NotFound(format!(
+                "Issue #{} not found",
+                number
+            )));
         }
         if !resp.status().is_success() {
             return Err(AdapterError::Http(status));
@@ -166,11 +169,7 @@ impl GithubTestClient {
         Ok(())
     }
 
-    async fn remove_labels(
-        &self,
-        number: u64,
-        labels: &[String],
-    ) -> Result<(), AdapterError> {
+    async fn remove_labels(&self, number: u64, labels: &[String]) -> Result<(), AdapterError> {
         if labels.is_empty() {
             return Ok(());
         }
@@ -376,9 +375,7 @@ async fn test_fetch_candidate_issues() {
         .and(path("/repos/test-org/test-repo/issues"))
         .and(header("Authorization", "Bearer test-token-12345"))
         .and(query_param("state", "open"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(mock_github_issues_response()),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(mock_github_issues_response()))
         .expect(1)
         .mount(&mock_server)
         .await;
@@ -407,12 +404,10 @@ async fn test_fetch_issue_not_found() {
 
     Mock::given(method("GET"))
         .and(path("/repos/test-org/test-repo/issues/999"))
-        .respond_with(
-            ResponseTemplate::new(404).set_body_json(json!({
-                "message": "Not Found",
-                "documentation_url": "https://docs.github.com/rest"
-            })),
-        )
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "message": "Not Found",
+            "documentation_url": "https://docs.github.com/rest"
+        })))
         .expect(1)
         .mount(&mock_server)
         .await;
@@ -437,9 +432,7 @@ async fn test_add_labels() {
     Mock::given(method("POST"))
         .and(path("/repos/test-org/test-repo/issues/42/labels"))
         .and(header("Authorization", "Bearer test-token-12345"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(mock_add_labels_response()),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(mock_add_labels_response()))
         .expect(1)
         .mount(&mock_server)
         .await;
@@ -458,7 +451,9 @@ async fn test_remove_labels_partial_failure() {
 
     // First label removal succeeds
     Mock::given(method("DELETE"))
-        .and(path("/repos/test-org/test-repo/issues/42/labels/workflow::backlog"))
+        .and(path(
+            "/repos/test-org/test-repo/issues/42/labels/workflow::backlog",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
         .expect(1)
         .mount(&mock_server)
@@ -466,12 +461,12 @@ async fn test_remove_labels_partial_failure() {
 
     // Second label removal fails with 404 (label not found on issue)
     Mock::given(method("DELETE"))
-        .and(path("/repos/test-org/test-repo/issues/42/labels/workflow::rework"))
-        .respond_with(
-            ResponseTemplate::new(404).set_body_json(json!({
-                "message": "Label does not exist"
-            })),
-        )
+        .and(path(
+            "/repos/test-org/test-repo/issues/42/labels/workflow::rework",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "message": "Label does not exist"
+        })))
         .expect(1)
         .mount(&mock_server)
         .await;
@@ -502,11 +497,9 @@ async fn test_set_workflow_state() {
     // Step 1: Add new label (should happen first)
     Mock::given(method("POST"))
         .and(path("/repos/test-org/test-repo/issues/42/labels"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([
-                {"id": 3, "name": "workflow::in-progress", "color": "fbca04"}
-            ])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": 3, "name": "workflow::in-progress", "color": "fbca04"}
+        ])))
         .expect(1)
         .named("add_new_label")
         .mount(&mock_server)
@@ -514,7 +507,9 @@ async fn test_set_workflow_state() {
 
     // Step 2: Remove old label (should happen after add)
     Mock::given(method("DELETE"))
-        .and(path("/repos/test-org/test-repo/issues/42/labels/workflow::todo"))
+        .and(path(
+            "/repos/test-org/test-repo/issues/42/labels/workflow::todo",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
         .expect(1)
         .named("remove_old_label")
@@ -525,11 +520,7 @@ async fn test_set_workflow_state() {
     let client = GithubTestClient::new(&config);
 
     let result = client
-        .set_workflow_state(
-            42,
-            "workflow::in-progress",
-            &["workflow::todo".to_string()],
-        )
+        .set_workflow_state(42, "workflow::in-progress", &["workflow::todo".to_string()])
         .await;
 
     assert!(result.is_ok());
@@ -543,9 +534,7 @@ async fn test_create_comment() {
     Mock::given(method("POST"))
         .and(path("/repos/test-org/test-repo/issues/42/comments"))
         .and(header("Authorization", "Bearer test-token-12345"))
-        .respond_with(
-            ResponseTemplate::new(201).set_body_json(mock_create_comment_response()),
-        )
+        .respond_with(ResponseTemplate::new(201).set_body_json(mock_create_comment_response()))
         .expect(1)
         .mount(&mock_server)
         .await;
@@ -566,9 +555,7 @@ async fn test_find_workpad_comment() {
 
     Mock::given(method("GET"))
         .and(path("/repos/test-org/test-repo/issues/42/comments"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(mock_comments_response()),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(mock_comments_response()))
         .expect(1)
         .mount(&mock_server)
         .await;
@@ -619,9 +606,7 @@ async fn test_validate_credentials() {
     Mock::given(method("GET"))
         .and(path("/user"))
         .and(header("Authorization", "Bearer test-token-12345"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(mock_github_user_response()),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(mock_github_user_response()))
         .expect(1)
         .mount(&mock_server)
         .await;
@@ -639,12 +624,10 @@ async fn test_validate_credentials_invalid_token() {
 
     Mock::given(method("GET"))
         .and(path("/user"))
-        .respond_with(
-            ResponseTemplate::new(401).set_body_json(json!({
-                "message": "Bad credentials",
-                "documentation_url": "https://docs.github.com/rest"
-            })),
-        )
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "message": "Bad credentials",
+            "documentation_url": "https://docs.github.com/rest"
+        })))
         .expect(1)
         .mount(&mock_server)
         .await;
