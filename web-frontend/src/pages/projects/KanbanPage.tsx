@@ -16,6 +16,8 @@ import AuthorFilter from '../../components/kanban/AuthorFilter';
 import { useKanbanStore } from '../../store/kanbanStore';
 import type { PlatformUser } from '../../types/kanban';
 
+export const KANBAN_AUTO_REFRESH_INTERVAL_MS = 15_000;
+
 export default function KanbanPage() {
   const { id } = useParams<{ id: string }>();
   const projectId = Number(id);
@@ -71,6 +73,17 @@ export default function KanbanPage() {
       fetchKanban(projectId);
     }
   }, [filtersKey, projectId, fetchKanban]);
+
+  // Keep kanban issue state fresh while the page is mounted.
+  useEffect(() => {
+    if (!projectId) return undefined;
+
+    const timer = window.setInterval(() => {
+      refresh(projectId);
+    }, KANBAN_AUTO_REFRESH_INTERVAL_MS);
+
+    return () => window.clearInterval(timer);
+  }, [projectId, refresh]);
 
   const handleRefresh = useCallback(() => {
     if (projectId) {
