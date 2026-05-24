@@ -41,6 +41,9 @@ pub struct InProgressColumn {
 pub struct PrColumn {
     pub merge_requests: Vec<KanbanMergeRequest>,
     pub total_count: u64,
+    /// Column-level error when PR/MR loading fails while other columns are available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 // ==================== Query Parameters ====================
