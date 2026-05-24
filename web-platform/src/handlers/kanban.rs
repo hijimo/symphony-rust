@@ -435,6 +435,18 @@ mod tests {
     }
 
     #[test]
+    fn issue_with_todo_and_processing_label_is_in_progress() {
+        for label in ["In Progree", "Merging", "Rework"] {
+            let issue = platform_issue_with_labels(vec!["Todo", "bug", label]);
+
+            assert!(
+                issue_has_in_progress_label(&issue),
+                "expected {label} to take priority over Todo when classifying issue"
+            );
+        }
+    }
+
+    #[test]
     fn issue_without_processing_label_is_not_in_progress() {
         let issue = platform_issue_with_labels(vec!["Todo", "bug"]);
 
