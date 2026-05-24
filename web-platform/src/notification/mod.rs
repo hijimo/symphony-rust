@@ -30,13 +30,29 @@ impl std::fmt::Display for Severity {
 }
 
 impl Severity {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_optional(s: &str) -> Option<Self> {
         match s {
             "critical" => Some(Severity::Critical),
             "warning" => Some(Severity::Warning),
             "info" => Some(Severity::Info),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Severity;
+
+    #[test]
+    fn notification_severity_parse_optional_returns_none_for_unknown_values() {
+        assert_eq!(
+            Severity::parse_optional("critical"),
+            Some(Severity::Critical)
+        );
+        assert_eq!(Severity::parse_optional("warning"), Some(Severity::Warning));
+        assert_eq!(Severity::parse_optional("info"), Some(Severity::Info));
+        assert_eq!(Severity::parse_optional("unknown"), None);
     }
 }
 

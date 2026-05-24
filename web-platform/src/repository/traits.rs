@@ -11,6 +11,28 @@ use crate::models::{
 use crate::proxy::{ProxySecret, ProxySecretMutation};
 use async_trait::async_trait;
 
+#[derive(Debug, Clone, Copy)]
+pub struct ProjectListFilter<'a> {
+    pub user_id: i64,
+    pub is_admin: bool,
+    pub page_no: i64,
+    pub page_size: i64,
+    pub platform: Option<&'a str>,
+    pub status: Option<&'a str>,
+    pub search: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ConcurrencyEventInput<'a> {
+    pub project_id: i64,
+    pub event_type: &'a str,
+    pub agent_id: Option<&'a str>,
+    pub issue_iid: Option<i64>,
+    pub issue_title: Option<&'a str>,
+    pub duration_seconds: Option<i64>,
+    pub metadata_json: Option<&'a str>,
+}
+
 #[async_trait]
 pub trait UserRepository: Send + Sync {
     async fn create_user(
@@ -63,13 +85,7 @@ pub trait ProjectRepository: Send + Sync {
     async fn get_project(&self, id: i64) -> Result<Option<Project>>;
     async fn list_projects_for_user(
         &self,
-        user_id: i64,
-        is_admin: bool,
-        page_no: i64,
-        page_size: i64,
-        platform: Option<&str>,
-        status: Option<&str>,
-        search: Option<&str>,
+        filter: ProjectListFilter<'_>,
     ) -> Result<(Vec<Project>, i64)>;
     async fn update_project(&self, id: i64, updates: &ProjectUpdate) -> Result<()>;
     async fn delete_project(&self, id: i64) -> Result<()>;
@@ -104,16 +120,7 @@ pub trait ProjectMemberRepository: Send + Sync {
 
 #[async_trait]
 pub trait ConcurrencyRepository: Send + Sync {
-    async fn record_concurrency_event(
-        &self,
-        project_id: i64,
-        event_type: &str,
-        agent_id: Option<&str>,
-        issue_iid: Option<i64>,
-        issue_title: Option<&str>,
-        duration_seconds: Option<i64>,
-        metadata_json: Option<&str>,
-    ) -> Result<()>;
+    async fn record_concurrency_event(&self, input: ConcurrencyEventInput<'_>) -> Result<()>;
 
     async fn save_snapshot(
         &self,

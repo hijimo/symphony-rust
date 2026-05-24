@@ -13,7 +13,7 @@ use crate::models::{
     CreateProjectRequest, NewProject, PaginationData, Project, ProjectListQuery, ProjectUpdate,
     ResponseData, UpdateProjectRequest,
 };
-use crate::repository::{ProjectMemberRepository, ProjectRepository};
+use crate::repository::{ProjectListFilter, ProjectMemberRepository, ProjectRepository};
 use crate::AppState;
 
 /// Response type for a single project (with computed fields).
@@ -90,15 +90,15 @@ pub async fn list_projects(
 
     let (projects, total) = state
         .repo
-        .list_projects_for_user(
+        .list_projects_for_user(ProjectListFilter {
             user_id,
             is_admin,
             page_no,
             page_size,
-            query.platform.as_deref(),
-            query.status.as_deref(),
-            query.search.as_deref(),
-        )
+            platform: query.platform.as_deref(),
+            status: query.status.as_deref(),
+            search: query.search.as_deref(),
+        })
         .await?;
 
     let items: Vec<ProjectResponse> = projects

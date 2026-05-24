@@ -489,7 +489,7 @@ impl RuleEvaluator for DefaultRuleEvaluator {
                 rule_id: row.rule_id,
                 name: row.name,
                 description: row.description,
-                severity: Severity::from_str(&row.severity),
+                severity: Severity::parse_or_info(&row.severity),
                 enabled: row.enabled,
                 threshold: row.threshold,
                 cooldown_seconds: row.cooldown_seconds,

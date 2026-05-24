@@ -55,30 +55,32 @@ fn next_service_identity(project: &Project) -> (i64, String) {
     )
 }
 
-fn build_lifecycle_update(
-    project: &Project,
-    symphony_bin: &str,
-    workspace_root: &str,
+struct LifecycleStartInput<'a> {
+    project: &'a Project,
+    symphony_bin: &'a str,
+    workspace_root: &'a str,
+    last_lifecycle_op: &'a str,
     pid: u32,
     service_generation: i64,
     service_instance_id: String,
-    last_lifecycle_op: &str,
     proxy_config_version: String,
-) -> ServiceLifecycleUpdate {
+}
+
+fn build_lifecycle_update(input: LifecycleStartInput<'_>) -> ServiceLifecycleUpdate {
     let web_instance_id = web_instance_id();
-    let workdir = service_workdir(workspace_root, project.id);
+    let workdir = service_workdir(input.workspace_root, input.project.id);
     ServiceLifecycleUpdate {
         web_instance_id: web_instance_id.clone(),
         lifecycle_op_id: Uuid::new_v4().to_string(),
         service_owner_web_instance_id: web_instance_id,
-        service_generation,
-        service_instance_id,
-        service_pgid: process_group_id(pid),
-        service_session_id: process_session_id(pid),
-        service_cmdline_hash: service_cmdline_hash(symphony_bin, &workdir),
+        service_generation: input.service_generation,
+        service_instance_id: input.service_instance_id,
+        service_pgid: process_group_id(input.pid),
+        service_session_id: process_session_id(input.pid),
+        service_cmdline_hash: service_cmdline_hash(input.symphony_bin, &workdir),
         service_workdir: workdir,
-        last_lifecycle_op: last_lifecycle_op.to_string(),
-        service_proxy_config_version: proxy_config_version,
+        last_lifecycle_op: input.last_lifecycle_op.to_string(),
+        service_proxy_config_version: input.proxy_config_version,
     }
 }
 
@@ -278,16 +280,16 @@ pub async fn start_service(
     let pid = spawn_result.pid;
     let proxy_config_version = spawn_result.proxy_config_version.clone();
 
-    let lifecycle_update = build_lifecycle_update(
-        &project,
-        &state.symphony_bin,
-        &state.workspace_root,
+    let lifecycle_update = build_lifecycle_update(LifecycleStartInput {
+        project: &project,
+        symphony_bin: &state.symphony_bin,
+        workspace_root: &state.workspace_root,
         pid,
         service_generation,
         service_instance_id,
-        "start",
+        last_lifecycle_op: "start",
         proxy_config_version,
-    );
+    });
     state
         .repo
         .update_service_lifecycle(project_id, &lifecycle_update)
@@ -517,16 +519,16 @@ pub async fn restart_service(
     let pid = spawn_result.pid;
     let proxy_config_version = spawn_result.proxy_config_version.clone();
 
-    let lifecycle_update = build_lifecycle_update(
-        &project,
-        &state.symphony_bin,
-        &state.workspace_root,
+    let lifecycle_update = build_lifecycle_update(LifecycleStartInput {
+        project: &project,
+        symphony_bin: &state.symphony_bin,
+        workspace_root: &state.workspace_root,
         pid,
         service_generation,
         service_instance_id,
-        "restart",
+        last_lifecycle_op: "restart",
         proxy_config_version,
-    );
+    });
     state
         .repo
         .update_service_lifecycle(project_id, &lifecycle_update)

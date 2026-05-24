@@ -23,7 +23,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use self::reconciler::{determine_reconcile_actions, reconcile_stalled_runs, ReconcileAction};
-use self::retry::{compute_retry_delay, release_claim, schedule_retry};
+use self::retry::{compute_retry_delay, release_claim, schedule_retry, RetrySchedule};
 use self::scheduler::{
     is_active_state, is_terminal_state, schedule_immediate_tick, schedule_next_tick,
     should_dispatch, sort_for_dispatch, DispatchConfig,
@@ -171,7 +171,7 @@ impl Orchestrator {
                 self.on_worker_exit_abnormal(&issue_id, &error).await;
             }
             OrchestratorEvent::CodexUpdate { issue_id, update } => {
-                self.on_codex_update(&issue_id, update);
+                self.on_codex_update(&issue_id, *update);
             }
             OrchestratorEvent::RetryFired { issue_id } => {
                 self.on_retry_fired(&issue_id).await;
@@ -217,12 +217,14 @@ impl Orchestrator {
             );
             schedule_retry(
                 &mut self.state,
-                &entry.issue_id,
-                &entry.identifier,
-                entry.attempt + 1,
-                RetryKind::Failure,
-                delay,
-                Some("stall hard deadline exceeded".to_string()),
+                RetrySchedule::new(
+                    &entry.issue_id,
+                    &entry.identifier,
+                    entry.attempt + 1,
+                    RetryKind::Failure,
+                    delay,
+                    Some("stall hard deadline exceeded".to_string()),
+                ),
                 &self.event_tx,
             );
         }
@@ -564,7 +566,7 @@ impl Orchestrator {
                     let _ = event_tx_fwd
                         .send(OrchestratorEvent::CodexUpdate {
                             issue_id: issue_id_for_fwd.clone(),
-                            update,
+                            update: Box::new(update),
                         })
                         .await;
                 }
@@ -763,12 +765,14 @@ impl Orchestrator {
             let delay = compute_retry_delay(1, &RetryKind::Continuation, self.max_retry_backoff_ms);
             schedule_retry(
                 &mut self.state,
-                issue_id,
-                &entry.identifier,
-                1,
-                RetryKind::Continuation,
-                delay,
-                None,
+                RetrySchedule::new(
+                    issue_id,
+                    &entry.identifier,
+                    1,
+                    RetryKind::Continuation,
+                    delay,
+                    None,
+                ),
                 &self.event_tx,
             );
         }
@@ -795,12 +799,14 @@ impl Orchestrator {
                 compute_retry_delay(attempt, &RetryKind::Failure, self.max_retry_backoff_ms);
             schedule_retry(
                 &mut self.state,
-                issue_id,
-                &entry.identifier,
-                attempt,
-                RetryKind::Failure,
-                delay,
-                Some(error.to_string()),
+                RetrySchedule::new(
+                    issue_id,
+                    &entry.identifier,
+                    attempt,
+                    RetryKind::Failure,
+                    delay,
+                    Some(error.to_string()),
+                ),
                 &self.event_tx,
             );
         }
@@ -909,12 +915,14 @@ impl Orchestrator {
                 );
                 schedule_retry(
                     &mut self.state,
-                    issue_id,
-                    &entry.identifier,
-                    entry.attempt,
-                    entry.retry_kind,
-                    delay,
-                    Some(format!("retry fetch failed: {}", e)),
+                    RetrySchedule::new(
+                        issue_id,
+                        &entry.identifier,
+                        entry.attempt,
+                        entry.retry_kind,
+                        delay,
+                        Some(format!("retry fetch failed: {}", e)),
+                    ),
                     &self.event_tx,
                 );
                 return;
@@ -955,12 +963,14 @@ impl Orchestrator {
                 compute_retry_delay(entry.attempt, &entry.retry_kind, self.max_retry_backoff_ms);
             schedule_retry(
                 &mut self.state,
-                issue_id,
-                &entry.identifier,
-                entry.attempt,
-                entry.retry_kind,
-                delay,
-                Some("no available orchestrator slots".to_string()),
+                RetrySchedule::new(
+                    issue_id,
+                    &entry.identifier,
+                    entry.attempt,
+                    entry.retry_kind,
+                    delay,
+                    Some("no available orchestrator slots".to_string()),
+                ),
                 &self.event_tx,
             );
             return;
@@ -999,12 +1009,14 @@ impl Orchestrator {
             compute_retry_delay(attempt + 1, &RetryKind::Failure, self.max_retry_backoff_ms);
         schedule_retry(
             &mut self.state,
-            issue_id,
-            identifier,
-            attempt + 1,
-            RetryKind::Failure,
-            delay,
-            Some("no available orchestrator slots".to_string()),
+            RetrySchedule::new(
+                issue_id,
+                identifier,
+                attempt + 1,
+                RetryKind::Failure,
+                delay,
+                Some("no available orchestrator slots".to_string()),
+            ),
             &self.event_tx,
         );
     }

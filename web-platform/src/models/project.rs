@@ -26,7 +26,7 @@ impl ServiceStatus {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_or_stopped(s: &str) -> Self {
         match s {
             "running" => ServiceStatus::Running,
             "stopped" => ServiceStatus::Stopped,
@@ -36,6 +36,43 @@ impl ServiceStatus {
             "failed" => ServiceStatus::Failed,
             _ => ServiceStatus::Stopped,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ServiceStatus;
+
+    #[test]
+    fn service_status_parse_or_stopped_defaults_unknown_values_to_stopped() {
+        assert_eq!(
+            ServiceStatus::parse_or_stopped("running"),
+            ServiceStatus::Running
+        );
+        assert_eq!(
+            ServiceStatus::parse_or_stopped("stopped"),
+            ServiceStatus::Stopped
+        );
+        assert_eq!(
+            ServiceStatus::parse_or_stopped("starting"),
+            ServiceStatus::Starting
+        );
+        assert_eq!(
+            ServiceStatus::parse_or_stopped("stopping"),
+            ServiceStatus::Stopping
+        );
+        assert_eq!(
+            ServiceStatus::parse_or_stopped("error"),
+            ServiceStatus::Error
+        );
+        assert_eq!(
+            ServiceStatus::parse_or_stopped("failed"),
+            ServiceStatus::Failed
+        );
+        assert_eq!(
+            ServiceStatus::parse_or_stopped("unknown"),
+            ServiceStatus::Stopped
+        );
     }
 }
 

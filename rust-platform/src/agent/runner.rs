@@ -11,7 +11,6 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::service_config::ServiceConfig;
 use crate::config::watcher::ConfigHolder;
 use crate::prompt::{BlockerContext, IssueContext, PromptEngine};
 use crate::workspace::{WorkspaceError, WorkspaceManager};
@@ -232,7 +231,6 @@ impl AgentRunner {
                 max_turns,
                 &mut turn_number,
                 &state_refresher,
-                service_config,
             )
             .await;
 
@@ -271,7 +269,6 @@ impl AgentRunner {
         max_turns: u32,
         turn_number: &mut u32,
         state_refresher: &Arc<dyn IssueStateRefresher>,
-        _service_config: &ServiceConfig,
     ) -> Result<(), AgentError> {
         loop {
             // Check cancellation before each turn

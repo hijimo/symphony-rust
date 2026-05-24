@@ -336,7 +336,7 @@ pub enum OrchestratorEvent {
     /// Codex event update (token counters, activity, rate limits).
     CodexUpdate {
         issue_id: String,
-        update: CodexEventUpdate,
+        update: Box<CodexEventUpdate>,
     },
     /// Retry timer fired for an issue.
     RetryFired { issue_id: String },

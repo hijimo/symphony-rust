@@ -17,9 +17,9 @@ use crate::models::{
 };
 use crate::proxy::{ProxySecret, ProxySecretMutation, VERSION_KEY};
 use crate::repository::{
-    AlertRepository, ConcurrencyRepository, NetworkProxyRepository, ProjectMemberRepository,
-    ProjectRepository, SystemConfigRepository, TokenBlacklistRepository, UserConfigRepository,
-    UserRepository,
+    AlertRepository, ConcurrencyEventInput, ConcurrencyRepository, NetworkProxyRepository,
+    ProjectListFilter, ProjectMemberRepository, ProjectRepository, SystemConfigRepository,
+    TokenBlacklistRepository, UserConfigRepository, UserRepository,
 };
 
 #[derive(Clone)]
@@ -470,18 +470,16 @@ impl ProjectRepository for SqliteRepository {
 
     async fn list_projects_for_user(
         &self,
-        user_id: i64,
-        is_admin: bool,
-        page_no: i64,
-        page_size: i64,
-        platform: Option<&str>,
-        status: Option<&str>,
-        search: Option<&str>,
+        filter: ProjectListFilter<'_>,
     ) -> Result<(Vec<Project>, i64)> {
         let pool = self.pool.clone();
-        let platform = platform.map(|s| s.to_string());
-        let status = status.map(|s| s.to_string());
-        let search = search.map(|s| s.to_string());
+        let user_id = filter.user_id;
+        let is_admin = filter.is_admin;
+        let page_no = filter.page_no;
+        let page_size = filter.page_size;
+        let platform = filter.platform.map(|s| s.to_string());
+        let status = filter.status.map(|s| s.to_string());
+        let search = filter.search.map(|s| s.to_string());
         tokio::task::spawn_blocking(move || {
             let conn = pool.get()?;
             let offset = (page_no - 1) * page_size;
@@ -1032,21 +1030,15 @@ impl ProjectMemberRepository for SqliteRepository {
 
 #[async_trait]
 impl ConcurrencyRepository for SqliteRepository {
-    async fn record_concurrency_event(
-        &self,
-        project_id: i64,
-        event_type: &str,
-        agent_id: Option<&str>,
-        issue_iid: Option<i64>,
-        issue_title: Option<&str>,
-        duration_seconds: Option<i64>,
-        metadata_json: Option<&str>,
-    ) -> Result<()> {
+    async fn record_concurrency_event(&self, input: ConcurrencyEventInput<'_>) -> Result<()> {
         let pool = self.pool.clone();
-        let event_type = event_type.to_string();
-        let agent_id = agent_id.map(|s| s.to_string());
-        let issue_title = issue_title.map(|s| s.to_string());
-        let metadata_json = metadata_json.map(|s| s.to_string());
+        let project_id = input.project_id;
+        let issue_iid = input.issue_iid;
+        let duration_seconds = input.duration_seconds;
+        let event_type = input.event_type.to_string();
+        let agent_id = input.agent_id.map(|s| s.to_string());
+        let issue_title = input.issue_title.map(|s| s.to_string());
+        let metadata_json = input.metadata_json.map(|s| s.to_string());
 
         tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| WebPlatformError::Internal(e.to_string()))?;

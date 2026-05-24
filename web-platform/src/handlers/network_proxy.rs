@@ -411,31 +411,6 @@ impl ProxyTestResult {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn authenticated_api_unauthorized_counts_as_reachable() {
-        let (message, reachable) = classify_target_status(
-            reqwest::StatusCode::UNAUTHORIZED,
-            ProxyTargetKind::AuthenticatedApi,
-        );
-
-        assert!(reachable);
-        assert_eq!(message, "target is reachable and requires authentication");
-    }
-
-    #[test]
-    fn generic_target_unauthorized_still_fails() {
-        let (message, reachable) =
-            classify_target_status(reqwest::StatusCode::UNAUTHORIZED, ProxyTargetKind::Generic);
-
-        assert!(!reachable);
-        assert_eq!(message, "target returned non-success status");
-    }
-}
-
 pub async fn load_effective_proxy_config(
     repo: &crate::repository::SqliteRepository,
     encryption_key: &[u8; 32],
@@ -911,4 +886,29 @@ fn config_value<'a>(
         .get(key)
         .map(|item| item.value.as_str())
         .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authenticated_api_unauthorized_counts_as_reachable() {
+        let (message, reachable) = classify_target_status(
+            reqwest::StatusCode::UNAUTHORIZED,
+            ProxyTargetKind::AuthenticatedApi,
+        );
+
+        assert!(reachable);
+        assert_eq!(message, "target is reachable and requires authentication");
+    }
+
+    #[test]
+    fn generic_target_unauthorized_still_fails() {
+        let (message, reachable) =
+            classify_target_status(reqwest::StatusCode::UNAUTHORIZED, ProxyTargetKind::Generic);
+
+        assert!(!reachable);
+        assert_eq!(message, "target returned non-success status");
+    }
 }

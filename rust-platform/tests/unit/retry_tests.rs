@@ -11,7 +11,9 @@
 use tokio::sync::mpsc;
 
 use symphony_platform::models::{OrchestratorState, RetryKind};
-use symphony_platform::orchestrator::retry::{compute_retry_delay, release_claim, schedule_retry};
+use symphony_platform::orchestrator::retry::{
+    compute_retry_delay, release_claim, schedule_retry, RetrySchedule,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Continuation Retry Tests
@@ -211,12 +213,14 @@ mod retry_scheduling {
 
         schedule_retry(
             &mut state,
-            "issue-1",
-            "TEST-1",
-            1,
-            RetryKind::Failure,
-            10_000,
-            Some("test error".to_string()),
+            RetrySchedule::new(
+                "issue-1",
+                "TEST-1",
+                1,
+                RetryKind::Failure,
+                10_000,
+                Some("test error".to_string()),
+            ),
             &tx,
         );
 
@@ -241,24 +245,21 @@ mod retry_scheduling {
         // Schedule first retry with long delay
         schedule_retry(
             &mut state,
-            "issue-1",
-            "TEST-1",
-            1,
-            RetryKind::Failure,
-            60_000,
-            None,
+            RetrySchedule::new("issue-1", "TEST-1", 1, RetryKind::Failure, 60_000, None),
             &tx,
         );
 
         // Schedule second retry for same issue (should cancel first)
         schedule_retry(
             &mut state,
-            "issue-1",
-            "TEST-1",
-            2,
-            RetryKind::Failure,
-            20_000,
-            Some("new error".to_string()),
+            RetrySchedule::new(
+                "issue-1",
+                "TEST-1",
+                2,
+                RetryKind::Failure,
+                20_000,
+                Some("new error".to_string()),
+            ),
             &tx,
         );
 
@@ -279,12 +280,7 @@ mod retry_scheduling {
 
         schedule_retry(
             &mut state,
-            "issue-1",
-            "TEST-1",
-            1,
-            RetryKind::Continuation,
-            1_000,
-            None,
+            RetrySchedule::new("issue-1", "TEST-1", 1, RetryKind::Continuation, 1_000, None),
             &tx,
         );
 
@@ -303,12 +299,7 @@ mod retry_scheduling {
 
         schedule_retry(
             &mut state,
-            "issue-1",
-            "TEST-1",
-            1,
-            RetryKind::Failure,
-            60_000,
-            None,
+            RetrySchedule::new("issue-1", "TEST-1", 1, RetryKind::Failure, 60_000, None),
             &tx,
         );
 
@@ -338,12 +329,7 @@ mod retry_scheduling {
         // Schedule with very short delay
         schedule_retry(
             &mut state,
-            "issue-1",
-            "TEST-1",
-            1,
-            RetryKind::Failure,
-            10, // 10ms
-            None,
+            RetrySchedule::new("issue-1", "TEST-1", 1, RetryKind::Failure, 10, None),
             &tx,
         );
 

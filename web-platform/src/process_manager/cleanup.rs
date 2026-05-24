@@ -2,7 +2,7 @@ use tracing::{info, warn};
 
 use crate::models::{ServiceStatus, ServiceStatusUpdate};
 use crate::process_manager::pid_verify;
-use crate::repository::{ProjectRepository, SqliteRepository};
+use crate::repository::{ProjectListFilter, ProjectRepository, SqliteRepository};
 
 /// Perform startup cleanup: check all projects marked as "running" in the DB
 /// and verify their PIDs. If a PID is invalid (process no longer exists or
@@ -15,7 +15,15 @@ pub async fn startup_cleanup(repo: &SqliteRepository) {
 
     // Find all projects that are marked as running/starting
     let running_projects = match repo
-        .list_projects_for_user(0, true, 1, 1000, None, Some("running"), None)
+        .list_projects_for_user(ProjectListFilter {
+            user_id: 0,
+            is_admin: true,
+            page_no: 1,
+            page_size: 1000,
+            platform: None,
+            status: Some("running"),
+            search: None,
+        })
         .await
     {
         Ok((projects, _)) => projects,
@@ -26,7 +34,15 @@ pub async fn startup_cleanup(repo: &SqliteRepository) {
     };
 
     let starting_projects = match repo
-        .list_projects_for_user(0, true, 1, 1000, None, Some("starting"), None)
+        .list_projects_for_user(ProjectListFilter {
+            user_id: 0,
+            is_admin: true,
+            page_no: 1,
+            page_size: 1000,
+            platform: None,
+            status: Some("starting"),
+            search: None,
+        })
         .await
     {
         Ok((projects, _)) => projects,

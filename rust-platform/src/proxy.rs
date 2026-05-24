@@ -178,24 +178,77 @@ fn mask_username(username: &str) -> String {
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::sync::{Mutex, OnceLock};
+    use std::collections::HashMap;
+    use std::ffi::{OsStr, OsString};
+    use std::sync::OnceLock;
 
-    pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    type LockGuard = tokio::sync::MutexGuard<'static, ()>;
+
+    pub(crate) struct TestEnvGuard {
+        _lock: LockGuard,
+        saved: HashMap<String, Option<OsString>>,
     }
 
-    pub(crate) fn clear_env() {
-        for var in super::STANDARD_PROXY_VARS {
-            std::env::remove_var(var);
+    fn env_mutex() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    impl TestEnvGuard {
+        fn new(lock: LockGuard) -> Self {
+            Self {
+                _lock: lock,
+                saved: HashMap::new(),
+            }
         }
-        for var in [
-            "SYMPHONY_PROXY_MODE",
-            "SYMPHONY_PROXY_VERSION",
-            "SYMPHONY_PROXY_SOURCE",
-        ] {
-            std::env::remove_var(var);
+
+        pub(crate) fn clear_proxy_env(&mut self) {
+            for var in super::STANDARD_PROXY_VARS {
+                self.remove(var);
+            }
+            for var in [
+                "SYMPHONY_PROXY_MODE",
+                "SYMPHONY_PROXY_VERSION",
+                "SYMPHONY_PROXY_SOURCE",
+            ] {
+                self.remove(var);
+            }
         }
+
+        pub(crate) fn set(&mut self, key: &str, value: impl AsRef<OsStr>) {
+            self.save_original(key);
+            std::env::set_var(key, value);
+        }
+
+        pub(crate) fn remove(&mut self, key: &str) {
+            self.save_original(key);
+            std::env::remove_var(key);
+        }
+
+        fn save_original(&mut self, key: &str) {
+            self.saved
+                .entry(key.to_string())
+                .or_insert_with(|| std::env::var_os(key));
+        }
+    }
+
+    impl Drop for TestEnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in self.saved.drain() {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    pub(crate) fn env_lock() -> TestEnvGuard {
+        TestEnvGuard::new(env_mutex().blocking_lock())
+    }
+
+    pub(crate) async fn async_env_lock() -> TestEnvGuard {
+        TestEnvGuard::new(env_mutex().lock().await)
     }
 }
 
@@ -204,30 +257,41 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use test_support::{clear_env, env_lock};
+    use test_support::{async_env_lock, env_lock};
+
+    #[test]
+    fn test_env_guard_restores_saved_values_on_drop() {
+        {
+            let mut env = env_lock();
+            env.set("SYMPHONY_PROXY_MODE", "manual");
+            env.set("HTTP_PROXY", "http://proxy.example.com:8080");
+        }
+
+        assert!(std::env::var("SYMPHONY_PROXY_MODE").is_err());
+        assert!(std::env::var("HTTP_PROXY").is_err());
+    }
 
     #[test]
     fn disabled_is_fail_closed_when_sentinel_is_missing() {
-        let _guard = env_lock();
-        clear_env();
-        std::env::set_var("HTTP_PROXY", "http://proxy.example.com:8080");
+        let mut env = env_lock();
+        env.clear_proxy_env();
+        env.set("HTTP_PROXY", "http://proxy.example.com:8080");
 
         let config = EffectiveProxyConfig::from_env();
 
         assert_eq!(config.mode, ProxyMode::Disabled);
         assert!(config.http_proxy.is_none());
-        clear_env();
     }
 
     #[test]
     fn manual_mode_reads_normalized_proxy_environment() {
-        let _guard = env_lock();
-        clear_env();
-        std::env::set_var("SYMPHONY_PROXY_MODE", "manual");
-        std::env::set_var("SYMPHONY_PROXY_VERSION", "42");
-        std::env::set_var("SYMPHONY_PROXY_SOURCE", "system_config");
-        std::env::set_var("HTTP_PROXY", "http://proxy.example.com:8080");
-        std::env::set_var("NO_PROXY", "localhost,127.0.0.1");
+        let mut env = env_lock();
+        env.clear_proxy_env();
+        env.set("SYMPHONY_PROXY_MODE", "manual");
+        env.set("SYMPHONY_PROXY_VERSION", "42");
+        env.set("SYMPHONY_PROXY_SOURCE", "system_config");
+        env.set("HTTP_PROXY", "http://proxy.example.com:8080");
+        env.set("NO_PROXY", "localhost,127.0.0.1");
 
         let config = EffectiveProxyConfig::from_env();
 
@@ -238,19 +302,18 @@ mod tests {
             Some("http://proxy.example.com:8080")
         );
         assert_eq!(config.no_proxy.as_deref(), Some("localhost,127.0.0.1"));
-        clear_env();
     }
 
     #[test]
     fn inherit_env_mode_reads_lowercase_proxy_environment() {
-        let _guard = env_lock();
-        clear_env();
-        std::env::set_var("SYMPHONY_PROXY_MODE", "inherit_env");
-        std::env::set_var("SYMPHONY_PROXY_VERSION", "7");
-        std::env::set_var("SYMPHONY_PROXY_SOURCE", "environment");
-        std::env::set_var("https_proxy", "http://lowercase.example.com:8080");
-        std::env::set_var("all_proxy", "http://fallback.example.com:8080");
-        std::env::set_var("no_proxy", "localhost,.example.com,10.0.0.0/8");
+        let mut env = env_lock();
+        env.clear_proxy_env();
+        env.set("SYMPHONY_PROXY_MODE", "inherit_env");
+        env.set("SYMPHONY_PROXY_VERSION", "7");
+        env.set("SYMPHONY_PROXY_SOURCE", "environment");
+        env.set("https_proxy", "http://lowercase.example.com:8080");
+        env.set("all_proxy", "http://fallback.example.com:8080");
+        env.set("no_proxy", "localhost,.example.com,10.0.0.0/8");
 
         let config = EffectiveProxyConfig::from_env();
 
@@ -267,16 +330,15 @@ mod tests {
             config.no_proxy.as_deref(),
             Some("localhost,.example.com,10.0.0.0/8")
         );
-        clear_env();
     }
 
     #[tokio::test]
     async fn disabled_builder_ignores_parent_proxy_environment() {
-        let _guard = env_lock();
-        clear_env();
+        let mut env = async_env_lock().await;
+        env.clear_proxy_env();
         let server = OneShotHttpServer::start();
-        std::env::set_var("HTTP_PROXY", "http://127.0.0.1:9");
-        std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:9");
+        env.set("HTTP_PROXY", "http://127.0.0.1:9");
+        env.set("HTTPS_PROXY", "http://127.0.0.1:9");
 
         let client = EffectiveProxyConfig::from_env()
             .apply_to_builder(reqwest::Client::builder())
@@ -286,18 +348,17 @@ mod tests {
         let response = client.get(server.url()).send().await.unwrap();
 
         assert_eq!(response.status(), reqwest::StatusCode::OK);
-        clear_env();
     }
 
     #[tokio::test]
     async fn no_proxy_is_bound_to_manual_proxy_entries() {
-        let _guard = env_lock();
-        clear_env();
+        let mut env = async_env_lock().await;
+        env.clear_proxy_env();
         let target = OneShotHttpServer::start();
         let proxy_trap = OneShotHttpServer::start();
-        std::env::set_var("SYMPHONY_PROXY_MODE", "manual");
-        std::env::set_var("HTTP_PROXY", proxy_trap.url());
-        std::env::set_var("NO_PROXY", "127.0.0.1");
+        env.set("SYMPHONY_PROXY_MODE", "manual");
+        env.set("HTTP_PROXY", proxy_trap.url());
+        env.set("NO_PROXY", "127.0.0.1");
 
         let client = EffectiveProxyConfig::from_env()
             .apply_to_builder(reqwest::Client::builder())
@@ -308,15 +369,14 @@ mod tests {
 
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         assert!(!proxy_trap.was_hit());
-        clear_env();
     }
 
     #[tokio::test]
     async fn proxy_command_clears_standard_proxy_vars_when_disabled() {
-        let _guard = env_lock();
-        clear_env();
-        std::env::set_var("HTTP_PROXY", "http://parent.example.com:8080");
-        std::env::set_var("https_proxy", "http://parent.example.com:8443");
+        let mut env = async_env_lock().await;
+        env.clear_proxy_env();
+        env.set("HTTP_PROXY", "http://parent.example.com:8080");
+        env.set("https_proxy", "http://parent.example.com:8443");
 
         let output = proxy_command("env").output().await.unwrap();
         let stdout = String::from_utf8(output.stdout).unwrap();
@@ -324,18 +384,17 @@ mod tests {
         assert!(stdout.contains("SYMPHONY_PROXY_MODE=disabled"));
         assert!(!stdout.contains("HTTP_PROXY=http://parent.example.com:8080"));
         assert!(!stdout.contains("https_proxy=http://parent.example.com:8443"));
-        clear_env();
     }
 
     #[tokio::test]
     async fn proxy_command_injects_upper_and_lowercase_vars_when_manual() {
-        let _guard = env_lock();
-        clear_env();
-        std::env::set_var("SYMPHONY_PROXY_MODE", "manual");
-        std::env::set_var("SYMPHONY_PROXY_VERSION", "12");
-        std::env::set_var("SYMPHONY_PROXY_SOURCE", "system_config");
-        std::env::set_var("HTTP_PROXY", "http://proxy.example.com:8080");
-        std::env::set_var("NO_PROXY", "localhost,127.0.0.1");
+        let mut env = async_env_lock().await;
+        env.clear_proxy_env();
+        env.set("SYMPHONY_PROXY_MODE", "manual");
+        env.set("SYMPHONY_PROXY_VERSION", "12");
+        env.set("SYMPHONY_PROXY_SOURCE", "system_config");
+        env.set("HTTP_PROXY", "http://proxy.example.com:8080");
+        env.set("NO_PROXY", "localhost,127.0.0.1");
 
         let output = proxy_command("env").output().await.unwrap();
         let stdout = String::from_utf8(output.stdout).unwrap();
@@ -346,7 +405,6 @@ mod tests {
         assert!(stdout.contains("http_proxy=http://proxy.example.com:8080"));
         assert!(stdout.contains("NO_PROXY=localhost,127.0.0.1"));
         assert!(stdout.contains("no_proxy=localhost,127.0.0.1"));
-        clear_env();
     }
 
     #[test]

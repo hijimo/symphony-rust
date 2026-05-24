@@ -9,9 +9,7 @@
 
 use tempfile::TempDir;
 
-use symphony_platform::config::workflow_loader::{
-    load_workflow, parse_workflow, WorkflowDefinition,
-};
+use symphony_platform::config::workflow_loader::{load_workflow, parse_workflow};
 
 // ============================================================================
 // Test: Valid WORKFLOW.md reload

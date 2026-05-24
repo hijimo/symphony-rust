@@ -14,11 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio_util::sync::CancellationToken;
-
-use symphony_platform::platform::{
-    make_test_issue, FetchOptions, IssueId, MemoryAdapter, Platform,
-};
+use symphony_platform::platform::{make_test_issue, FetchOptions, MemoryAdapter, Platform};
 
 // ============================================================================
 // Test: HTTP server health endpoint contract

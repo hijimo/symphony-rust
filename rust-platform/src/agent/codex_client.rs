@@ -215,7 +215,7 @@ pub enum CodexError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxy::test_support::{clear_env, env_lock};
+    use crate::proxy::test_support::async_env_lock;
     use serde_json::json;
     use std::path::Path;
 
@@ -264,15 +264,15 @@ mod tests {
 
     #[tokio::test]
     async fn codex_app_server_command_exposes_proxy_env_to_shell_tools() {
-        let _guard = env_lock();
-        clear_env();
+        let mut env = async_env_lock().await;
+        env.clear_proxy_env();
         let tmp = tempfile::tempdir().unwrap();
         let env_file = tmp.path().join("codex-tool-env.txt");
-        std::env::set_var("SYMPHONY_PROXY_MODE", "manual");
-        std::env::set_var("SYMPHONY_PROXY_VERSION", "22");
-        std::env::set_var("SYMPHONY_PROXY_SOURCE", "system_config");
-        std::env::set_var("HTTPS_PROXY", "http://proxy.example.com:8443");
-        std::env::set_var("NO_PROXY", "localhost,127.0.0.1");
+        env.set("SYMPHONY_PROXY_MODE", "manual");
+        env.set("SYMPHONY_PROXY_VERSION", "22");
+        env.set("SYMPHONY_PROXY_SOURCE", "system_config");
+        env.set("HTTPS_PROXY", "http://proxy.example.com:8443");
+        env.set("NO_PROXY", "localhost,127.0.0.1");
 
         let mut command = codex_app_server_command(tmp.path(), "env > \"$CODEX_TOOL_ENV_FILE\"");
         command.env("CODEX_TOOL_ENV_FILE", &env_file);
@@ -285,7 +285,6 @@ mod tests {
         assert!(output.contains("https_proxy=http://proxy.example.com:8443"));
         assert!(output.contains("NO_PROXY=localhost,127.0.0.1"));
         assert!(output.contains("no_proxy=localhost,127.0.0.1"));
-        clear_env();
     }
 
     #[test]

@@ -778,7 +778,7 @@ async fn quarantine_workspace(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxy::test_support::{clear_env, env_lock};
+    use crate::proxy::test_support::async_env_lock;
 
     #[test]
     fn test_sanitize_workspace_key_basic() {
@@ -851,17 +851,17 @@ mod tests {
 
     #[tokio::test]
     async fn run_hook_uses_proxy_command_environment() {
-        let _guard = env_lock();
-        clear_env();
+        let mut env = async_env_lock().await;
+        env.clear_proxy_env();
         let tmp = tempfile::tempdir().unwrap();
         let env_file = tmp.path().join("hook-env.txt");
         let mgr = WorkspaceManager::new(tmp.path().to_path_buf(), HooksConfig::default());
-        std::env::set_var("SYMPHONY_PROXY_MODE", "inherit_env");
-        std::env::set_var("SYMPHONY_PROXY_VERSION", "31");
-        std::env::set_var("SYMPHONY_PROXY_SOURCE", "environment");
-        std::env::set_var("ALL_PROXY", "http://proxy.example.com:8080");
-        std::env::set_var("NO_PROXY", "localhost,127.0.0.1");
-        std::env::set_var("HOOK_ENV_FILE", &env_file);
+        env.set("SYMPHONY_PROXY_MODE", "inherit_env");
+        env.set("SYMPHONY_PROXY_VERSION", "31");
+        env.set("SYMPHONY_PROXY_SOURCE", "environment");
+        env.set("ALL_PROXY", "http://proxy.example.com:8080");
+        env.set("NO_PROXY", "localhost,127.0.0.1");
+        env.set("HOOK_ENV_FILE", &env_file);
 
         mgr.run_hook("before_run", "env > \"$HOOK_ENV_FILE\"", tmp.path())
             .await
@@ -873,8 +873,6 @@ mod tests {
         assert!(output.contains("all_proxy=http://proxy.example.com:8080"));
         assert!(output.contains("NO_PROXY=localhost,127.0.0.1"));
         assert!(output.contains("no_proxy=localhost,127.0.0.1"));
-        std::env::remove_var("HOOK_ENV_FILE");
-        clear_env();
     }
 
     #[tokio::test]

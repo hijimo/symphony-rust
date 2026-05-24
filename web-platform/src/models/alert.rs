@@ -24,13 +24,26 @@ impl std::fmt::Display for Severity {
 }
 
 impl Severity {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_or_info(s: &str) -> Self {
         match s {
             "critical" => Severity::Critical,
             "warning" => Severity::Warning,
             "info" => Severity::Info,
             _ => Severity::Info,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Severity;
+
+    #[test]
+    fn severity_parse_or_info_defaults_unknown_values_to_info() {
+        assert_eq!(Severity::parse_or_info("critical"), Severity::Critical);
+        assert_eq!(Severity::parse_or_info("warning"), Severity::Warning);
+        assert_eq!(Severity::parse_or_info("info"), Severity::Info);
+        assert_eq!(Severity::parse_or_info("unknown"), Severity::Info);
     }
 }
 

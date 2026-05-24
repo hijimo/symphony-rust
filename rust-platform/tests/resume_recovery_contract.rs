@@ -16,7 +16,7 @@ use symphony_platform::config::service_config::{CodexConfig, HooksConfig, Servic
 use symphony_platform::config::{ConfigHolder, EffectiveConfig};
 use symphony_platform::models::RetryKind;
 use symphony_platform::models::{Issue, OrchestratorEvent};
-use symphony_platform::orchestrator::retry::schedule_retry;
+use symphony_platform::orchestrator::retry::{schedule_retry, RetrySchedule};
 use symphony_platform::orchestrator::scheduler::DispatchConfig;
 use symphony_platform::orchestrator::Orchestrator;
 use symphony_platform::prompt::PromptEngine;
@@ -251,12 +251,14 @@ async fn retry_fired_releases_claim_when_fresh_state_is_non_active() {
     let event_sender = orchestrator.event_sender();
     schedule_retry(
         &mut orchestrator.state,
-        "6",
-        "#6",
-        2,
-        RetryKind::Failure,
-        60_000,
-        Some("previous failure".to_string()),
+        RetrySchedule::new(
+            "6",
+            "#6",
+            2,
+            RetryKind::Failure,
+            60_000,
+            Some("previous failure".to_string()),
+        ),
         &event_sender,
     );
 
@@ -300,12 +302,14 @@ async fn retry_fired_revalidation_error_preserves_original_attempt() {
     let event_sender = orchestrator.event_sender();
     schedule_retry(
         &mut orchestrator.state,
-        "6",
-        "#6",
-        2,
-        RetryKind::Failure,
-        60_000,
-        Some("previous failure".to_string()),
+        RetrySchedule::new(
+            "6",
+            "#6",
+            2,
+            RetryKind::Failure,
+            60_000,
+            Some("previous failure".to_string()),
+        ),
         &event_sender,
     );
 
@@ -358,12 +362,14 @@ async fn retry_fired_revalidation_uses_normalized_active_state_matching() {
     let event_sender = orchestrator.event_sender();
     schedule_retry(
         &mut orchestrator.state,
-        "6",
-        "#6",
-        2,
-        RetryKind::Failure,
-        60_000,
-        Some("previous failure".to_string()),
+        RetrySchedule::new(
+            "6",
+            "#6",
+            2,
+            RetryKind::Failure,
+            60_000,
+            Some("previous failure".to_string()),
+        ),
         &event_sender,
     );
 
@@ -401,14 +407,16 @@ async fn agent_runner_uses_issue_id_keyed_workspace_contract() {
         dir.path().to_path_buf(),
         HooksConfig::default(),
     ));
-    let mut service = ServiceConfig::default();
-    service.workspace_root = dir.path().to_path_buf();
-    service.max_turns = 1;
-    service.codex = CodexConfig {
-        command: "exit 42".to_string(),
-        read_timeout_ms: 50,
-        turn_timeout_ms: 200,
-        ..CodexConfig::default()
+    let service = ServiceConfig {
+        workspace_root: dir.path().to_path_buf(),
+        max_turns: 1,
+        codex: CodexConfig {
+            command: "exit 42".to_string(),
+            read_timeout_ms: 50,
+            turn_timeout_ms: 200,
+            ..CodexConfig::default()
+        },
+        ..ServiceConfig::default()
     };
     let config_holder = Arc::new(ConfigHolder::new(
         EffectiveConfig {

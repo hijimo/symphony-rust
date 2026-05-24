@@ -12,6 +12,36 @@ use crate::models::{
     current_monotonic_ms, OrchestratorEvent, OrchestratorState, RetryEntry, RetryKind,
 };
 
+#[derive(Debug)]
+pub struct RetrySchedule<'a> {
+    pub issue_id: &'a str,
+    pub identifier: &'a str,
+    pub attempt: u32,
+    pub retry_kind: RetryKind,
+    pub delay_ms: u64,
+    pub error: Option<String>,
+}
+
+impl<'a> RetrySchedule<'a> {
+    pub fn new(
+        issue_id: &'a str,
+        identifier: &'a str,
+        attempt: u32,
+        retry_kind: RetryKind,
+        delay_ms: u64,
+        error: Option<String>,
+    ) -> Self {
+        Self {
+            issue_id,
+            identifier,
+            attempt,
+            retry_kind,
+            delay_ms,
+            error,
+        }
+    }
+}
+
 /// Compute the retry delay in milliseconds (SPEC section 8.4).
 ///
 /// - Continuation retries (normal exit): fixed 1000ms delay.
@@ -34,14 +64,18 @@ pub fn compute_retry_delay(attempt: u32, retry_kind: &RetryKind, max_backoff_ms:
 /// before creating a new one.
 pub fn schedule_retry(
     state: &mut OrchestratorState,
-    issue_id: &str,
-    identifier: &str,
-    attempt: u32,
-    retry_kind: RetryKind,
-    delay_ms: u64,
-    error: Option<String>,
+    schedule: RetrySchedule<'_>,
     event_tx: &mpsc::Sender<OrchestratorEvent>,
 ) {
+    let RetrySchedule {
+        issue_id,
+        identifier,
+        attempt,
+        retry_kind,
+        delay_ms,
+        error,
+    } = schedule;
+
     // Cancel existing retry timer for the same issue (SPEC section 8.4 MUST)
     if let Some(existing) = state.retry_attempts.remove(issue_id) {
         existing.timer_handle.abort();
@@ -158,12 +192,14 @@ mod tests {
 
         schedule_retry(
             &mut state,
-            "issue-1",
-            "TEST-1",
-            1,
-            RetryKind::Failure,
-            10_000,
-            Some("test error".to_string()),
+            RetrySchedule::new(
+                "issue-1",
+                "TEST-1",
+                1,
+                RetryKind::Failure,
+                10_000,
+                Some("test error".to_string()),
+            ),
             &tx,
         );
 
@@ -187,24 +223,21 @@ mod tests {
         // Schedule first retry
         schedule_retry(
             &mut state,
-            "issue-1",
-            "TEST-1",
-            1,
-            RetryKind::Failure,
-            60_000,
-            None,
+            RetrySchedule::new("issue-1", "TEST-1", 1, RetryKind::Failure, 60_000, None),
             &tx,
         );
 
         // Schedule second retry for same issue (should cancel first)
         schedule_retry(
             &mut state,
-            "issue-1",
-            "TEST-1",
-            2,
-            RetryKind::Failure,
-            20_000,
-            Some("new error".to_string()),
+            RetrySchedule::new(
+                "issue-1",
+                "TEST-1",
+                2,
+                RetryKind::Failure,
+                20_000,
+                Some("new error".to_string()),
+            ),
             &tx,
         );
 
@@ -224,12 +257,7 @@ mod tests {
 
         schedule_retry(
             &mut state,
-            "issue-1",
-            "TEST-1",
-            1,
-            RetryKind::Failure,
-            60_000,
-            None,
+            RetrySchedule::new("issue-1", "TEST-1", 1, RetryKind::Failure, 60_000, None),
             &tx,
         );
 
