@@ -9,7 +9,8 @@ use crate::models::kanban::{
 };
 use crate::proxy::EffectiveProxyConfig;
 use crate::services::git_platform::{
-    GitPlatformClient, GitPlatformError, ListIssuesOptions, PlatformMember,
+    CreateMergeRequest, GitPlatformClient, GitPlatformError, ListIssuesOptions, MergeRequestState,
+    PlatformConflictCode, PlatformMember, PlatformValidationCode,
 };
 
 /// GitLab API client implementation.
@@ -108,6 +109,130 @@ impl GitLabClient {
         }
 
         body
+    }
+
+    fn create_merge_request_body(req: &CreateMergeRequest) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "source_branch": req.source_branch,
+            "target_branch": req.target_branch,
+            "title": req.title,
+        });
+
+        if let Some(ref description) = req.description {
+            body["description"] = serde_json::Value::String(description.clone());
+        }
+        if req.draft {
+            body["title"] = serde_json::Value::String(format!("Draft: {}", req.title));
+        }
+
+        body
+    }
+
+    fn classify_create_error(status: reqwest::StatusCode, body: &str) -> GitPlatformError {
+        let lower = body.to_ascii_lowercase();
+        match status.as_u16() {
+            400 | 409 | 422 => {
+                if lower.contains("another open merge request already exists")
+                    || lower.contains("merge request already exists")
+                    || lower.contains("already exists")
+                {
+                    return GitPlatformError::Conflict {
+                        code: PlatformConflictCode::ExistingOpenMergeRequest,
+                        message: truncate_body(body).to_string(),
+                    };
+                }
+                if lower.contains("no commits")
+                    || lower.contains("must be different")
+                    || lower.contains("no changes")
+                {
+                    return GitPlatformError::Validation {
+                        code: PlatformValidationCode::NoCommits,
+                        message: truncate_body(body).to_string(),
+                    };
+                }
+                if lower.contains("source branch") && lower.contains("not exist") {
+                    return GitPlatformError::Validation {
+                        code: PlatformValidationCode::SourceBranchNotFound,
+                        message: truncate_body(body).to_string(),
+                    };
+                }
+                if lower.contains("target branch") && lower.contains("not exist") {
+                    return GitPlatformError::Validation {
+                        code: PlatformValidationCode::TargetBranchNotFound,
+                        message: truncate_body(body).to_string(),
+                    };
+                }
+                GitPlatformError::Validation {
+                    code: PlatformValidationCode::Unknown,
+                    message: truncate_body(body).to_string(),
+                }
+            }
+            403 => GitPlatformError::Forbidden(format!(
+                "GitLab returned {}: {}",
+                status,
+                truncate_body(body)
+            )),
+            _ => Self::map_status_error(status, body),
+        }
+    }
+
+    async fn list_merge_requests_by_branches(
+        &self,
+        token: &str,
+        project_path: &str,
+        source_branch: &str,
+        target_branch: &str,
+        state: &str,
+    ) -> Result<Vec<PlatformMergeRequest>, GitPlatformError> {
+        let encoded = Self::encode_project_path(project_path);
+        let mut url = Url::parse(&format!(
+            "{}/api/v4/projects/{}/merge_requests",
+            self.base_url, encoded
+        ))
+        .map_err(|e| GitPlatformError::RequestError(format!("Invalid GitLab URL: {}", e)))?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            pairs
+                .append_pair("state", state)
+                .append_pair("source_branch", source_branch)
+                .append_pair("target_branch", target_branch)
+                .append_pair("order_by", "updated_at")
+                .append_pair("sort", "desc")
+                .append_pair("per_page", "20");
+        }
+
+        let response = self
+            .http
+            .get(url)
+            .header("PRIVATE-TOKEN", token)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    GitPlatformError::ServiceUnavailable("GitLab API request timed out".to_string())
+                } else {
+                    GitPlatformError::RequestError(format!("GitLab request failed: {}", e))
+                }
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(Self::map_status_error(status, &body));
+        }
+
+        let mrs: Vec<GitLabMergeRequest> = response.json().await.map_err(|e| {
+            GitPlatformError::RequestError(format!(
+                "Failed to parse GitLab merge requests response: {}",
+                e
+            ))
+        })?;
+        let mut result: Vec<_> = mrs
+            .into_iter()
+            .map(|mr| mr.into_platform_mr_for_project(project_path))
+            .collect();
+        sort_merge_requests(&mut result);
+        Ok(result)
     }
 
     async fn fetch_closing_issue_iids(
@@ -355,7 +480,10 @@ impl GitPlatformClient for GitLabClient {
             ))
         })?;
 
-        Ok(mrs.into_iter().map(|mr| mr.into_platform_mr()).collect())
+        Ok(mrs
+            .into_iter()
+            .map(|mr| mr.into_platform_mr_for_project(project_path))
+            .collect())
     }
 
     async fn get_merge_request(
@@ -394,13 +522,120 @@ impl GitPlatformClient for GitLabClient {
             GitPlatformError::RequestError(format!("Failed to parse GitLab merge request: {}", e))
         })?;
 
-        let mut platform_mr = mr.into_platform_mr();
+        let mut platform_mr = mr.into_platform_mr_for_project(project_path);
         platform_mr.related_issue_iids = self
             .fetch_closing_issue_iids(token, project_path, mr_iid)
             .await
             .unwrap_or_default();
 
         Ok(platform_mr)
+    }
+
+    async fn create_merge_request(
+        &self,
+        token: &str,
+        project_path: &str,
+        req: &CreateMergeRequest,
+    ) -> Result<PlatformMergeRequest, GitPlatformError> {
+        let encoded = Self::encode_project_path(project_path);
+        let url = format!(
+            "{}/api/v4/projects/{}/merge_requests",
+            self.base_url, encoded
+        );
+
+        let response = self
+            .http
+            .post(&url)
+            .header("PRIVATE-TOKEN", token)
+            .json(&Self::create_merge_request_body(req))
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    GitPlatformError::ServiceUnavailable("GitLab API request timed out".to_string())
+                } else {
+                    GitPlatformError::RequestError(format!("GitLab request failed: {}", e))
+                }
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(Self::classify_create_error(status, &body));
+        }
+
+        let mr: GitLabMergeRequest = response.json().await.map_err(|e| {
+            GitPlatformError::RequestError(format!("Failed to parse GitLab merge request: {}", e))
+        })?;
+        Ok(mr.into_platform_mr_for_project(project_path))
+    }
+
+    async fn find_open_merge_request_by_branches(
+        &self,
+        token: &str,
+        project_path: &str,
+        source_branch: &str,
+        target_branch: &str,
+    ) -> Result<Option<PlatformMergeRequest>, GitPlatformError> {
+        let mrs = self
+            .list_merge_requests_by_branches(
+                token,
+                project_path,
+                source_branch,
+                target_branch,
+                "opened",
+            )
+            .await?;
+        Ok(mrs.into_iter().next())
+    }
+
+    async fn find_merge_requests_by_branches(
+        &self,
+        token: &str,
+        project_path: &str,
+        source_branch: &str,
+        target_branch: &str,
+        states: &[MergeRequestState],
+    ) -> Result<Vec<PlatformMergeRequest>, GitPlatformError> {
+        let mut result = Vec::new();
+        if states.contains(&MergeRequestState::Open) {
+            result.extend(
+                self.list_merge_requests_by_branches(
+                    token,
+                    project_path,
+                    source_branch,
+                    target_branch,
+                    "opened",
+                )
+                .await?,
+            );
+        }
+        if states.contains(&MergeRequestState::Closed) {
+            result.extend(
+                self.list_merge_requests_by_branches(
+                    token,
+                    project_path,
+                    source_branch,
+                    target_branch,
+                    "closed",
+                )
+                .await?,
+            );
+        }
+        if states.contains(&MergeRequestState::Merged) {
+            result.extend(
+                self.list_merge_requests_by_branches(
+                    token,
+                    project_path,
+                    source_branch,
+                    target_branch,
+                    "merged",
+                )
+                .await?,
+            );
+        }
+        sort_merge_requests(&mut result);
+        Ok(result)
     }
 
     async fn list_members(
@@ -491,6 +726,7 @@ struct GitLabMilestone {
 
 #[derive(Debug, Deserialize)]
 struct GitLabMergeRequest {
+    id: Option<u64>,
     iid: u64,
     title: String,
     description: Option<String>,
@@ -571,7 +807,7 @@ impl GitLabUser {
 }
 
 impl GitLabMergeRequest {
-    fn into_platform_mr(self) -> PlatformMergeRequest {
+    fn into_platform_mr_for_project(self, project_path: &str) -> PlatformMergeRequest {
         let ci_status = self.head_pipeline.as_ref().and_then(|p| p.status.clone());
         let ci_web_url = self.head_pipeline.as_ref().and_then(|p| p.web_url.clone());
 
@@ -592,10 +828,13 @@ impl GitLabMergeRequest {
 
         PlatformMergeRequest {
             iid: self.iid,
+            platform_node_id: self.id.map(|id| id.to_string()),
             title: self.title,
             description: self.description,
             state: self.state,
             author: self.author.into_platform_user(),
+            source_project_path: Some(project_path.to_string()),
+            target_project_path: Some(project_path.to_string()),
             source_branch: self.source_branch,
             target_branch: self.target_branch,
             ci_status,
@@ -615,13 +854,19 @@ impl GitLabMergeRequest {
     }
 }
 
+fn sort_merge_requests(mrs: &mut [PlatformMergeRequest]) {
+    mrs.sort_by(|a, b| {
+        let open_rank = |state: &str| if state == "opened" { 0 } else { 1 };
+        open_rank(&a.state)
+            .cmp(&open_rank(&b.state))
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+            .then_with(|| b.iid.cmp(&a.iid))
+    });
+}
+
 /// Truncate a response body for error messages.
-fn truncate_body(body: &str) -> &str {
-    if body.len() > 200 {
-        &body[..200]
-    } else {
-        body
-    }
+fn truncate_body(body: &str) -> String {
+    body.chars().take(200).collect()
 }
 
 #[cfg(test)]
@@ -677,5 +922,46 @@ mod tests {
         let body = GitLabClient::create_issue_body(&req);
 
         assert_eq!(body["labels"], serde_json::json!("Todo"));
+    }
+
+    #[test]
+    fn merge_request_conversion_sets_same_repo_project_paths() {
+        let mr = GitLabMergeRequest {
+            id: Some(123),
+            iid: 17,
+            title: "fix: login".to_string(),
+            description: None,
+            state: "opened".to_string(),
+            author: GitLabUser {
+                username: "alice".to_string(),
+                name: None,
+                avatar_url: None,
+            },
+            source_branch: "feature/login".to_string(),
+            target_branch: "main".to_string(),
+            reviewers: Vec::new(),
+            merge_status: None,
+            created_at: "2026-05-25T00:00:00Z".to_string(),
+            updated_at: "2026-05-25T00:00:00Z".to_string(),
+            merged_at: None,
+            web_url: "https://gitlab.example.com/acme/app/-/merge_requests/17".to_string(),
+            head_pipeline: None,
+            diff_stats: None,
+        };
+
+        let platform_mr = mr.into_platform_mr_for_project("acme/app");
+
+        assert_eq!(platform_mr.source_project_path.as_deref(), Some("acme/app"));
+        assert_eq!(platform_mr.target_project_path.as_deref(), Some("acme/app"));
+    }
+
+    #[test]
+    fn truncate_body_handles_multibyte_text() {
+        let body = "错误".repeat(150);
+
+        let truncated = truncate_body(&body);
+
+        assert_eq!(truncated.chars().count(), 200);
+        assert!(truncated.ends_with('误'));
     }
 }

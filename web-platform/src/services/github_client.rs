@@ -9,7 +9,8 @@ use crate::models::kanban::{
 };
 use crate::proxy::EffectiveProxyConfig;
 use crate::services::git_platform::{
-    GitPlatformClient, GitPlatformError, ListIssuesOptions, PlatformMember,
+    CreateMergeRequest, GitPlatformClient, GitPlatformError, ListIssuesOptions, MergeRequestState,
+    PlatformConflictCode, PlatformMember, PlatformValidationCode,
 };
 
 /// GitHub API client implementation.
@@ -241,6 +242,125 @@ impl GitHubClient {
         }
 
         body
+    }
+
+    fn create_merge_request_body(req: &CreateMergeRequest) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "head": req.source_branch,
+            "base": req.target_branch,
+            "title": req.title,
+            "draft": req.draft,
+        });
+
+        if let Some(ref description) = req.description {
+            body["body"] = serde_json::Value::String(description.clone());
+        }
+
+        body
+    }
+
+    fn classify_create_error(status: reqwest::StatusCode, body: &str) -> GitPlatformError {
+        if status.as_u16() == 422 {
+            let lower = body.to_ascii_lowercase();
+            if lower.contains("pull request already exists")
+                || lower.contains("a pull request already exists")
+                || lower.contains("already exists")
+            {
+                return GitPlatformError::Conflict {
+                    code: PlatformConflictCode::ExistingOpenMergeRequest,
+                    message: truncate_body(body).to_string(),
+                };
+            }
+            if lower.contains("no commits between") || lower.contains("no commits") {
+                return GitPlatformError::Validation {
+                    code: PlatformValidationCode::NoCommits,
+                    message: truncate_body(body).to_string(),
+                };
+            }
+            if lower.contains("head sha can't be blank")
+                || lower.contains("head ref must be a branch")
+                || lower.contains("not found")
+            {
+                return GitPlatformError::Validation {
+                    code: PlatformValidationCode::SourceBranchNotFound,
+                    message: truncate_body(body).to_string(),
+                };
+            }
+            return GitPlatformError::Validation {
+                code: PlatformValidationCode::Unknown,
+                message: truncate_body(body).to_string(),
+            };
+        }
+
+        Self::map_status_error(status, body)
+    }
+
+    fn owner_from_project_path(project_path: &str) -> Result<&str, GitPlatformError> {
+        project_path
+            .split_once('/')
+            .map(|(owner, _)| owner)
+            .filter(|owner| !owner.is_empty())
+            .ok_or_else(|| {
+                GitPlatformError::RequestError(format!(
+                    "Invalid GitHub project path: {}",
+                    project_path
+                ))
+            })
+    }
+
+    async fn list_pull_requests_by_branches(
+        &self,
+        token: &str,
+        project_path: &str,
+        source_branch: &str,
+        target_branch: &str,
+        state: &str,
+    ) -> Result<Vec<PlatformMergeRequest>, GitPlatformError> {
+        let owner = Self::owner_from_project_path(project_path)?;
+        let mut url = Url::parse(&format!("{}/repos/{}/pulls", Self::BASE_URL, project_path))
+            .map_err(|e| GitPlatformError::RequestError(format!("Invalid GitHub URL: {}", e)))?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            pairs
+                .append_pair("state", state)
+                .append_pair("head", &format!("{}:{}", owner, source_branch))
+                .append_pair("base", target_branch)
+                .append_pair("per_page", "20")
+                .append_pair("sort", "updated")
+                .append_pair("direction", "desc");
+        }
+
+        let response = self
+            .http
+            .get(url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    GitPlatformError::ServiceUnavailable("GitHub API request timed out".to_string())
+                } else {
+                    GitPlatformError::RequestError(format!("GitHub request failed: {}", e))
+                }
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(Self::map_status_error(status, &body));
+        }
+
+        let prs: Vec<GitHubPullRequest> = response.json().await.map_err(|e| {
+            GitPlatformError::RequestError(format!("Failed to parse GitHub pull requests: {}", e))
+        })?;
+        let mut mrs: Vec<_> = prs
+            .into_iter()
+            .map(|pr| pr.into_platform_mr_for_project(Vec::new(), project_path))
+            .collect();
+        sort_merge_requests(&mut mrs);
+        Ok(mrs)
     }
 }
 
@@ -507,10 +627,105 @@ impl GitPlatformClient for GitHubClient {
             .await
             .unwrap_or_default();
 
-        let mut platform_mr = pr.into_platform_mr(reviews);
+        let mut platform_mr = pr.into_platform_mr_for_project(reviews, project_path);
         platform_mr.related_issue_iids = related_issue_iids;
 
         Ok(platform_mr)
+    }
+
+    async fn create_merge_request(
+        &self,
+        token: &str,
+        project_path: &str,
+        req: &CreateMergeRequest,
+    ) -> Result<PlatformMergeRequest, GitPlatformError> {
+        let url = format!("{}/repos/{}/pulls", Self::BASE_URL, project_path);
+        let response = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .json(&Self::create_merge_request_body(req))
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    GitPlatformError::ServiceUnavailable("GitHub API request timed out".to_string())
+                } else {
+                    GitPlatformError::RequestError(format!("GitHub request failed: {}", e))
+                }
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(Self::classify_create_error(status, &body));
+        }
+
+        let pr: GitHubPullRequest = response.json().await.map_err(|e| {
+            GitPlatformError::RequestError(format!("Failed to parse GitHub pull request: {}", e))
+        })?;
+        Ok(pr.into_platform_mr_for_project(Vec::new(), project_path))
+    }
+
+    async fn find_open_merge_request_by_branches(
+        &self,
+        token: &str,
+        project_path: &str,
+        source_branch: &str,
+        target_branch: &str,
+    ) -> Result<Option<PlatformMergeRequest>, GitPlatformError> {
+        let mrs = self
+            .list_pull_requests_by_branches(
+                token,
+                project_path,
+                source_branch,
+                target_branch,
+                "open",
+            )
+            .await?;
+        Ok(mrs.into_iter().next())
+    }
+
+    async fn find_merge_requests_by_branches(
+        &self,
+        token: &str,
+        project_path: &str,
+        source_branch: &str,
+        target_branch: &str,
+        states: &[MergeRequestState],
+    ) -> Result<Vec<PlatformMergeRequest>, GitPlatformError> {
+        let mut result = Vec::new();
+        if states.contains(&MergeRequestState::Open) {
+            result.extend(
+                self.list_pull_requests_by_branches(
+                    token,
+                    project_path,
+                    source_branch,
+                    target_branch,
+                    "open",
+                )
+                .await?,
+            );
+        }
+        if states
+            .iter()
+            .any(|state| matches!(state, MergeRequestState::Closed | MergeRequestState::Merged))
+        {
+            result.extend(
+                self.list_pull_requests_by_branches(
+                    token,
+                    project_path,
+                    source_branch,
+                    target_branch,
+                    "closed",
+                )
+                .await?,
+            );
+        }
+        sort_merge_requests(&mut result);
+        Ok(result)
     }
 
     async fn list_members(
@@ -621,6 +836,7 @@ struct GitHubMilestone {
 
 #[derive(Debug, Deserialize)]
 struct GitHubPullRequest {
+    node_id: Option<String>,
     number: u64,
     title: String,
     body: Option<String>,
@@ -715,7 +931,11 @@ impl GitHubUser {
 }
 
 impl GitHubPullRequest {
-    fn into_platform_mr(self, reviews: Vec<GitHubReview>) -> PlatformMergeRequest {
+    fn into_platform_mr_for_project(
+        self,
+        reviews: Vec<GitHubReview>,
+        project_path: &str,
+    ) -> PlatformMergeRequest {
         // Determine state
         let state = if self.merged == Some(true) {
             "merged".to_string()
@@ -777,10 +997,13 @@ impl GitHubPullRequest {
 
         PlatformMergeRequest {
             iid: self.number,
+            platform_node_id: self.node_id,
             title: self.title,
             description: self.body,
             state,
             author: self.user.into_platform_user(),
+            source_project_path: Some(project_path.to_string()),
+            target_project_path: Some(project_path.to_string()),
             source_branch: self.head.ref_name,
             target_branch: self.base.ref_name,
             ci_status: None,
@@ -800,13 +1023,19 @@ impl GitHubPullRequest {
     }
 }
 
+fn sort_merge_requests(mrs: &mut [PlatformMergeRequest]) {
+    mrs.sort_by(|a, b| {
+        let open_rank = |state: &str| if state == "opened" { 0 } else { 1 };
+        open_rank(&a.state)
+            .cmp(&open_rank(&b.state))
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+            .then_with(|| b.iid.cmp(&a.iid))
+    });
+}
+
 /// Truncate a response body for error messages.
-fn truncate_body(body: &str) -> &str {
-    if body.len() > 200 {
-        &body[..200]
-    } else {
-        body
-    }
+fn truncate_body(body: &str) -> String {
+    body.chars().take(200).collect()
 }
 
 #[cfg(test)]
@@ -868,5 +1097,53 @@ mod tests {
         let body = GitHubClient::create_issue_body(&req);
 
         assert_eq!(body["labels"], serde_json::json!(["Todo"]));
+    }
+
+    #[test]
+    fn pull_request_conversion_sets_same_repo_project_paths() {
+        let pr = GitHubPullRequest {
+            node_id: Some("PR_node".to_string()),
+            number: 17,
+            title: "fix: login".to_string(),
+            body: None,
+            state: "open".to_string(),
+            user: GitHubUser {
+                login: "alice".to_string(),
+                name: None,
+                avatar_url: None,
+            },
+            head: GitHubBranch {
+                ref_name: "feature/login".to_string(),
+            },
+            base: GitHubBranch {
+                ref_name: "main".to_string(),
+            },
+            merged: Some(false),
+            mergeable: None,
+            mergeable_state: None,
+            requested_reviewers: None,
+            additions: None,
+            deletions: None,
+            changed_files: None,
+            created_at: "2026-05-25T00:00:00Z".to_string(),
+            updated_at: "2026-05-25T00:00:00Z".to_string(),
+            merged_at: None,
+            html_url: "https://github.com/acme/app/pull/17".to_string(),
+        };
+
+        let mr = pr.into_platform_mr_for_project(Vec::new(), "acme/app");
+
+        assert_eq!(mr.source_project_path.as_deref(), Some("acme/app"));
+        assert_eq!(mr.target_project_path.as_deref(), Some("acme/app"));
+    }
+
+    #[test]
+    fn truncate_body_handles_multibyte_text() {
+        let body = "错误".repeat(150);
+
+        let truncated = truncate_body(&body);
+
+        assert_eq!(truncated.chars().count(), 200);
+        assert!(truncated.ends_with('误'));
     }
 }

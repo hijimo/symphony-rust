@@ -57,3 +57,18 @@ pub struct Reviewer {
     pub user: PlatformUser,
     pub state: String,
 }
+
+// ==================== MR/PR Creation ====================
+
+/// Request body for creating a merge request / pull request.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateMergeRequestApiRequest {
+    pub source_branch: String,
+    pub target_branch: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    pub purpose_type: Option<String>,
+    pub purpose_id: Option<String>,
+    pub draft: Option<bool>,
+}

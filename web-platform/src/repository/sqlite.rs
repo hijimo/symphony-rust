@@ -31,6 +31,10 @@ impl SqliteRepository {
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
+
+    pub(crate) fn pool(&self) -> DbPool {
+        self.pool.clone()
+    }
 }
 
 fn parse_datetime(s: &str) -> NaiveDateTime {

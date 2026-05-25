@@ -276,7 +276,10 @@ pub(crate) async fn get_user_platform_token(
 pub(crate) fn map_platform_error(err: GitPlatformError) -> WebPlatformError {
     match err {
         GitPlatformError::TokenInvalid(msg) => WebPlatformError::TokenInvalid(msg),
+        GitPlatformError::Forbidden(_) => WebPlatformError::Forbidden,
         GitPlatformError::NotFound(msg) => WebPlatformError::NotFound(msg),
+        GitPlatformError::Validation { message, .. } => WebPlatformError::BadRequest(message),
+        GitPlatformError::Conflict { message, .. } => WebPlatformError::Conflict(message),
         GitPlatformError::ServiceUnavailable(msg) => WebPlatformError::ExternalService(msg),
         GitPlatformError::RequestError(msg) => WebPlatformError::ExternalService(msg),
     }

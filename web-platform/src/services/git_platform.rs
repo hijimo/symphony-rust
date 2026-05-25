@@ -1,5 +1,7 @@
 use async_trait::async_trait;
 
+use serde::Serialize;
+
 use crate::models::kanban::{CreateIssueRequest, PlatformIssue, PlatformMergeRequest};
 use crate::proxy::EffectiveProxyConfig;
 
@@ -10,9 +12,27 @@ pub enum GitPlatformError {
     #[error("Platform token is invalid or expired: {0}")]
     TokenInvalid(String),
 
+    /// The token is valid but does not have enough permissions.
+    #[error("Platform access forbidden: {0}")]
+    Forbidden(String),
+
     /// The requested resource was not found on the platform (404).
     #[error("Resource not found on platform: {0}")]
     NotFound(String),
+
+    /// Platform rejected the request with a modeled validation error.
+    #[error("Platform validation error {code:?}: {message}")]
+    Validation {
+        code: PlatformValidationCode,
+        message: String,
+    },
+
+    /// Platform rejected the request because of an existing or policy conflict.
+    #[error("Platform conflict {code:?}: {message}")]
+    Conflict {
+        code: PlatformConflictCode,
+        message: String,
+    },
 
     /// The platform API is unavailable or returned a server error (5xx, timeout).
     #[error("External platform service unavailable: {0}")]
@@ -21,6 +41,40 @@ pub enum GitPlatformError {
     /// A request error (network, timeout, etc).
     #[error("Request failed: {0}")]
     RequestError(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformValidationCode {
+    SourceBranchNotFound,
+    TargetBranchNotFound,
+    NoCommits,
+    InvalidTitle,
+    UnsupportedFork,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformConflictCode {
+    ExistingOpenMergeRequest,
+    ExistingClosedOrMergedMergeRequest,
+    BranchProtectionOrPolicy,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeRequestState {
+    Open,
+    Closed,
+    Merged,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateMergeRequest {
+    pub source_branch: String,
+    pub target_branch: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub draft: bool,
 }
 
 /// A member returned from the platform API.
@@ -95,6 +149,33 @@ pub trait GitPlatformClient: Send + Sync {
         project_path: &str,
         mr_iid: u64,
     ) -> Result<PlatformMergeRequest, GitPlatformError>;
+
+    /// Create a merge request / pull request.
+    async fn create_merge_request(
+        &self,
+        token: &str,
+        project_path: &str,
+        req: &CreateMergeRequest,
+    ) -> Result<PlatformMergeRequest, GitPlatformError>;
+
+    /// Find an open merge request / pull request by source and target branches.
+    async fn find_open_merge_request_by_branches(
+        &self,
+        token: &str,
+        project_path: &str,
+        source_branch: &str,
+        target_branch: &str,
+    ) -> Result<Option<PlatformMergeRequest>, GitPlatformError>;
+
+    /// Find merge requests / pull requests by source, target, and states.
+    async fn find_merge_requests_by_branches(
+        &self,
+        token: &str,
+        project_path: &str,
+        source_branch: &str,
+        target_branch: &str,
+        states: &[MergeRequestState],
+    ) -> Result<Vec<PlatformMergeRequest>, GitPlatformError>;
 
     /// List project members from the platform.
     async fn list_members(

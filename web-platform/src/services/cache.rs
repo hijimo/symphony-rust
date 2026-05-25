@@ -103,6 +103,17 @@ impl ApiCache {
         self.entries.retain(|k, _| !k.starts_with(prefix));
     }
 
+    /// Invalidate all entries scoped to a project.
+    ///
+    /// Current API cache keys use `{user_id}:{project_id}:...`. This gives MR
+    /// creation a project-level invalidation path without relying on a single
+    /// user prefix.
+    pub fn invalidate_project(&self, project_id: i64) {
+        let project_id = project_id.to_string();
+        self.entries
+            .retain(|k, _| k.split(':').nth(1) != Some(project_id.as_str()));
+    }
+
     /// Invalidate a specific cache key.
     pub fn invalidate(&self, key: &str) {
         self.entries.remove(key);
@@ -147,5 +158,42 @@ impl ApiCache {
 impl Default for ApiCache {
     fn default() -> Self {
         Self::new(10, 3, 10000)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ApiCache;
+
+    #[test]
+    fn invalidate_project_only_matches_project_id_segment() {
+        let cache = ApiCache::new(60, 3, 100);
+        cache.set(
+            "10:2:kanban:abc".to_string(),
+            "project-2".to_string(),
+            false,
+        );
+        cache.set(
+            "10:12:issue:2:mrs".to_string(),
+            "project-12".to_string(),
+            false,
+        );
+        cache.set(
+            "10:20:mr:2:detail".to_string(),
+            "project-20".to_string(),
+            false,
+        );
+
+        cache.invalidate_project(2);
+
+        assert_eq!(cache.get("10:2:kanban:abc"), None);
+        assert_eq!(
+            cache.get("10:12:issue:2:mrs").as_deref(),
+            Some("project-12")
+        );
+        assert_eq!(
+            cache.get("10:20:mr:2:detail").as_deref(),
+            Some("project-20")
+        );
     }
 }

@@ -1,5 +1,8 @@
 use axum::{
+    body::Bytes,
     extract::{Path, State},
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
     Json,
 };
 
@@ -9,10 +12,11 @@ use crate::handlers::issues::{get_user_platform_token, map_platform_error};
 use crate::handlers::network_proxy::load_effective_proxy_config;
 use crate::middleware::project_access::require_project_member;
 use crate::models::issue::IssueSummary;
-use crate::models::merge_request::{MergeRequestDetail, Reviewer};
+use crate::models::merge_request::{CreateMergeRequestApiRequest, MergeRequestDetail, Reviewer};
 use crate::models::ResponseData;
 use crate::repository::ProjectRepository;
 use crate::services::git_platform::create_platform_client_with_proxy;
+use crate::services::mr_create::create_merge_request_idempotent;
 use crate::AppState;
 
 /// GET /api/projects/:id/mrs/:iid
@@ -148,4 +152,75 @@ pub async fn get_merge_request(
     }
 
     Ok(Json(ResponseData::success(mr_detail)))
+}
+
+/// POST /api/projects/:id/mrs
+///
+/// Create a merge request / pull request with server-side idempotency.
+pub async fn create_merge_request(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(project_id): Path<i64>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, WebPlatformError> {
+    let user_id: i64 = claims
+        .sub
+        .parse()
+        .map_err(|_| WebPlatformError::Internal("invalid user id in token".to_string()))?;
+
+    require_project_member(&claims, project_id, &state.repo).await?;
+
+    if let Err(retry_after) = state.phase3_rate_limiter.check("mr_create", user_id, 20) {
+        return Err(WebPlatformError::RateLimited(retry_after));
+    }
+
+    let idempotency_key = headers
+        .get("Idempotency-Key")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| WebPlatformError::BadRequest("Idempotency-Key is required".to_string()))?;
+
+    let req: CreateMergeRequestApiRequest = serde_json::from_slice(&body)
+        .map_err(|e| WebPlatformError::BadRequest(format!("Invalid request body: {}", e)))?;
+
+    let project = state
+        .repo
+        .get_project(project_id)
+        .await?
+        .ok_or_else(|| WebPlatformError::NotFound("Project not found".to_string()))?;
+
+    let (platform_token, _) = get_user_platform_token(&state, user_id, &project).await?;
+    let proxy_config = load_effective_proxy_config(&state.repo, &state.encryption_key).await?;
+    let client = create_platform_client_with_proxy(
+        &project.platform,
+        project.platform_host.as_deref(),
+        Some(&proxy_config),
+    )
+    .map_err(map_platform_error)?;
+
+    let response = create_merge_request_idempotent(
+        &state.repo,
+        &project,
+        user_id,
+        &platform_token,
+        idempotency_key,
+        req,
+        client.as_ref(),
+    )
+    .await?;
+
+    let idempotency_status = response
+        .body
+        .get("data")
+        .and_then(|data| data.get("idempotency_status"))
+        .and_then(|value| value.as_str());
+    if response.http_status == StatusCode::OK && idempotency_status != Some("in_progress") {
+        invalidate_project_mr_cache(&state, project_id);
+    }
+
+    Ok((response.http_status, Json(response.body)))
+}
+
+fn invalidate_project_mr_cache(state: &AppState, project_id: i64) {
+    state.api_cache.invalidate_project(project_id);
 }

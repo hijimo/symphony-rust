@@ -197,6 +197,8 @@ async fn main() {
         alert_manager: Some(alert_manager),
     };
 
+    web_platform::services::mr_create::spawn_merge_request_reconciler(state.clone());
+
     let cors_origin =
         env::var("CORS_ORIGIN").unwrap_or_else(|_| "http://localhost:5177".to_string());
     let cors = CorsLayer::new()

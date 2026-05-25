@@ -135,10 +135,13 @@ pub struct PlatformIssue {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformMergeRequest {
     pub iid: u64,
+    pub platform_node_id: Option<String>,
     pub title: String,
     pub description: Option<String>,
     pub state: String,
     pub author: PlatformUser,
+    pub source_project_path: Option<String>,
+    pub target_project_path: Option<String>,
     pub source_branch: String,
     pub target_branch: String,
     pub ci_status: Option<String>,

@@ -213,6 +213,10 @@ pub fn create_router(state: AppState) -> Router {
             get(issue_mrs::get_issue_mrs),
         )
         .route(
+            "/api/projects/{id}/mrs",
+            post(merge_requests::create_merge_request),
+        )
+        .route(
             "/api/projects/{id}/mrs/{iid}",
             get(merge_requests::get_merge_request),
         )
