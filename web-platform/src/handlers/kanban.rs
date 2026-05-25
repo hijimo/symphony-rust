@@ -20,7 +20,7 @@ use crate::services::git_platform::{
 };
 use crate::AppState;
 
-const IN_PROGRESS_ISSUE_LABELS: &[&str] = &["symphony-claimed", "In Progree", "Merging", "Rework"];
+const IN_PROGRESS_ISSUE_LABELS: &[&str] = &["symphony-claimed", "In Progress", "Merging", "Rework"];
 
 fn in_progress_issue_labels() -> &'static [&'static str] {
     IN_PROGRESS_ISSUE_LABELS
@@ -422,6 +422,7 @@ mod tests {
     ) -> PlatformMergeRequest {
         PlatformMergeRequest {
             iid,
+            platform_node_id: None,
             title: title.to_string(),
             description: None,
             state: state.to_string(),
@@ -430,6 +431,8 @@ mod tests {
                 display_name: Some("Alice".to_string()),
                 avatar_url: None,
             },
+            source_project_path: None,
+            target_project_path: None,
             source_branch: format!("feature/{iid}"),
             target_branch: "main".to_string(),
             ci_status: None,
@@ -513,14 +516,14 @@ mod tests {
     fn in_progress_label_set_includes_issue_workflow_labels() {
         let labels = in_progress_issue_labels();
 
-        assert!(labels.contains(&"In Progree"));
+        assert!(labels.contains(&"In Progress"));
         assert!(labels.contains(&"Merging"));
         assert!(labels.contains(&"Rework"));
     }
 
     #[test]
     fn issue_with_any_workflow_label_is_in_progress() {
-        for label in ["In Progree", "Merging", "Rework"] {
+        for label in ["In Progress", "Merging", "Rework"] {
             let issue = platform_issue_with_labels(vec!["bug", label]);
 
             assert!(
@@ -532,7 +535,7 @@ mod tests {
 
     #[test]
     fn issue_with_todo_and_processing_label_is_in_progress() {
-        for label in ["In Progree", "Merging", "Rework"] {
+        for label in ["In Progress", "Merging", "Rework"] {
             let issue = platform_issue_with_labels(vec!["Todo", "bug", label]);
 
             assert!(

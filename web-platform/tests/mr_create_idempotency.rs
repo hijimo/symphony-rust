@@ -13,8 +13,8 @@ use web_platform::models::merge_request::CreateMergeRequestApiRequest;
 use web_platform::models::{NewProject, Project};
 use web_platform::repository::{ProjectRepository, SqliteRepository, UserRepository};
 use web_platform::services::git_platform::{
-    CreateMergeRequest, GitPlatformClient, GitPlatformError, ListIssuesOptions, MergeRequestState,
-    PlatformMember, PlatformValidationCode,
+    CreateMergeRequest, GitPlatformClient, GitPlatformError, ListIssuesOptions,
+    ListMergeRequestsOptions, MergeRequestState, PlatformMember, PlatformValidationCode,
 };
 use web_platform::services::mr_create::create_merge_request_idempotent;
 
@@ -98,6 +98,15 @@ impl GitPlatformClient for FakePlatformClient {
         _token: &str,
         _project_path: &str,
         _issue_iid: u64,
+    ) -> Result<Vec<PlatformMergeRequest>, GitPlatformError> {
+        unimplemented!("not used by MR create tests")
+    }
+
+    async fn list_merge_requests(
+        &self,
+        _token: &str,
+        _project_path: &str,
+        _options: &ListMergeRequestsOptions,
     ) -> Result<Vec<PlatformMergeRequest>, GitPlatformError> {
         unimplemented!("not used by MR create tests")
     }
