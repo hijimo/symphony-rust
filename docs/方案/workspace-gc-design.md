@@ -336,6 +336,29 @@ workspace:
   gc_cycle_timeout_ms: 120000   # 每轮最大执行时间
 ```
 
+### 使用方式与注意事项
+
+Workspace GC 随 `symphony-platform` 进程启动，后台按 `workspace.gc_interval_ms`
+执行 sleep-between-cycles 循环。每轮开始时从 `ConfigHolder` 读取最新
+`workspace.root`、`hooks.before_remove` 与 `workspace.gc_*` 配置；将
+`gc_interval_ms` 设置为 `0` 会禁用后台 GC 任务。
+
+业务流程不再直接删除 issue workspace。Reconciler 或 worker exit 在确认 issue
+进入 terminal state 后，只写入
+`<workspace_root>/.symphony/gc/terminal/<issue_id_path_key>.json` terminal marker；
+GC 在 grace period 到期且成功获取同一个 issue lock 后，才执行
+`before_remove` hook 与目录删除。worker 退出时会删除
+`<workspace_root>/.symphony/locks/issues/<issue_id_path_key>.json` sidecar，
+但保留 `.lock` 文件，避免 inode 漂移破坏互斥。
+
+默认保留 1 小时，默认每轮最多处理 10 个 workspace，默认 cycle 时间预算为 2 分钟。
+如果 `before_remove` 持续失败，marker 的 `gc_attempts` 会累加；达到 3 次后进入
+poison 状态并暂时跳过，24 小时后自动重置以允许 hook 修复后恢复清理。
+
+手动验证或运维预览可使用代码层 `WorkspaceGcCycleOptions { preview: true }`
+运行单轮 GC；preview 只统计将被删除的 workspace，不会执行 hook、删除 workspace
+或删除 marker。后台任务使用默认非 preview 模式。
+
 ## Flock 协议（共享契约）
 
 **不变量：Worker 和 GC 使用完全相同的 lock path**

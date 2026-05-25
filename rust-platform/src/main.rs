@@ -38,6 +38,7 @@ use symphony_platform::server;
 use symphony_platform::server::api::{OrchestratorEvent, OrchestratorQuery};
 use symphony_platform::tracker::gitlab::GitlabTrackerAdapter;
 use symphony_platform::tracker::linear::LinearClient;
+use symphony_platform::workspace::gc::run_workspace_gc_task;
 use symphony_platform::workspace::WorkspaceManager;
 
 /// Default workflow file name when no path is specified.
@@ -202,7 +203,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     orchestrator.set_workspace_mgr(workspace_mgr.clone());
     orchestrator.set_prompt_engine(prompt_engine_arc);
-    orchestrator.set_config_holder(config_holder_arc);
+    orchestrator.set_config_holder(config_holder_arc.clone());
+
+    let gc_config_holder = config_holder_arc.clone();
+    let gc_cancel = cancel.clone();
+    tokio::spawn(async move {
+        run_workspace_gc_task(gc_config_holder, gc_cancel).await;
+    });
 
     // Wire tracker based on kind
     match service_config.tracker_kind {

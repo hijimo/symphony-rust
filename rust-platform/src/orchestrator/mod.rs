@@ -248,6 +248,8 @@ impl Orchestrator {
                         let active_states = self.dispatch_config.active_states.clone();
                         let terminal_states = self.dispatch_config.terminal_states.clone();
 
+                        let terminal_state_by_id: std::collections::HashMap<String, String> =
+                            refreshed_states.iter().cloned().collect();
                         let actions = determine_reconcile_actions(
                             &running_ids,
                             &refreshed_states,
@@ -269,12 +271,38 @@ impl Orchestrator {
                                         release_claim(&mut self.state, &issue_id);
                                         if let Some(workspace_mgr) = &self.workspace_mgr {
                                             workspace_mgr
-                                                .remove_issue_workspace(&issue_id, &identifier)
-                                                .await;
+                                                .delete_lock_sidecar(&issue_id)
+                                                .await
+                                                .unwrap_or_else(|e| {
+                                                    tracing::warn!(
+                                                        issue_id = %issue_id,
+                                                        error = %e,
+                                                        "failed to delete worker lock sidecar during reconciliation"
+                                                    );
+                                                });
+                                            let state = terminal_state_by_id
+                                                .get(&issue_id)
+                                                .cloned()
+                                                .unwrap_or_else(|| "terminal".to_string());
+                                            workspace_mgr
+                                                .write_terminal_marker_at(
+                                                    &issue_id,
+                                                    &identifier,
+                                                    &state,
+                                                    chrono::Utc::now(),
+                                                )
+                                                .await
+                                                .unwrap_or_else(|e| {
+                                                    tracing::warn!(
+                                                        issue_id = %issue_id,
+                                                        error = %e,
+                                                        "failed to mark workspace for GC during reconciliation"
+                                                    );
+                                                });
                                         }
                                         tracing::info!(
                                             issue_id = %issue_id,
-                                            "reconciler Part B: terminated worker and cleaned workspace for terminal issue"
+                                            "reconciler Part B: terminated worker and marked workspace for GC"
                                         );
                                     }
                                 }
@@ -703,6 +731,16 @@ impl Orchestrator {
                 .completed
                 .insert(issue_id.to_string(), Instant::now());
 
+            if let Some(workspace_mgr) = &self.workspace_mgr {
+                if let Err(e) = workspace_mgr.delete_lock_sidecar(issue_id).await {
+                    tracing::warn!(
+                        issue_id,
+                        error = %e,
+                        "failed to delete worker lock sidecar after normal exit"
+                    );
+                }
+            }
+
             let tracker = match &self.tracker {
                 Some(tracker) => tracker.clone(),
                 None => {
@@ -742,6 +780,36 @@ impl Orchestrator {
                 release_claim(&mut self.state, issue_id);
                 return;
             };
+
+            if is_terminal_state(&fresh_issue.state, &self.dispatch_config.terminal_states) {
+                if let Some(workspace_mgr) = &self.workspace_mgr {
+                    if let Err(e) = workspace_mgr
+                        .write_terminal_marker_at(
+                            issue_id,
+                            &entry.identifier,
+                            &fresh_issue.state,
+                            chrono::Utc::now(),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            issue_id,
+                            identifier = %entry.identifier,
+                            state = %fresh_issue.state,
+                            error = %e,
+                            "failed to mark workspace for GC after normal worker exit"
+                        );
+                    }
+                }
+                tracing::info!(
+                    issue_id,
+                    identifier = %entry.identifier,
+                    state = %fresh_issue.state,
+                    "worker exited normally and issue is terminal; marked workspace for GC"
+                );
+                release_claim(&mut self.state, issue_id);
+                return;
+            }
 
             if !is_active_state(&fresh_issue.state, &self.dispatch_config.active_states) {
                 tracing::info!(
@@ -784,6 +852,16 @@ impl Orchestrator {
         if let Some(entry) = self.state.running.remove(issue_id) {
             // Update runtime totals
             self.state.codex_totals.add_runtime(entry.started_at);
+
+            if let Some(workspace_mgr) = &self.workspace_mgr {
+                if let Err(e) = workspace_mgr.delete_lock_sidecar(issue_id).await {
+                    tracing::warn!(
+                        issue_id,
+                        error = %e,
+                        "failed to delete worker lock sidecar after abnormal exit"
+                    );
+                }
+            }
 
             let attempt = entry.retry_attempt.unwrap_or(0) + 1;
 

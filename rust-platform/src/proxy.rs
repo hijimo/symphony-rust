@@ -225,6 +225,15 @@ pub(crate) mod test_support {
             std::env::remove_var(key);
         }
 
+        pub(crate) fn restore_saved(&mut self) {
+            for (key, value) in self.saved.drain() {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+
         fn save_original(&mut self, key: &str) {
             self.saved
                 .entry(key.to_string())
@@ -234,12 +243,7 @@ pub(crate) mod test_support {
 
     impl Drop for TestEnvGuard {
         fn drop(&mut self) {
-            for (key, value) in self.saved.drain() {
-                match value {
-                    Some(value) => std::env::set_var(key, value),
-                    None => std::env::remove_var(key),
-                }
-            }
+            self.restore_saved();
         }
     }
 
@@ -261,14 +265,16 @@ mod tests {
 
     #[test]
     fn test_env_guard_restores_saved_values_on_drop() {
-        {
-            let mut env = env_lock();
-            env.set("SYMPHONY_PROXY_MODE", "manual");
-            env.set("HTTP_PROXY", "http://proxy.example.com:8080");
-        }
+        let mut env = env_lock();
+        let original_mode = std::env::var_os("SYMPHONY_PROXY_MODE");
+        let original_http_proxy = std::env::var_os("HTTP_PROXY");
 
-        assert!(std::env::var("SYMPHONY_PROXY_MODE").is_err());
-        assert!(std::env::var("HTTP_PROXY").is_err());
+        env.set("SYMPHONY_PROXY_MODE", "manual");
+        env.set("HTTP_PROXY", "http://proxy.example.com:8080");
+        env.restore_saved();
+
+        assert_eq!(std::env::var_os("SYMPHONY_PROXY_MODE"), original_mode);
+        assert_eq!(std::env::var_os("HTTP_PROXY"), original_http_proxy);
     }
 
     #[test]

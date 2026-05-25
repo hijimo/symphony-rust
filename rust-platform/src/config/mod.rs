@@ -9,7 +9,7 @@ pub use platform::{
 };
 pub use service_config::{
     resolve_path, resolve_value, sanitize_workspace_key, CodexConfig, HooksConfig, ServiceConfig,
-    ServiceConfigError, TrackerKind,
+    ServiceConfigError, TrackerKind, WorkspaceGcConfig,
 };
 pub use validator::{validate_platform_config, ConfigValidationError};
 pub use watcher::{ConfigHolder, EffectiveConfig};

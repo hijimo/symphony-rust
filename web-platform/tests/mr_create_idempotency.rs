@@ -108,7 +108,12 @@ impl GitPlatformClient for FakePlatformClient {
         _project_path: &str,
         _options: &ListMergeRequestsOptions,
     ) -> Result<Vec<PlatformMergeRequest>, GitPlatformError> {
-        unimplemented!("not used by MR create tests")
+        let mut merge_requests = Vec::new();
+        if let Some(open) = self.open.lock().unwrap().clone() {
+            merge_requests.push(open);
+        }
+        merge_requests.extend(self.closed.lock().unwrap().clone());
+        Ok(merge_requests)
     }
 
     async fn get_merge_request(
