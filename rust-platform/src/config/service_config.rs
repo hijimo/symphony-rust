@@ -31,6 +31,26 @@ pub struct HooksConfig {
     pub timeout_ms: u64,
 }
 
+/// Workspace garbage-collection configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceGcConfig {
+    pub gc_interval_ms: u64,
+    pub gc_retention_ms: u64,
+    pub gc_batch_size: usize,
+    pub gc_cycle_timeout_ms: u64,
+}
+
+impl Default for WorkspaceGcConfig {
+    fn default() -> Self {
+        Self {
+            gc_interval_ms: 300_000,
+            gc_retention_ms: 3_600_000,
+            gc_batch_size: 10,
+            gc_cycle_timeout_ms: 120_000,
+        }
+    }
+}
+
 impl Default for HooksConfig {
     fn default() -> Self {
         Self {
@@ -88,6 +108,7 @@ pub struct ServiceConfig {
 
     // -- workspace --
     pub workspace_root: PathBuf,
+    pub workspace_gc: WorkspaceGcConfig,
 
     // -- hooks --
     pub hooks: HooksConfig,
@@ -126,6 +147,7 @@ impl Default for ServiceConfig {
             workflow_labels: default_workflow_labels(),
             poll_interval_ms: 30_000,
             workspace_root: std::env::temp_dir().join("symphony_workspaces"),
+            workspace_gc: WorkspaceGcConfig::default(),
             hooks: HooksConfig::default(),
             max_concurrent_agents: 10,
             max_turns: 20,
@@ -210,6 +232,7 @@ impl ServiceConfig {
         // -- workspace section --
         let workspace = get_section(config, "workspace");
         let workspace_root = resolve_workspace_root(&workspace, workflow_dir);
+        let workspace_gc = parse_workspace_gc(&workspace);
 
         // -- hooks section --
         let hooks_section = get_section(config, "hooks");
@@ -254,6 +277,7 @@ impl ServiceConfig {
             workflow_labels,
             poll_interval_ms,
             workspace_root,
+            workspace_gc,
             hooks,
             max_concurrent_agents,
             max_turns,
@@ -304,6 +328,20 @@ impl ServiceConfig {
         if self.hooks.timeout_ms == 0 {
             return Err(ServiceConfigError::InvalidValue {
                 field: "hooks.timeout_ms".to_string(),
+                detail: "must be > 0".to_string(),
+            });
+        }
+
+        if self.workspace_gc.gc_batch_size == 0 {
+            return Err(ServiceConfigError::InvalidValue {
+                field: "workspace.gc_batch_size".to_string(),
+                detail: "must be > 0".to_string(),
+            });
+        }
+
+        if self.workspace_gc.gc_cycle_timeout_ms == 0 {
+            return Err(ServiceConfigError::InvalidValue {
+                field: "workspace.gc_cycle_timeout_ms".to_string(),
                 detail: "must be > 0".to_string(),
             });
         }
@@ -506,6 +544,21 @@ fn resolve_workspace_root(workspace: &HashMap<String, YamlValue>, workflow_dir: 
             // Default: <system-temp>/symphony_workspaces
             std::env::temp_dir().join("symphony_workspaces")
         }
+    }
+}
+
+fn parse_workspace_gc(section: &HashMap<String, YamlValue>) -> WorkspaceGcConfig {
+    let defaults = WorkspaceGcConfig::default();
+    WorkspaceGcConfig {
+        gc_interval_ms: get_u64_or_default(section, "gc_interval_ms", defaults.gc_interval_ms),
+        gc_retention_ms: get_u64_or_default(section, "gc_retention_ms", defaults.gc_retention_ms),
+        gc_batch_size: get_u64_or_default(section, "gc_batch_size", defaults.gc_batch_size as u64)
+            as usize,
+        gc_cycle_timeout_ms: get_u64_or_default(
+            section,
+            "gc_cycle_timeout_ms",
+            defaults.gc_cycle_timeout_ms,
+        ),
     }
 }
 

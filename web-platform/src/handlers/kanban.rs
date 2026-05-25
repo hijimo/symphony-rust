@@ -422,6 +422,7 @@ mod tests {
     ) -> PlatformMergeRequest {
         PlatformMergeRequest {
             iid,
+            platform_node_id: None,
             title: title.to_string(),
             description: None,
             state: state.to_string(),
@@ -430,6 +431,8 @@ mod tests {
                 display_name: Some("Alice".to_string()),
                 avatar_url: None,
             },
+            source_project_path: None,
+            target_project_path: None,
             source_branch: format!("feature/{iid}"),
             target_branch: "main".to_string(),
             ci_status: None,
