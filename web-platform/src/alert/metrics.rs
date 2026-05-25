@@ -205,10 +205,7 @@ impl MetricCollector for DefaultMetricCollector {
         }
 
         // --- Concurrency metrics ---
-        let global_active = self
-            .concurrency_manager
-            .global_active
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let global_active = self.process_manager.active_process_count();
         let global_max = self
             .concurrency_manager
             .global_max

@@ -103,6 +103,15 @@ pub struct ListIssuesOptions {
     pub state: Option<String>,
 }
 
+/// Options for listing merge requests / pull requests from the platform.
+#[derive(Debug, Clone, Default)]
+pub struct ListMergeRequestsOptions {
+    /// Maximum number of merge requests / pull requests to return.
+    pub limit: u32,
+    /// Only return merge requests / pull requests in this state.
+    pub state: Option<String>,
+}
+
 /// Unified trait for interacting with GitLab or GitHub project APIs.
 ///
 /// All methods take a `token` parameter which is the user's decrypted
@@ -140,6 +149,14 @@ pub trait GitPlatformClient: Send + Sync {
         token: &str,
         project_path: &str,
         issue_iid: u64,
+    ) -> Result<Vec<PlatformMergeRequest>, GitPlatformError>;
+
+    /// List project-level merge requests / pull requests.
+    async fn list_merge_requests(
+        &self,
+        token: &str,
+        project_path: &str,
+        options: &ListMergeRequestsOptions,
     ) -> Result<Vec<PlatformMergeRequest>, GitPlatformError>;
 
     /// Get a single merge request / pull request by its iid/number.

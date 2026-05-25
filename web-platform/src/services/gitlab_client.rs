@@ -9,8 +9,9 @@ use crate::models::kanban::{
 };
 use crate::proxy::EffectiveProxyConfig;
 use crate::services::git_platform::{
-    CreateMergeRequest, GitPlatformClient, GitPlatformError, ListIssuesOptions, MergeRequestState,
-    PlatformConflictCode, PlatformMember, PlatformValidationCode,
+    CreateMergeRequest, GitPlatformClient, GitPlatformError, ListIssuesOptions,
+    ListMergeRequestsOptions, MergeRequestState, PlatformConflictCode, PlatformMember,
+    PlatformValidationCode,
 };
 
 /// GitLab API client implementation.
@@ -174,6 +175,30 @@ impl GitLabClient {
             )),
             _ => Self::map_status_error(status, body),
         }
+    }
+
+    fn list_merge_requests_url(
+        &self,
+        project_path: &str,
+        options: &ListMergeRequestsOptions,
+    ) -> Result<Url, GitPlatformError> {
+        let encoded = Self::encode_project_path(project_path);
+        let mut url = Url::parse(&format!(
+            "{}/api/v4/projects/{}/merge_requests",
+            self.base_url, encoded
+        ))
+        .map_err(|e| GitPlatformError::RequestError(format!("Invalid GitLab URL: {}", e)))?;
+
+        {
+            let mut pairs = url.query_pairs_mut();
+            pairs
+                .append_pair("per_page", &options.limit.to_string())
+                .append_pair("order_by", "updated_at")
+                .append_pair("sort", "desc")
+                .append_pair("state", options.state.as_deref().unwrap_or("opened"));
+        }
+
+        Ok(url)
     }
 
     async fn list_merge_requests_by_branches(
@@ -484,6 +509,44 @@ impl GitPlatformClient for GitLabClient {
             .into_iter()
             .map(|mr| mr.into_platform_mr_for_project(project_path))
             .collect())
+    }
+
+    async fn list_merge_requests(
+        &self,
+        token: &str,
+        project_path: &str,
+        options: &ListMergeRequestsOptions,
+    ) -> Result<Vec<PlatformMergeRequest>, GitPlatformError> {
+        let url = self.list_merge_requests_url(project_path, options)?;
+
+        let response = self
+            .http
+            .get(url)
+            .header("PRIVATE-TOKEN", token)
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    GitPlatformError::ServiceUnavailable("GitLab API request timed out".to_string())
+                } else {
+                    GitPlatformError::RequestError(format!("GitLab request failed: {}", e))
+                }
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(Self::map_status_error(status, &body));
+        }
+
+        let mrs: Vec<GitLabMergeRequest> = response.json().await.map_err(|e| {
+            GitPlatformError::RequestError(format!(
+                "Failed to parse GitLab merge requests response: {}",
+                e
+            ))
+        })?;
+
+        Ok(mrs.into_iter().map(|mr| mr.into_platform_mr_for_project(project_path)).collect())
     }
 
     async fn get_merge_request(
@@ -893,6 +956,24 @@ mod tests {
         assert_eq!(
             url.as_str(),
             "https://gitlab.example.com/api/v4/projects/group%2Fproject/issues?per_page=25&order_by=created_at&sort=desc&state=opened&labels=needs+review%2C%E4%B8%AD%E6%96%87&not%5Blabels%5D=symphony+claimed&assignee_username=alice%2Bbob&search=foo+%26+bar&in=title"
+        );
+    }
+
+    #[test]
+    fn list_merge_requests_url_requests_opened_updated_mrs() {
+        let client = GitLabClient::new("https://gitlab.example.com".to_string());
+        let options = ListMergeRequestsOptions {
+            state: Some("opened".to_string()),
+            limit: 100,
+        };
+
+        let url = client
+            .list_merge_requests_url("group/project", &options)
+            .expect("url should parse");
+
+        assert_eq!(
+            url.as_str(),
+            "https://gitlab.example.com/api/v4/projects/group%2Fproject/merge_requests?per_page=100&order_by=updated_at&sort=desc&state=opened"
         );
     }
 

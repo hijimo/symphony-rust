@@ -72,6 +72,20 @@ impl ProcessManager {
     pub fn remove_state(&self, project_id: i64) {
         self.processes.remove(&project_id);
     }
+
+    pub fn is_active_process(state: &ProcessState) -> bool {
+        matches!(
+            state.status,
+            ServiceStatus::Running | ServiceStatus::Starting
+        ) && state.pid > 0
+    }
+
+    pub fn active_process_count(&self) -> i64 {
+        self.processes
+            .iter()
+            .filter(|entry| Self::is_active_process(entry.value()))
+            .count() as i64
+    }
 }
 
 impl Default for ProcessManager {

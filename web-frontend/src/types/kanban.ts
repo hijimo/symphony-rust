@@ -27,6 +27,7 @@ export interface KanbanMergeRequest {
   iid: number;
   title: string;
   state: 'opened' | 'closed' | 'merged';
+  repository: string;
   author: PlatformUser;
   source_branch: string;
   target_branch: string;
@@ -52,6 +53,7 @@ export interface KanbanInProgressColumn {
 export interface KanbanPrColumn {
   merge_requests: KanbanMergeRequest[];
   total_count: number;
+  error?: string | null;
 }
 
 export interface KanbanData {

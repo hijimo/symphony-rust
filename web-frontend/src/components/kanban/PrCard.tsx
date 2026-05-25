@@ -49,6 +49,34 @@ function getReviewLabel(status: ReviewStatus | null): string {
   }
 }
 
+function getStateLabel(state: KanbanMergeRequest['state']): string {
+  switch (state) {
+    case 'opened':
+      return '开启';
+    case 'merged':
+      return '已合并';
+    case 'closed':
+      return '已关闭';
+    default:
+      return state;
+  }
+}
+
+function formatRelativeTime(dateStr: string): string {
+  const now = Date.now();
+  const date = new Date(dateStr).getTime();
+  const diff = now - date;
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return '刚刚';
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} 天前`;
+  const months = Math.floor(days / 30);
+  return `${months} 个月前`;
+}
+
 interface PrCardProps {
   mr: KanbanMergeRequest;
 }
@@ -113,6 +141,35 @@ export default function PrCard({ mr }: PrCardProps) {
         {mr.source_branch} → {mr.target_branch}
       </Typography>
 
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
+        <Chip
+          label={getStateLabel(mr.state)}
+          size="small"
+          sx={{
+            height: 20,
+            fontSize: '11px',
+            fontWeight: 500,
+            bgcolor: '#dbe1ff',
+            color: '#003ea8',
+            borderRadius: '4px',
+            '& .MuiChip-label': { px: 0.75 },
+          }}
+        />
+        <Typography
+          variant="body2"
+          sx={{
+            color: '#434655',
+            fontSize: '11px',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            minWidth: 0,
+          }}
+        >
+          {mr.repository}
+        </Typography>
+      </Box>
+
       {/* Status row: CI + Review */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
         {/* CI status dot */}
@@ -175,22 +232,37 @@ export default function PrCard({ mr }: PrCardProps) {
         sx={{
           display: 'flex',
           alignItems: 'center',
+          justifyContent: 'space-between',
           gap: 0.5,
           mt: 'auto',
         }}
       >
-        <Avatar
-          src={mr.author.avatar_url || undefined}
-          alt={mr.author.display_name || mr.author.username}
-          sx={{ width: 20, height: 20, fontSize: '10px' }}
-        >
-          {(mr.author.display_name || mr.author.username).charAt(0).toUpperCase()}
-        </Avatar>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
+          <Avatar
+            src={mr.author.avatar_url || undefined}
+            alt={mr.author.display_name || mr.author.username}
+            sx={{ width: 20, height: 20, fontSize: '10px', flexShrink: 0 }}
+          >
+            {(mr.author.display_name || mr.author.username).charAt(0).toUpperCase()}
+          </Avatar>
+          <Typography
+            variant="body2"
+            sx={{
+              color: '#434655',
+              fontSize: '12px',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {mr.author.display_name || mr.author.username}
+          </Typography>
+        </Box>
         <Typography
           variant="body2"
-          sx={{ color: '#434655', fontSize: '12px' }}
+          sx={{ color: '#737686', fontSize: '11px', flexShrink: 0 }}
         >
-          {mr.author.display_name || mr.author.username}
+          {formatRelativeTime(mr.updated_at)}
         </Typography>
       </Box>
     </Box>

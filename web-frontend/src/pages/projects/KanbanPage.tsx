@@ -15,6 +15,9 @@ import KanbanSkeleton from '../../components/kanban/KanbanSkeleton';
 import AuthorFilter from '../../components/kanban/AuthorFilter';
 import { useKanbanStore } from '../../store/kanbanStore';
 import type { PlatformUser } from '../../types/kanban';
+import { getPendingMergeRequests } from '../../utils/kanbanPrs';
+
+const KANBAN_AUTO_REFRESH_INTERVAL_MS = 15_000;
 
 export default function KanbanPage() {
   const { id } = useParams<{ id: string }>();
@@ -72,6 +75,18 @@ export default function KanbanPage() {
     }
   }, [filtersKey, projectId, fetchKanban]);
 
+  useEffect(() => {
+    if (!projectId) return;
+
+    const timer = window.setInterval(() => {
+      void refresh(projectId);
+    }, KANBAN_AUTO_REFRESH_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [projectId, refresh]);
+
   const handleRefresh = useCallback(() => {
     if (projectId) {
       refresh(projectId);
@@ -93,7 +108,7 @@ export default function KanbanPage() {
       addUser(i.author);
       i.assignees.forEach(addUser);
     });
-    kanbanData.pr.merge_requests.forEach((mr) => addUser(mr.author));
+    getPendingMergeRequests(kanbanData.pr.merge_requests).forEach((mr) => addUser(mr.author));
     return Array.from(map.values());
   }, [kanbanData]);
 

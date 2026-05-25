@@ -1,8 +1,9 @@
-import { Box, Button, Typography } from '@mui/material';
+import { Alert, Box, Button, Typography } from '@mui/material';
 import KanbanColumn from './KanbanColumn';
 import IssueCard from './IssueCard';
 import PrCard from './PrCard';
 import type { KanbanData } from '../../types/kanban';
+import { getPendingMergeRequests } from '../../utils/kanbanPrs';
 
 interface KanbanBoardProps {
   data: KanbanData;
@@ -12,6 +13,7 @@ interface KanbanBoardProps {
 
 export default function KanbanBoard({ data, onLoadMore, loadingMore }: KanbanBoardProps) {
   const prColumnTitle = data.platform === 'github' ? 'PR' : 'MR';
+  const pendingMergeRequests = getPendingMergeRequests(data.pr.merge_requests);
 
   return (
     <Box
@@ -75,13 +77,17 @@ export default function KanbanBoard({ data, onLoadMore, loadingMore }: KanbanBoa
       {/* PR column */}
       <KanbanColumn
         title={prColumnTitle}
-        count={data.pr.total_count}
+        count={pendingMergeRequests.length}
         headerColor="#832600"
       >
-        {data.pr.merge_requests.length === 0 ? (
-          <EmptyColumn message={`暂无关联 ${prColumnTitle}`} />
+        {data.pr.error ? (
+          <Alert severity="error" sx={{ borderRadius: '8px', fontSize: '12px' }}>
+            {data.pr.error}
+          </Alert>
+        ) : pendingMergeRequests.length === 0 ? (
+          <EmptyColumn message={`暂无待处理 ${prColumnTitle}`} />
         ) : (
-          data.pr.merge_requests.map((mr) => (
+          pendingMergeRequests.map((mr) => (
             <PrCard key={mr.iid} mr={mr} />
           ))
         )}

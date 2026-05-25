@@ -9,8 +9,9 @@ use crate::models::kanban::{
 };
 use crate::proxy::EffectiveProxyConfig;
 use crate::services::git_platform::{
-    CreateMergeRequest, GitPlatformClient, GitPlatformError, ListIssuesOptions, MergeRequestState,
-    PlatformConflictCode, PlatformMember, PlatformValidationCode,
+    CreateMergeRequest, GitPlatformClient, GitPlatformError, ListIssuesOptions,
+    ListMergeRequestsOptions, MergeRequestState, PlatformConflictCode, PlatformMember,
+    PlatformValidationCode,
 };
 
 /// GitHub API client implementation.
@@ -77,6 +78,26 @@ impl GitHubClient {
             if let Some(ref author) = options.author {
                 pairs.append_pair("creator", author);
             }
+        }
+
+        Ok(url)
+    }
+
+    fn list_merge_requests_url(
+        project_path: &str,
+        options: &ListMergeRequestsOptions,
+    ) -> Result<Url, GitPlatformError> {
+        let mut url = Url::parse(&format!("{}/repos/{}/pulls", Self::BASE_URL, project_path))
+            .map_err(|e| GitPlatformError::RequestError(format!("Invalid GitHub URL: {}", e)))?;
+
+        {
+            let mut pairs = url.query_pairs_mut();
+            let state = options.state.as_deref().unwrap_or("open");
+            pairs
+                .append_pair("per_page", &options.limit.to_string())
+                .append_pair("direction", "desc")
+                .append_pair("sort", "updated")
+                .append_pair("state", if state == "opened" { "open" } else { state });
         }
 
         Ok(url)
@@ -577,6 +598,52 @@ impl GitPlatformClient for GitHubClient {
         Ok(merge_requests)
     }
 
+    async fn list_merge_requests(
+        &self,
+        token: &str,
+        project_path: &str,
+        options: &ListMergeRequestsOptions,
+    ) -> Result<Vec<PlatformMergeRequest>, GitPlatformError> {
+        let url = Self::list_merge_requests_url(project_path, options)?;
+
+        let response = self
+            .http
+            .get(url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .map_err(|e| {
+                if e.is_timeout() {
+                    GitPlatformError::ServiceUnavailable("GitHub API request timed out".to_string())
+                } else {
+                    GitPlatformError::RequestError(format!("GitHub request failed: {}", e))
+                }
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(Self::map_status_error(status, &body));
+        }
+
+        let prs: Vec<GitHubPullRequest> = response.json().await.map_err(|e| {
+            GitPlatformError::RequestError(format!("Failed to parse GitHub pull requests: {}", e))
+        })?;
+
+        Ok(prs
+            .into_iter()
+            .map(|pr| {
+                let mut related_issue_iids = Self::extract_issue_references(Some(&pr.title));
+                related_issue_iids.extend(Self::extract_issue_references(pr.body.as_deref()));
+                let mut platform_mr = pr.into_platform_mr_for_project(Vec::new(), project_path);
+                platform_mr.related_issue_iids = related_issue_iids;
+                platform_mr
+            })
+            .collect())
+    }
+
     async fn get_merge_request(
         &self,
         token: &str,
@@ -1059,6 +1126,22 @@ mod tests {
         assert_eq!(
             url.as_str(),
             "https://api.github.com/repos/owner/repo/issues?per_page=25&direction=desc&sort=created&state=open&labels=needs+review%2C%E4%B8%AD%E6%96%87&assignee=alice%2Bbob"
+        );
+    }
+
+    #[test]
+    fn list_merge_requests_url_requests_open_updated_prs() {
+        let options = ListMergeRequestsOptions {
+            state: Some("opened".to_string()),
+            limit: 100,
+        };
+
+        let url = GitHubClient::list_merge_requests_url("owner/repo", &options)
+            .expect("url should parse");
+
+        assert_eq!(
+            url.as_str(),
+            "https://api.github.com/repos/owner/repo/pulls?per_page=100&direction=desc&sort=updated&state=open"
         );
     }
 
