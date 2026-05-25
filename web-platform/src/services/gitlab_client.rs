@@ -546,7 +546,10 @@ impl GitPlatformClient for GitLabClient {
             ))
         })?;
 
-        Ok(mrs.into_iter().map(|mr| mr.into_platform_mr_for_project(project_path)).collect())
+        Ok(mrs
+            .into_iter()
+            .map(|mr| mr.into_platform_mr_for_project(project_path))
+            .collect())
     }
 
     async fn get_merge_request(

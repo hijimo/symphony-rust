@@ -5,6 +5,9 @@
 //!
 //! SPEC reference: Section 9
 
+pub mod gc;
+pub mod terminal_marker;
+
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -16,6 +19,9 @@ use thiserror::Error;
 
 use crate::config::service_config::HooksConfig;
 use crate::proxy::proxy_command;
+
+pub use gc::{WorkspaceGc, WorkspaceGcCycleOptions, WorkspaceGcCycleSummary};
+pub use terminal_marker::TerminalMarker;
 
 /// Workspace information (SPEC Section 4.1.4).
 #[derive(Debug, Clone)]
@@ -37,23 +43,25 @@ pub struct WorkspaceRunLease {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct WorkspaceMetadata {
-    schema_version: u32,
-    issue_id: String,
-    issue_id_path_key: String,
-    workspace_key: String,
-    issue_identifier: String,
-    init_started_at: DateTime<Utc>,
-    initialized_at: Option<DateTime<Utc>>,
-    init_status: String,
-    after_create_fingerprint: Option<String>,
-    initialized_by_run_id: String,
-    expected_git_root: String,
-    last_error: Option<WorkspaceMetadataError>,
+pub(crate) struct WorkspaceMetadata {
+    pub(crate) schema_version: u32,
+    pub(crate) issue_id: String,
+    pub(crate) issue_id_path_key: String,
+    pub(crate) workspace_key: String,
+    pub(crate) issue_identifier: String,
+    pub(crate) init_started_at: DateTime<Utc>,
+    pub(crate) initialized_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub(crate) last_used_at: Option<DateTime<Utc>>,
+    pub(crate) init_status: String,
+    pub(crate) after_create_fingerprint: Option<String>,
+    pub(crate) initialized_by_run_id: String,
+    pub(crate) expected_git_root: String,
+    pub(crate) last_error: Option<WorkspaceMetadataError>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct WorkspaceMetadataError {
+pub(crate) struct WorkspaceMetadataError {
     code: String,
     message: String,
     at: DateTime<Utc>,
@@ -159,6 +167,7 @@ pub fn sanitize_workspace_key(identifier: &str) -> Result<String, WorkspaceError
 ///
 /// Responsible for creating/reusing per-issue workspaces, running lifecycle hooks,
 /// validating path containment, and cleaning up terminal workspaces.
+#[derive(Clone)]
 pub struct WorkspaceManager {
     root: PathBuf,
     hooks: HooksConfig,
@@ -231,9 +240,11 @@ impl WorkspaceManager {
         self.validate_path_containment(&workspace_path)?;
 
         if metadata_path.exists() {
-            let metadata = read_workspace_metadata(&metadata_path).await?;
+            let mut metadata = read_workspace_metadata(&metadata_path).await?;
             validate_workspace_metadata(&metadata, issue_id, &issue_id_path_key, &workspace_key)?;
             if metadata.init_status == "ready" {
+                metadata.last_used_at = Some(Utc::now());
+                write_workspace_metadata(&metadata_path, metadata).await?;
                 write_lock_sidecar(
                     &lock_sidecar_path,
                     LockSidecar {
@@ -284,6 +295,7 @@ impl WorkspaceManager {
                 issue_identifier: issue_identifier.to_string(),
                 init_started_at: started_at,
                 initialized_at: None,
+                last_used_at: Some(started_at),
                 init_status: "initializing".to_string(),
                 after_create_fingerprint: None,
                 initialized_by_run_id: run_id.to_string(),
@@ -303,6 +315,7 @@ impl WorkspaceManager {
                     issue_identifier: issue_identifier.to_string(),
                     init_started_at: started_at,
                     initialized_at: None,
+                    last_used_at: Some(started_at),
                     init_status: "failed".to_string(),
                     after_create_fingerprint: None,
                     initialized_by_run_id: run_id.to_string(),
@@ -330,6 +343,7 @@ impl WorkspaceManager {
                 issue_identifier: issue_identifier.to_string(),
                 init_started_at: started_at,
                 initialized_at: Some(Utc::now()),
+                last_used_at: Some(Utc::now()),
                 init_status: "ready".to_string(),
                 after_create_fingerprint: None,
                 initialized_by_run_id: run_id.to_string(),
@@ -467,11 +481,20 @@ impl WorkspaceManager {
             .spawn()
             .map_err(|e| WorkspaceError::HookIo { source: e })?;
 
-        // Take stdout/stderr handles before the select! to avoid ownership issues
-        let _stdout = child.stdout.take();
-        let _stderr = child.stderr.take();
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let drain_stdout = tokio::spawn(async move {
+            if let Some(mut out) = stdout {
+                let _ = tokio::io::copy(&mut out, &mut tokio::io::sink()).await;
+            }
+        });
+        let drain_stderr = tokio::spawn(async move {
+            if let Some(mut err) = stderr {
+                let _ = tokio::io::copy(&mut err, &mut tokio::io::sink()).await;
+            }
+        });
 
-        tokio::select! {
+        let result = tokio::select! {
             result = child.wait() => {
                 match result {
                     Ok(status) if status.success() => {
@@ -496,7 +519,17 @@ impl WorkspaceManager {
                 let _ = child.wait().await;
                 Err(WorkspaceError::HookTimeout { hook: name.to_string() })
             }
+        };
+
+        if matches!(result, Err(WorkspaceError::HookTimeout { .. })) {
+            drain_stdout.abort();
+            drain_stderr.abort();
+        } else {
+            let _ = drain_stdout.await;
+            let _ = drain_stderr.await;
         }
+
+        result
     }
 
     /// Run the before_run hook (SPEC Section 9.4).
@@ -596,6 +629,102 @@ impl WorkspaceManager {
         }
     }
 
+    /// Mark an issue workspace for GC using the current timestamp.
+    pub async fn write_terminal_marker(
+        &self,
+        marker: TerminalMarker,
+    ) -> Result<(), WorkspaceError> {
+        terminal_marker::write(&self.root, &marker).await
+    }
+
+    /// Mark an issue workspace as terminal at a specific time.
+    pub async fn write_terminal_marker_at(
+        &self,
+        issue_id: &str,
+        identifier: &str,
+        state: &str,
+        terminal_since: DateTime<Utc>,
+    ) -> Result<(), WorkspaceError> {
+        let identifier_key = sanitize_workspace_key(identifier)?;
+        let issue_id_path_key = Self::issue_id_path_key(issue_id);
+        let workspace_key = format!("{issue_id_path_key}-{identifier_key}");
+        self.write_terminal_marker(TerminalMarker {
+            issue_id: issue_id.to_string(),
+            issue_id_path_key,
+            workspace_key,
+            terminal_since,
+            state: state.to_string(),
+            gc_attempts: 0,
+            last_attempt_at: None,
+        })
+        .await
+    }
+
+    /// Delete a worker lock sidecar after a worker exits. The lock file itself is retained.
+    pub async fn delete_lock_sidecar(&self, issue_id: &str) -> Result<(), WorkspaceError> {
+        let path = self.lock_sidecar_path_for_key(&Self::issue_id_path_key(issue_id));
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(WorkspaceError::Io { source: e }),
+        }
+    }
+
+    /// Test/support helper for simulating stale workspaces without sleeping.
+    pub async fn rewrite_workspace_last_used_at(
+        &self,
+        issue_id: &str,
+        identifier: &str,
+        last_used_at: DateTime<Utc>,
+    ) -> Result<(), WorkspaceError> {
+        let path = self.metadata_path_for_issue(issue_id, identifier)?;
+        let mut metadata = read_workspace_metadata(&path).await?;
+        metadata.last_used_at = Some(last_used_at);
+        write_workspace_metadata(&path, metadata).await
+    }
+
+    pub(crate) fn lock_path_for_key(&self, issue_id_path_key: &str) -> PathBuf {
+        self.root
+            .join(".symphony")
+            .join("locks")
+            .join("issues")
+            .join(format!("{issue_id_path_key}.lock"))
+    }
+
+    pub(crate) fn lock_sidecar_path_for_key(&self, issue_id_path_key: &str) -> PathBuf {
+        self.root
+            .join(".symphony")
+            .join("locks")
+            .join("issues")
+            .join(format!("{issue_id_path_key}.json"))
+    }
+
+    pub(crate) fn workspace_path_for_key(&self, workspace_key: &str) -> PathBuf {
+        self.root.join(workspace_key)
+    }
+
+    pub(crate) fn metadata_path_for_key(&self, workspace_key: &str) -> PathBuf {
+        self.workspace_path_for_key(workspace_key)
+            .join(".symphony-workspace.json")
+    }
+
+    pub(crate) fn metadata_path_for_issue(
+        &self,
+        issue_id: &str,
+        identifier: &str,
+    ) -> Result<PathBuf, WorkspaceError> {
+        let identifier_key = sanitize_workspace_key(identifier)?;
+        let workspace_key = format!("{}-{identifier_key}", Self::issue_id_path_key(issue_id));
+        Ok(self.metadata_path_for_key(&workspace_key))
+    }
+
+    pub(crate) async fn try_acquire_issue_lock(
+        &self,
+        issue_id_path_key: &str,
+    ) -> Result<Option<Arc<std::fs::File>>, WorkspaceError> {
+        acquire_stable_lock_file_nonblocking(&self.lock_path_for_key(issue_id_path_key)).await
+    }
+
     /// Clean up workspaces for issues in terminal states (SPEC Section 8.6).
     ///
     /// Called at startup to prevent stale terminal workspaces from accumulating.
@@ -637,6 +766,34 @@ async fn acquire_stable_lock_file(path: &Path) -> Result<Arc<std::fs::File>, Wor
     Ok(Arc::new(file))
 }
 
+async fn acquire_stable_lock_file_nonblocking(
+    path: &Path,
+) -> Result<Option<Arc<std::fs::File>>, WorkspaceError> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| WorkspaceError::Io { source: e })?;
+    }
+    let path = path.to_path_buf();
+    let file = tokio::task::spawn_blocking(move || {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        match lock_file_exclusive_nonblocking(&file) {
+            Ok(true) => Ok(Some(file)),
+            Ok(false) => Ok(None),
+            Err(e) => Err(e),
+        }
+    })
+    .await
+    .map_err(|e| WorkspaceError::Io {
+        source: std::io::Error::other(e.to_string()),
+    })?
+    .map_err(|e| WorkspaceError::Io { source: e })?;
+    Ok(file.map(Arc::new))
+}
+
 #[cfg(unix)]
 fn lock_file_exclusive(file: &std::fs::File) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
@@ -649,9 +806,31 @@ fn lock_file_exclusive(file: &std::fs::File) -> std::io::Result<()> {
     }
 }
 
+#[cfg(unix)]
+fn lock_file_exclusive_nonblocking(file: &std::fs::File) -> std::io::Result<bool> {
+    use std::os::fd::AsRawFd;
+
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        Ok(true)
+    } else {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            Ok(false)
+        } else {
+            Err(err)
+        }
+    }
+}
+
 #[cfg(not(unix))]
 fn lock_file_exclusive(_file: &std::fs::File) -> std::io::Result<()> {
     Ok(())
+}
+
+#[cfg(not(unix))]
+fn lock_file_exclusive_nonblocking(_file: &std::fs::File) -> std::io::Result<bool> {
+    Ok(true)
 }
 
 async fn is_dir_empty(path: &Path) -> Result<bool, WorkspaceError> {
@@ -665,7 +844,9 @@ async fn is_dir_empty(path: &Path) -> Result<bool, WorkspaceError> {
         .is_none())
 }
 
-async fn read_workspace_metadata(path: &Path) -> Result<WorkspaceMetadata, WorkspaceError> {
+pub(crate) async fn read_workspace_metadata(
+    path: &Path,
+) -> Result<WorkspaceMetadata, WorkspaceError> {
     let bytes = tokio::fs::read(path)
         .await
         .map_err(|e| WorkspaceError::Io { source: e })?;
@@ -696,7 +877,7 @@ fn validate_workspace_metadata(
     Ok(())
 }
 
-async fn write_workspace_metadata(
+pub(crate) async fn write_workspace_metadata(
     path: &Path,
     metadata: WorkspaceMetadata,
 ) -> Result<(), WorkspaceError> {
@@ -715,7 +896,7 @@ async fn write_lock_sidecar(path: &Path, sidecar: LockSidecar) -> Result<(), Wor
     atomic_write(path, &bytes).await
 }
 
-async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), WorkspaceError> {
+pub(crate) async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), WorkspaceError> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -772,6 +953,8 @@ async fn quarantine_workspace(
     tokio::fs::rename(workspace_path, target)
         .await
         .map_err(|e| WorkspaceError::Io { source: e })?;
+    let marker = quarantine_dir.join(".quarantined_at");
+    let _ = tokio::fs::write(marker, Utc::now().to_rfc3339()).await;
     Ok(())
 }
 
