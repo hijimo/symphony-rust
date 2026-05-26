@@ -3,6 +3,34 @@ mod common;
 use reqwest::StatusCode;
 
 #[tokio::test]
+async fn health_endpoint_returns_ok_status_contract() {
+    let app = common::TestApp::new().await;
+
+    let resp = app.get("/health", None).await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body, serde_json::json!({ "status": "ok" }));
+}
+
+#[tokio::test]
+async fn static_dir_serves_frontend_index() {
+    let static_dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        static_dir.path().join("index.html"),
+        r#"<!doctype html><html><body>Symphony Frontend</body></html>"#,
+    )
+    .unwrap();
+    let app = common::TestApp::new_with_static_dir(static_dir.path().to_path_buf()).await;
+
+    let resp = app.get("/", None).await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("Symphony Frontend"));
+}
+
+#[tokio::test]
 async fn test_e2e_admin_full_flow() {
     let app = common::TestApp::new().await;
 

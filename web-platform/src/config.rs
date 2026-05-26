@@ -7,6 +7,7 @@ pub struct AppConfig {
     pub database_url: String,
     pub server_host: String,
     pub server_port: u16,
+    pub static_dir: Option<String>,
     pub symphony_bin: String,
     pub workspace_root: String,
 }
@@ -21,6 +22,14 @@ impl AppConfig {
             .unwrap_or_else(|_| "3000".to_string())
             .parse::<u16>()
             .expect("SERVER_PORT must be a valid port number");
+        let static_dir = env::var("STATIC_DIR").ok().and_then(|value| {
+            let value = value.trim().to_string();
+            if value.is_empty() {
+                None
+            } else {
+                Some(value)
+            }
+        });
 
         if jwt_secret.len() < 32 {
             panic!("JWT_SECRET must be at least 32 characters");
@@ -37,6 +46,7 @@ impl AppConfig {
             database_url,
             server_host,
             server_port,
+            static_dir,
             symphony_bin,
             workspace_root,
         }

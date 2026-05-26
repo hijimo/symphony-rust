@@ -1,8 +1,12 @@
+use std::path::PathBuf;
+
 use axum::{
     middleware,
     routing::{delete, get, post, put},
     Json, Router,
 };
+use serde::Serialize;
+use tower_http::services::{ServeDir, ServeFile};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -67,7 +71,16 @@ impl utoipa::Modify for SecurityAddon {
     }
 }
 
+#[derive(Serialize)]
+struct HealthResponse {
+    status: &'static str,
+}
+
 pub fn create_router(state: AppState) -> Router {
+    create_router_with_static_dir(state, None)
+}
+
+pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf>) -> Router {
     let public_routes = Router::new()
         .route("/health", get(health_check))
         .route("/api/auth/login", post(auth::login));
@@ -249,7 +262,7 @@ pub fn create_router(state: AppState) -> Router {
         get(concurrency::concurrency_events_sse),
     );
 
-    Router::new()
+    let router = Router::new()
         .merge(public_routes)
         .merge(user_routes)
         .merge(admin_routes)
@@ -257,9 +270,18 @@ pub fn create_router(state: AppState) -> Router {
         .merge(token_validation_routes)
         .merge(sse_routes)
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
-        .with_state(state)
+        .with_state(state);
+
+    if let Some(static_dir) = static_dir {
+        let index_file = static_dir.join("index.html");
+        router.fallback_service(
+            ServeDir::new(static_dir).not_found_service(ServeFile::new(index_file)),
+        )
+    } else {
+        router
+    }
 }
 
-async fn health_check() -> Json<crate::models::ResponseData<&'static str>> {
-    Json(crate::models::ResponseData::success("ok"))
+async fn health_check() -> Json<HealthResponse> {
+    Json(HealthResponse { status: "ok" })
 }

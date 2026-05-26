@@ -1,0 +1,18 @@
+services:
+  symphony:
+    # Expose directly on all interfaces only when a trusted reverse proxy or
+    # firewall is already configured.
+    # ports:
+    #   - "${SERVER_PORT:-3000}:3000"
+    #
+    # To build locally instead of pulling GHCR:
+    # build:
+    #   context: ..
+    #   dockerfile: deploy/docker/Dockerfile
+    #
+    # Resource limits example:
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "2"
+    #       memory: 2G

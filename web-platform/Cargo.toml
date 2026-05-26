@@ -13,7 +13,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 http = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 r2d2 = "0.8"

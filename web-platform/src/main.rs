@@ -1,5 +1,6 @@
 use std::env;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -22,7 +23,7 @@ use web_platform::process_manager::ProcessManager;
 use web_platform::repository::{
     AlertRepository, SqliteRepository, TokenBlacklistRepository, UserRepository,
 };
-use web_platform::router::create_router;
+use web_platform::router::create_router_with_static_dir;
 use web_platform::services::ai_service::{AiService, AiServiceConfig};
 use web_platform::services::cache::ApiCache;
 use web_platform::shutdown::shutdown_signal;
@@ -217,7 +218,18 @@ async fn main() {
         ])
         .allow_headers([AUTHORIZATION, CONTENT_TYPE]);
 
-    let app = create_router(state)
+    let static_dir = config.static_dir.as_ref().map(PathBuf::from);
+    if let Some(path) = static_dir.as_ref() {
+        if !path.is_dir() {
+            panic!(
+                "STATIC_DIR must point to an existing directory: {}",
+                path.display()
+            );
+        }
+        info!("Serving frontend static files from {}", path.display());
+    }
+
+    let app = create_router_with_static_dir(state, static_dir)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .into_make_service_with_connect_info::<SocketAddr>();
