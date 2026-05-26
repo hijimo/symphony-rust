@@ -1,0 +1,41 @@
+services:
+  symphony:
+    image: ghcr.io/hijimo/symphony:latest
+    # build:
+    #   context: ..
+    #   dockerfile: deploy/docker/Dockerfile
+    ports:
+      - "127.0.0.1:${SERVER_PORT:-3000}:3000"
+    volumes:
+      - symphony-data:/data
+      - symphony-workspaces:/workspaces
+    environment:
+      - JWT_SECRET=${JWT_SECRET}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - DATABASE_URL=/data/symphony.db
+      - SYMPHONY_BIN=/usr/local/bin/symphony-platform
+      - SYMPHONY_WORKSPACE_ROOT=/workspaces
+      - STATIC_DIR=/srv/frontend
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=3000
+      - RUST_LOG=${RUST_LOG:-web_platform=info}
+      - AZURE_OPENAI_BASEURL=${AZURE_OPENAI_BASEURL:-}
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY:-}
+      - AZURE_OPENAI_MODEL=${AZURE_OPENAI_MODEL:-gpt-5.5}
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - ALL_PROXY=${ALL_PROXY:-}
+      - http_proxy=${http_proxy:-}
+      - https_proxy=${https_proxy:-}
+      - all_proxy=${all_proxy:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  symphony-data:
+  symphony-workspaces:

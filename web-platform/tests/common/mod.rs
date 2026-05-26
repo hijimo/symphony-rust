@@ -15,7 +15,7 @@ use web_platform::crypto;
 use web_platform::db::init_pool;
 use web_platform::process_manager::ProcessManager;
 use web_platform::repository::{SqliteRepository, UserConfigRepository, UserRepository};
-use web_platform::router::create_router;
+use web_platform::router::{create_router, create_router_with_static_dir};
 use web_platform::services::cache::ApiCache;
 use web_platform::{AppState, Phase3RateLimiter};
 
@@ -37,6 +37,17 @@ impl TestApp {
     }
 
     pub async fn new_with_symphony_bin(symphony_bin: &str) -> Self {
+        Self::new_with_symphony_bin_and_static_dir(symphony_bin, None).await
+    }
+
+    pub async fn new_with_static_dir(static_dir: PathBuf) -> Self {
+        Self::new_with_symphony_bin_and_static_dir("/usr/bin/false", Some(static_dir)).await
+    }
+
+    async fn new_with_symphony_bin_and_static_dir(
+        symphony_bin: &str,
+        static_dir: Option<PathBuf>,
+    ) -> Self {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
         let pool = init_pool(db_path.to_str().unwrap());
@@ -84,7 +95,11 @@ impl TestApp {
         };
 
         let repo = state.repo.clone();
-        let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
+        let router = match static_dir {
+            Some(static_dir) => create_router_with_static_dir(state, Some(static_dir)),
+            None => create_router(state),
+        };
+        let app = router.into_make_service_with_connect_info::<SocketAddr>();
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

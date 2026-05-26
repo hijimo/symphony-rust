@@ -1,0 +1,10 @@
+services:
+  symphony:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile
+    image: symphony:dev
+    ports:
+      - "${SERVER_PORT:-3000}:3000"
+    environment:
+      - RUST_LOG=${RUST_LOG:-web_platform=debug,tower_http=info}
