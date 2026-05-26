@@ -27,6 +27,59 @@ npm run build
 
 ---
 
+## 快速部署（Docker）
+
+`docs/方案/quick-deploy-scheme.md` 中的 Phase 1 服务器部署已落地到 `deploy/` 目录：
+
+- `deploy/docker/Dockerfile` — 多阶段构建 `web-platform`、`symphony-platform` 和前端静态文件。
+- `deploy/docker-compose.yml` — 生产一键启动编排，默认仅绑定 `127.0.0.1:${SERVER_PORT:-3000}`。
+- `deploy/.env.example` — 环境变量模板，安装脚本会自动生成 `JWT_SECRET` 和 `ENCRYPTION_KEY`。
+- `deploy/scripts/install.sh` — 一键安装脚本，包含 Docker/Compose/openssl/curl 检查、密钥生成、启动和健康检查。
+- `deploy/scripts/upgrade.sh` — 升级脚本，先备份再拉取镜像、重启并验证 `/health`。
+- `deploy/scripts/backup.sh` — 备份 `.env`、SQLite 数据库和工作空间。
+- `deploy/Caddyfile.example` — Caddy 反向代理和自动 HTTPS 示例。
+
+### 一键安装
+
+```bash
+curl -fsSL https://github.com/hijimo/symphony/releases/latest/download/install.sh -o install.sh
+curl -fsSL https://github.com/hijimo/symphony/releases/latest/download/install.sh.sha256 -o install.sh.sha256
+sha256sum -c install.sh.sha256 && bash install.sh
+```
+
+默认安装目录为 `~/.symphony`。如需修改：
+
+```bash
+SYMPHONY_INSTALL_DIR=/opt/symphony bash install.sh
+```
+
+安装完成后访问 `http://localhost:3000`，使用日志中打印的 `admin` 初始密码登录，并立即修改密码。
+
+### 手动启动
+
+```bash
+cd deploy
+cp .env.example .env
+
+JWT_SECRET=$(openssl rand -base64 32)
+ENCRYPTION_KEY=$(openssl rand -base64 32)
+sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$JWT_SECRET|" .env
+sed -i "s|^ENCRYPTION_KEY=.*|ENCRYPTION_KEY=$ENCRYPTION_KEY|" .env
+
+docker compose up -d
+curl http://localhost:3000/health
+docker compose logs | grep "Initial password"
+```
+
+如需本地构建镜像：
+
+```bash
+cd deploy
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+---
+
 ## 环境变量配置
 
 | 变量 | 必填 | 说明 | 示例 |
@@ -36,6 +89,7 @@ npm run build
 | `DATABASE_URL` | 否 | SQLite 数据库文件路径 | `/data/symphony.db` |
 | `SERVER_HOST` | 否 | 监听地址，默认 `0.0.0.0` | `127.0.0.1` |
 | `SERVER_PORT` | 否 | 监听端口，默认 `3000` | `3000` |
+| `STATIC_DIR` | 否 | 前端静态文件目录；非空时由 web-platform 直接服务 SPA | `/srv/frontend` |
 | `SYMPHONY_BIN` | 否 | symphony-platform 二进制路径，默认 `symphony-platform` | `/usr/local/bin/symphony-platform` |
 | `SYMPHONY_WORKSPACE_ROOT` | 否 | 工作空间根目录，默认 `./workspaces` | `/data/workspaces` |
 | `ADMIN_INIT_PASSWORD` | 否 | 首次启动时创建 admin 用户的初始密码 | `change-me-on-first-login` |
@@ -77,6 +131,7 @@ mkdir -p /data
 export JWT_SECRET="your-production-secret"
 export ENCRYPTION_KEY="your-base64-encoded-32-byte-key"
 export DATABASE_URL="/data/symphony.db"
+export STATIC_DIR="/opt/symphony/web-frontend/dist"
 export SYMPHONY_BIN="/usr/local/bin/symphony-platform"
 export SYMPHONY_WORKSPACE_ROOT="/data/workspaces"
 
@@ -140,7 +195,18 @@ systemctl status symphony
 
 ## 前端部署
 
-### 方式一：Nginx 反向代理（推荐）
+### 方式一：web-platform 内置静态文件服务（Docker 默认）
+
+设置 `STATIC_DIR` 后，web-platform 会直接服务前端构建产物，并将未知前端路由回退到 `index.html`：
+
+```bash
+export STATIC_DIR="/opt/symphony/web-frontend/dist"
+web-platform
+```
+
+Docker 镜像默认将前端构建产物放入 `/srv/frontend` 并设置 `STATIC_DIR=/srv/frontend`。
+
+### 方式二：Nginx 反向代理
 
 将前端静态文件和后端 API 统一通过 Nginx 对外暴露：
 
@@ -179,7 +245,7 @@ server {
 }
 ```
 
-### 方式二：静态文件托管
+### 方式三：静态文件托管
 
 将 `web-frontend/dist/` 上传至任意静态文件托管服务（Nginx、CDN 等），并配置前端的 API 基础 URL 指向后端地址。
 
@@ -218,7 +284,22 @@ export RUST_LOG="web_platform=info"
 
 ### 健康检查
 
-rust-platform 的 `/api/v1/state` 端点返回当前运行状态快照，可用于监控告警：
+web-platform 提供部署健康检查端点：
+
+```bash
+curl http://localhost:3000/health
+```
+
+响应：
+
+```json
+{"status":"ok"}
+```
+
+Dockerfile 和 `deploy/docker-compose.yml` 都使用该端点确认服务可用。
+
+rust-platform 的 `/api/v1/state` 端点返回当前运行状态快照，可用于更细粒度的编排监控：
+
 
 ```bash
 curl http://localhost:<rust_platform_port>/api/v1/state
@@ -297,7 +378,7 @@ systemctl status symphony
 5. **验证**
 
 ```bash
-curl http://localhost:3000/api/v1/health
+curl http://localhost:3000/health
 ```
 
 ---

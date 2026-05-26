@@ -1,0 +1,9 @@
+target/
+web-frontend/node_modules/
+web-frontend/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/sidecars/
+.git/
+.github/
+.DS_Store
+**/*.log

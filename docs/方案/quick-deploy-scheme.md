@@ -177,6 +177,7 @@ volumes:
 ```
 
 **注意事项：**
+
 - 端口绑定为 `127.0.0.1:3000:3000`，仅本地可访问，需通过反向代理对外暴露
 - 不设置 `ADMIN_INIT_PASSWORD`，依赖代码自动生成随机密码并打印到日志
 - 代理环境变量透传，支持企业内网环境
@@ -555,6 +556,7 @@ Tauri 2 的 sidecar 机制允许将外部二进制打包进应用。Symphony Des
 ```
 
 **关键修正点：**
+
 - `plugins.shell` 中移除了无效的顶层 `"sidecar": true`，每个 scope 条目单独声明
 - `frontendDist` 路径修正为相对于 `src-tauri/` 的 `../../web-frontend/dist`
 - `beforeBuildCommand` 显式 cd 到 web-frontend 目录执行构建
@@ -632,6 +634,7 @@ fn main() {
 ```
 
 **关键修正点：**
+
 - 使用 `tauri_plugin_shell::process::CommandChild` 替代已废弃的 `tauri::api::process::CommandChild`
 - 端口就绪等待逻辑移入 `tauri::async_runtime::spawn`，避免阻塞同步 `setup` 闭包
 - `navigate()` 使用 `tauri::Url` 类型
@@ -720,6 +723,7 @@ fn resolve_sidecar_path(name: &str) -> String {
 ```
 
 **关键修正点：**
+
 - 返回类型使用 `tauri_plugin_shell::process::CommandChild`
 - sidecar 名称使用 `"sidecars/web-platform"` 与 `tauri.conf.json` 中 `externalBin` 路径一致
 - 添加 `wait_for_ready` 异步函数解决启动时序问题
@@ -870,6 +874,7 @@ jobs:
 ```
 
 **关键修正点：**
+
 - `tauri-apps/tauri-action@v0.5`（兼容 Tauri 2）
 - Windows 使用 PowerShell 并正确处理 `.exe` 后缀
 - 显式 `rustup target add` 确保交叉编译 target 可用
@@ -891,6 +896,7 @@ jobs:
 | Origin 校验 | 后端验证请求 Origin/Host header，拒绝非 localhost 来源（桌面模式安全加固） | P2 |
 
 **已支持无需改动的配置：**
+
 - 端口动态绑定（`SERVER_PORT` 环境变量）
 - 数据库路径（`DATABASE_URL` 环境变量）
 - 管理员密码自动生成（未设置 `ADMIN_INIT_PASSWORD` 时随机生成并打印到日志）
@@ -981,6 +987,7 @@ curl http://localhost:3000/health
 4. 配置 Git 平台 Token（应用内引导）
 
 **数据目录位置：**
+
 - macOS: `~/Library/Application Support/com.symphony.desktop/`
 - Windows: `%APPDATA%\com.symphony.desktop\`
 - Linux: `~/.config/com.symphony.desktop/`
@@ -1137,10 +1144,12 @@ curl http://localhost:3000/health
 ### 实施时需关注的中等风险（来自第三轮审查）
 
 **架构层面：**
+
 1. CI 中 `npm ci` 会执行两次（显式步骤 + beforeBuildCommand），可优化为 beforeBuildCommand 只执行 `npm run build`
 2. `resolve_sidecar_path` 需要完整错误处理，找不到 binary 时应返回明确错误
 
 **安全层面：**
+
 1. Origin 校验建议从 P2 提升为 P1，防止本机 CSRF 攻击
 2. 管理员初始密码打印到日志后，重启不应再次打印（数据库标记已初始化）
 3. .env 临时文件应在写入前先 chmod 600
@@ -1148,8 +1157,14 @@ curl http://localhost:3000/health
 5. 密钥轮换流程需在文档中补充
 
 **用户体验层面：**
+
 1. 安装脚本密码提取应在健康检查通过后执行，失败时 fallback 到提示命令
 2. `--reinstall` 需要二次确认并说明数据清除范围
 3. 健康检查等待期间应输出进度提示
 4. 补充"首次登录后做什么"的引导链接
 5. 补充桌面应用迁移到 Docker 的数据迁移路径
+<<<<<<< HEAD
+=======
+SYMPHONY_QUICK_DEPLOY_SCHEME_MD
+
+>>>>>>> 2d9107242a6b3164c9a2267057655ceae226989b
