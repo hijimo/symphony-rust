@@ -19,6 +19,7 @@ import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import SpeedIcon from '@mui/icons-material/Speed';
 import NotificationsOutlinedIcon from '@mui/icons-material/NotificationsOutlined';
+import DashboardOutlinedIcon from '@mui/icons-material/DashboardOutlined';
 import { useAuthStore } from '../store/auth';
 
 const DRAWER_WIDTH = 256;
@@ -54,6 +55,13 @@ interface MenuGroup {
 }
 
 const menuGroups: MenuGroup[] = [
+  {
+    group: '总览',
+    roles: ['admin', 'user'],
+    items: [
+      { path: '/overview', label: '全局看板', icon: <DashboardOutlinedIcon /> },
+    ],
+  },
   {
     group: '项目',
     roles: ['admin', 'user'],

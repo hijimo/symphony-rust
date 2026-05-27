@@ -15,6 +15,7 @@ import KanbanPage from './pages/projects/KanbanPage';
 import CreateIssuePage from './pages/projects/CreateIssuePage';
 import IssueDetailPage from './pages/projects/IssueDetailPage';
 import MrDetailPage from './pages/projects/MrDetailPage';
+import OverviewKanbanPage from './pages/OverviewKanbanPage';
 
 const router = createBrowserRouter([
   {
@@ -31,7 +32,11 @@ const router = createBrowserRouter([
     children: [
       {
         index: true,
-        element: <Navigate to="/projects" replace />,
+        element: <Navigate to="/overview" replace />,
+      },
+      {
+        path: 'overview',
+        element: <OverviewKanbanPage />,
       },
       {
         path: 'projects',
