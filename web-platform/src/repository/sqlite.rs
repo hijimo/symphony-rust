@@ -569,6 +569,59 @@ impl ProjectRepository for SqliteRepository {
         .unwrap()
     }
 
+    async fn list_running_projects_for_member(
+        &self,
+        user_id: i64,
+        is_admin: bool,
+        limit: u32,
+    ) -> Result<(Vec<Project>, u64)> {
+        let pool = self.pool.clone();
+        let limit = limit.min(20) as i64;
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get()?;
+
+            let (count_sql, query_sql) = if is_admin {
+                (
+                    "SELECT COUNT(*) FROM projects WHERE service_status = 'running'".to_string(),
+                    format!(
+                        "SELECT {} FROM projects p WHERE p.service_status = 'running' ORDER BY p.updated_at DESC LIMIT ?1",
+                        PROJECT_COLUMNS.split(", ").map(|c| format!("p.{}", c)).collect::<Vec<_>>().join(", ")
+                    ),
+                )
+            } else {
+                (
+                    "SELECT COUNT(*) FROM projects p INNER JOIN project_members pm ON pm.project_id = p.id WHERE p.service_status = 'running' AND pm.user_id = ?1".to_string(),
+                    format!(
+                        "SELECT {} FROM projects p INNER JOIN project_members pm ON pm.project_id = p.id WHERE p.service_status = 'running' AND pm.user_id = ?1 ORDER BY p.updated_at DESC LIMIT ?2",
+                        PROJECT_COLUMNS.split(", ").map(|c| format!("p.{}", c)).collect::<Vec<_>>().join(", ")
+                    ),
+                )
+            };
+
+            let total: i64 = if is_admin {
+                conn.query_row(&count_sql, [], |row| row.get(0))?
+            } else {
+                conn.query_row(&count_sql, rusqlite::params![user_id], |row| row.get(0))?
+            };
+
+            let projects = if is_admin {
+                let mut stmt = conn.prepare(&query_sql)?;
+                let rows = stmt.query_map(rusqlite::params![limit], row_to_project)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            } else {
+                let mut stmt = conn.prepare(&query_sql)?;
+                let rows = stmt.query_map(rusqlite::params![user_id, limit], row_to_project)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+
+            Ok((projects, total as u64))
+        })
+        .await
+        .unwrap()
+    }
+
     async fn update_project(&self, id: i64, updates: &ProjectUpdate) -> Result<()> {
         let pool = self.pool.clone();
         let updates = updates.clone();

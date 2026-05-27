@@ -87,6 +87,13 @@ pub trait ProjectRepository: Send + Sync {
         &self,
         filter: ProjectListFilter<'_>,
     ) -> Result<(Vec<Project>, i64)>;
+    /// List running projects that the user is a member of (SQL-level JOIN).
+    async fn list_running_projects_for_member(
+        &self,
+        user_id: i64,
+        is_admin: bool,
+        limit: u32,
+    ) -> Result<(Vec<Project>, u64)>;
     async fn update_project(&self, id: i64, updates: &ProjectUpdate) -> Result<()>;
     async fn delete_project(&self, id: i64) -> Result<()>;
     async fn update_service_status(&self, id: i64, status: &ServiceStatusUpdate) -> Result<()>;
