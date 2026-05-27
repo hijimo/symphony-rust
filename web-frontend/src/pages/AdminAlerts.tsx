@@ -13,6 +13,7 @@ import {
   Skeleton,
 } from '@mui/material';
 import SaveIcon from '@mui/icons-material/Save';
+import AddIcon from '@mui/icons-material/Add';
 import { useAlertStore } from '../store/alertStore';
 import AlertHistoryTable from '../components/alerts/AlertHistoryTable';
 import AlertRuleCard from '../components/alerts/AlertRuleCard';
@@ -203,12 +204,32 @@ export default function AdminAlerts() {
     );
   };
 
+  const handleAddChannel = () => {
+    const newChannel: NotificationChannel = {
+      channelId: crypto.randomUUID(),
+      name: '新钉钉渠道',
+      channelType: 'dingtalk',
+      enabled: true,
+      config: {},
+      configMasked: false,
+      severityFilter: ['critical', 'warning'],
+      lastTestAt: null,
+      lastTestSuccess: null,
+      updatedAt: '',
+    };
+    setEditedChannels((prev) => [...prev, newChannel]);
+  };
+
+  const handleDeleteChannel = (channelId: string) => {
+    setEditedChannels((prev) => prev.filter((c) => c.channelId !== channelId));
+  };
+
   const handleSaveChannels = async () => {
     setChannelsSaving(true);
     try {
       await updateChannels({
         channels: editedChannels.map((c) => ({
-          channelId: c.channelId,
+          ...(c.updatedAt ? { channelId: c.channelId } : {}),
           name: c.name,
           channelType: c.channelType,
           enabled: c.enabled,
@@ -383,6 +404,27 @@ export default function AdminAlerts() {
           </Box>
         ) : (
           <>
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
+              <Button
+                variant="outlined"
+                startIcon={<AddIcon />}
+                onClick={handleAddChannel}
+                sx={{
+                  textTransform: 'none',
+                  borderRadius: '4px',
+                  borderColor: '#0053db',
+                  color: '#0053db',
+                  '&:hover': {
+                    borderColor: '#003ea8',
+                    color: '#003ea8',
+                    bgcolor: 'rgba(0, 83, 219, 0.04)',
+                  },
+                }}
+              >
+                添加通知渠道
+              </Button>
+            </Box>
+
             {editedChannels.length === 0 ? (
               <Box sx={{ py: 6, textAlign: 'center' }}>
                 <Typography color="text.secondary">暂无配置的通知渠道</Typography>
@@ -395,6 +437,7 @@ export default function AdminAlerts() {
                     channel={channel}
                     onChange={handleChannelChange}
                     onTest={handleTestNotification}
+                    onDelete={handleDeleteChannel}
                   />
                 ))}
               </Box>

@@ -8,7 +8,10 @@ import {
   Checkbox,
   FormControlLabel,
   FormGroup,
+  IconButton,
+  Tooltip,
 } from '@mui/material';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import TestNotificationButton from './TestNotificationButton';
 import type { NotificationChannel, Severity } from '../../types/alert';
 
@@ -29,9 +32,10 @@ interface ChannelConfigCardProps {
   channel: NotificationChannel;
   onChange: (channelId: string, updates: Partial<NotificationChannel>) => void;
   onTest: (channelId: string) => Promise<{ success: boolean; responseTimeMs?: number; error?: string }>;
+  onDelete?: (channelId: string) => void;
 }
 
-export default function ChannelConfigCard({ channel, onChange, onTest }: ChannelConfigCardProps) {
+export default function ChannelConfigCard({ channel, onChange, onTest, onDelete }: ChannelConfigCardProps) {
   const [configValues, setConfigValues] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {};
     for (const [key, value] of Object.entries(channel.config)) {
@@ -87,12 +91,26 @@ export default function ChannelConfigCard({ channel, onChange, onTest }: Channel
             />
           )}
         </Box>
-        <Switch
-          checked={channel.enabled}
-          onChange={(e) => onChange(channel.channelId, { enabled: e.target.checked })}
-          size="small"
-          inputProps={{ 'aria-label': `启用 ${channel.name}` }}
-        />
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+          <Switch
+            checked={channel.enabled}
+            onChange={(e) => onChange(channel.channelId, { enabled: e.target.checked })}
+            size="small"
+            inputProps={{ 'aria-label': `启用 ${channel.name}` }}
+          />
+          {onDelete && (
+            <Tooltip title="删除渠道">
+              <IconButton
+                size="small"
+                onClick={() => onDelete(channel.channelId)}
+                sx={{ color: '#737686', '&:hover': { color: '#d32f2f' } }}
+                aria-label={`删除 ${channel.name}`}
+              >
+                <DeleteOutlineIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
+        </Box>
       </Box>
 
       {/* Config fields */}
