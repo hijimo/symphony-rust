@@ -26,8 +26,18 @@ export default function KanbanPage() {
   const projectId = Number(id);
   const navigate = useNavigate();
 
-  const { kanbanData, loading, error, filters, fetchKanban, refresh, setFilters, clearError } =
-    useKanbanStore();
+  const {
+    kanbanData,
+    loading,
+    prsLoading,
+    error,
+    filters,
+    fetchKanban,
+    refresh,
+    setFilters,
+    clearError,
+    reset,
+  } = useKanbanStore();
 
   const [searchInput, setSearchInput] = useState('');
   const [labelsInput, setLabelsInput] = useState('');
@@ -36,6 +46,14 @@ export default function KanbanPage() {
   const [projectNameLoading, setProjectNameLoading] = useState(true);
   const [projectNameError, setProjectNameError] = useState(false);
   const initialFetchDone = useRef(false);
+
+  // Reset on project change or unmount
+  useEffect(() => {
+    return () => {
+      reset();
+      initialFetchDone.current = false;
+    };
+  }, [projectId, reset]);
 
   useEffect(() => {
     if (!projectId) {
@@ -265,7 +283,7 @@ export default function KanbanPage() {
       {loading && !kanbanData ? (
         <KanbanSkeleton />
       ) : kanbanData ? (
-        <KanbanBoard data={kanbanData} />
+        <KanbanBoard data={kanbanData} prsLoading={prsLoading} />
       ) : null}
     </Box>
   );

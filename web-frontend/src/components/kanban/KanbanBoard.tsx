@@ -1,4 +1,4 @@
-import { Alert, Box, Button, Typography } from '@mui/material';
+import { Alert, Box, Button, Skeleton, Typography } from '@mui/material';
 import KanbanColumn from './KanbanColumn';
 import IssueCard from './IssueCard';
 import PrCard from './PrCard';
@@ -9,9 +9,10 @@ interface KanbanBoardProps {
   data: KanbanData;
   onLoadMore?: () => void;
   loadingMore?: boolean;
+  prsLoading?: boolean;
 }
 
-export default function KanbanBoard({ data, onLoadMore, loadingMore }: KanbanBoardProps) {
+export default function KanbanBoard({ data, onLoadMore, loadingMore, prsLoading }: KanbanBoardProps) {
   const prColumnTitle = data.platform === 'github' ? 'PR' : 'MR';
   const pendingMergeRequests = getPendingMergeRequests(data.pr.merge_requests);
 
@@ -77,10 +78,12 @@ export default function KanbanBoard({ data, onLoadMore, loadingMore }: KanbanBoa
       {/* PR column */}
       <KanbanColumn
         title={prColumnTitle}
-        count={pendingMergeRequests.length}
+        count={prsLoading ? 0 : pendingMergeRequests.length}
         headerColor="#832600"
       >
-        {data.pr.error ? (
+        {prsLoading ? (
+          <PrColumnSkeleton />
+        ) : data.pr.error ? (
           <Alert severity="error" sx={{ borderRadius: '8px', fontSize: '12px' }}>
             {data.pr.error}
           </Alert>
@@ -112,6 +115,21 @@ function EmptyColumn({ message }: { message: string }) {
       >
         {message}
       </Typography>
+    </Box>
+  );
+}
+
+function PrColumnSkeleton() {
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+      {[1, 2, 3].map((i) => (
+        <Skeleton
+          key={i}
+          variant="rounded"
+          height={80}
+          sx={{ borderRadius: '8px' }}
+        />
+      ))}
     </Box>
   );
 }

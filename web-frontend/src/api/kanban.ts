@@ -1,6 +1,6 @@
 import client from './client';
 import type { ResponseData } from '../types';
-import type { KanbanData, KanbanParams } from '../types/kanban';
+import type { KanbanData, KanbanIssuesData, KanbanParams, KanbanPrsData } from '../types/kanban';
 
 export async function getKanban(
   projectId: number,
@@ -18,6 +18,35 @@ export async function getKanban(
       params: requestParams,
     },
   );
-  // Phase 3 entities already use snake_case from backend, no transform needed
+  return res.data.data;
+}
+
+export async function getKanbanIssues(
+  projectId: number,
+  params?: KanbanParams,
+  options?: { noCache?: boolean },
+): Promise<KanbanIssuesData> {
+  const requestParams = {
+    ...params,
+    ...(options?.noCache ? { no_cache: true } : {}),
+  };
+
+  const res = await client.get<ResponseData<KanbanIssuesData>>(
+    `/projects/${projectId}/kanban/issues`,
+    { params: requestParams },
+  );
+  return res.data.data;
+}
+
+export async function getKanbanPrs(
+  projectId: number,
+  options?: { noCache?: boolean },
+): Promise<KanbanPrsData> {
+  const requestParams = options?.noCache ? { no_cache: true } : {};
+
+  const res = await client.get<ResponseData<KanbanPrsData>>(
+    `/projects/${projectId}/kanban/prs`,
+    { params: requestParams },
+  );
   return res.data.data;
 }

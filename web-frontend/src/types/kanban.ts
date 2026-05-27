@@ -73,3 +73,20 @@ export interface KanbanParams {
   search?: string;
   no_cache?: boolean;
 }
+
+// Split endpoint response types
+
+export interface KanbanIssuesData {
+  todo: KanbanTodoColumn;
+  in_progress: KanbanInProgressColumn;
+  platform: 'gitlab' | 'github';
+  cached: boolean;
+  cached_at: string | null;
+}
+
+export interface KanbanPrsData {
+  pr: KanbanPrColumn;
+  platform: 'gitlab' | 'github';
+  cached: boolean;
+  cached_at: string | null;
+}
