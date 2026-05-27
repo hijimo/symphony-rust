@@ -49,7 +49,7 @@ async fn run_codex_session(workspace_dir: &PathBuf, prompt: &str) -> CodexSessio
     let mut child = Command::new("bash")
         .args([
             "-lc",
-            "codex --config shell_environment_policy.inherit=all app-server",
+            "codex app-server -c 'model_provider=\"azure\"' -c shell_environment_policy.inherit=all",
         ])
         .current_dir(workspace_dir)
         .stdin(Stdio::piped())

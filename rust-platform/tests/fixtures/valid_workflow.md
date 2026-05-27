@@ -11,7 +11,7 @@ agent:
   max_retry_backoff_ms: 300000
   stall_timeout_ms: 120000
 codex:
-  command: codex app-server
+  command: codex app-server -c 'model_provider="azure"'
 hooks:
   timeout_ms: 60000
   after_create: "git init && git checkout -b {{issue.branch_name}}"

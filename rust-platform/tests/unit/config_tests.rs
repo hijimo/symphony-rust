@@ -220,7 +220,7 @@ mod service_config_tests {
     fn test_default_codex_config() {
         let codex = CodexConfig::default();
 
-        assert_eq!(codex.command, "codex app-server");
+        assert_eq!(codex.command, "codex app-server -c 'model_provider=\"azure\"'");
         assert!(codex.approval_policy.is_none());
         assert_eq!(codex.stall_timeout_ms, 300_000);
     }

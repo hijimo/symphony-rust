@@ -158,7 +158,7 @@ async fn run_codex_with_prompt(workspace_dir: &Path, prompt: &str) -> CodexSessi
     };
 
     let mut child = Command::new("bash")
-        .args(["-lc", "codex app-server"])
+        .args(["-lc", "codex app-server -c 'model_provider=\"azure\"'"])
         .current_dir(workspace_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

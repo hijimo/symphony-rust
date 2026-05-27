@@ -195,7 +195,7 @@ async fn run_codex_session(workspace_dir: &PathBuf, prompt: &str) -> CodexSessio
 
     eprintln!("[E2E] Starting codex app-server...");
     let mut child = Command::new("zsh")
-        .args(["-lc", "source ~/.zshrc && codex app-server"])
+        .args(["-lc", "source ~/.zshrc && codex app-server -c 'model_provider=\"azure\"'"])
         .current_dir(workspace_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -724,7 +724,7 @@ async fn test_codex_app_server_starts() {
     tokio::fs::create_dir_all(&workspace).await.unwrap();
 
     let mut child = Command::new("zsh")
-        .args(["-lc", "source ~/.zshrc && codex app-server"])
+        .args(["-lc", "source ~/.zshrc && codex app-server -c 'model_provider=\"azure\"'"])
         .current_dir(&workspace)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

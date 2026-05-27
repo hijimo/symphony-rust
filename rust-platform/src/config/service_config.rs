@@ -80,7 +80,7 @@ pub struct CodexConfig {
 impl Default for CodexConfig {
     fn default() -> Self {
         Self {
-            command: "codex app-server".to_string(),
+            command: "codex app-server -c 'model_provider=\"azure\"'".to_string(),
             approval_policy: None,
             thread_sandbox: None,
             turn_sandbox_policy: None,
@@ -594,7 +594,7 @@ fn parse_hooks(section: &HashMap<String, YamlValue>) -> HooksConfig {
 /// Parse codex configuration from the codex section.
 fn parse_codex_config(section: &HashMap<String, YamlValue>) -> CodexConfig {
     CodexConfig {
-        command: get_string_or_default(section, "command", "codex app-server".to_string()),
+        command: get_string_or_default(section, "command", "codex app-server -c 'model_provider=\"azure\"'".to_string()),
         approval_policy: yaml_to_json_value(section.get("approval_policy")),
         thread_sandbox: get_optional_string(section, "thread_sandbox"),
         turn_sandbox_policy: yaml_to_json_value(section.get("turn_sandbox_policy")),
@@ -726,7 +726,7 @@ mod tests {
         assert_eq!(config.max_concurrent_agents, 10);
         assert_eq!(config.max_turns, 20);
         assert_eq!(config.max_retry_backoff_ms, 300_000);
-        assert_eq!(config.codex.command, "codex app-server");
+        assert_eq!(config.codex.command, "codex app-server -c 'model_provider=\"azure\"'");
         assert_eq!(config.codex.turn_timeout_ms, 3_600_000);
         assert_eq!(config.codex.read_timeout_ms, 5_000);
         assert_eq!(config.codex.stall_timeout_ms, 300_000);
