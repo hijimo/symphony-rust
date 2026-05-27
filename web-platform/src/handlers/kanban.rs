@@ -12,15 +12,18 @@ use crate::middleware::project_access::require_project_member;
 use crate::models::issue::KanbanIssue;
 use crate::models::merge_request::KanbanMergeRequest;
 use crate::models::{
-    InProgressColumn, KanbanData, KanbanQuery, PlatformIssue, PrColumn, ResponseData, TodoColumn,
+    InProgressColumn, KanbanData, KanbanIssuesData, KanbanPrsData, KanbanPrsQuery, KanbanQuery,
+    PlatformIssue, PrColumn, ResponseData, TodoColumn,
 };
 use crate::repository::{ProjectRepository, UserConfigRepository};
 use crate::services::git_platform::{
-    create_platform_client_with_proxy, ListIssuesOptions, ListMergeRequestsOptions,
+    create_platform_client_with_proxy, GitPlatformClient, ListIssuesOptions,
+    ListMergeRequestsOptions,
 };
 use crate::AppState;
 
-const IN_PROGRESS_ISSUE_LABELS: &[&str] = &["symphony-claimed", "In Progress", "Merging", "Rework"];
+const IN_PROGRESS_ISSUE_LABELS: &[&str] =
+    &["symphony-claimed", "In Progress", "Merging", "Rework"];
 
 fn in_progress_issue_labels() -> &'static [&'static str] {
     IN_PROGRESS_ISSUE_LABELS
@@ -56,39 +59,29 @@ fn dedupe_platform_issues(issues: Vec<PlatformIssue>) -> Vec<PlatformIssue> {
         .collect()
 }
 
-/// GET /api/projects/:id/kanban
-///
-/// Fetches the three-column kanban board data:
-/// - todo: open issues without an in-progress workflow label
-/// - in_progress: open issues with any in-progress workflow label
-/// - pr: MRs associated with in-progress issues
-pub async fn get_kanban(
-    State(state): State<AppState>,
-    claims: axum::Extension<Claims>,
-    Path(project_id): Path<i64>,
-    Query(query): Query<KanbanQuery>,
-) -> Result<Json<ResponseData<KanbanData>>, WebPlatformError> {
-    let user_id: i64 = claims
-        .sub
-        .parse()
-        .map_err(|_| WebPlatformError::Internal("invalid user id in token".to_string()))?;
+// ==================== Shared Context ====================
 
-    // Check project membership
-    require_project_member(&claims, project_id, &state.repo).await?;
+struct ProjectContext {
+    platform: String,
+    project_path: String,
+    platform_token: String,
+    client: Box<dyn GitPlatformClient>,
+}
 
-    // Rate limit check: 30/min/user for kanban
-    if let Err(retry_after) = state.phase3_rate_limiter.check("kanban", user_id, 30) {
-        return Err(WebPlatformError::RateLimited(retry_after));
-    }
+async fn resolve_project_context(
+    state: &AppState,
+    claims: &Claims,
+    user_id: i64,
+    project_id: i64,
+) -> Result<ProjectContext, WebPlatformError> {
+    require_project_member(claims, project_id, &state.repo).await?;
 
-    // Get project info to determine platform
     let project = state
         .repo
         .get_project(project_id)
         .await?
         .ok_or_else(|| WebPlatformError::NotFound("Project not found".to_string()))?;
 
-    // Get user's platform token
     let user_config = state.repo.get_config(user_id).await?.ok_or_else(|| {
         WebPlatformError::BadRequest(format!(
             "请先在个人设置中配置 {} Token",
@@ -116,33 +109,9 @@ pub async fn get_kanban(
         ))
     })?;
 
-    // Decrypt the token
     let platform_token = crypto::decrypt(&encrypted_token, &state.encryption_key)?;
-
-    // Build the project path (namespace/repo_name)
     let project_path = format!("{}/{}", project.namespace, project.repo_name);
 
-    // Check cache first
-    let cache_key = format!("{}:{}:kanban:{}", user_id, project_id, query_hash(&query));
-
-    if query.no_cache != Some(true) {
-        if let Some(cached_json) = state.api_cache.get(&cache_key) {
-            if let Ok(mut kanban_data) = serde_json::from_str::<KanbanData>(&cached_json) {
-                kanban_data.cached = true;
-                // Set cached_at from the cache entry creation time
-                if let Some(cached_at) = state.api_cache.get_cached_at(&cache_key) {
-                    let elapsed = cached_at.elapsed();
-                    let cached_time = chrono::Utc::now()
-                        - chrono::Duration::from_std(elapsed).unwrap_or_default();
-                    kanban_data.cached_at =
-                        Some(cached_time.format("%Y-%m-%dT%H:%M:%SZ").to_string());
-                }
-                return Ok(Json(ResponseData::success(kanban_data)));
-            }
-        }
-    }
-
-    // Create platform client
     let proxy_config = load_effective_proxy_config(&state.repo, &state.encryption_key).await?;
     let client = create_platform_client_with_proxy(
         &project.platform,
@@ -151,6 +120,28 @@ pub async fn get_kanban(
     )
     .map_err(map_platform_error)?;
 
+    Ok(ProjectContext {
+        platform: project.platform,
+        project_path,
+        platform_token,
+        client,
+    })
+}
+
+// ==================== Internal Fetch Logic ====================
+
+pub(crate) struct IssuesResult {
+    pub todo: TodoColumn,
+    pub in_progress: InProgressColumn,
+}
+
+pub(crate) async fn fetch_issues_internal(
+    client: &dyn GitPlatformClient,
+    token: &str,
+    project_path: &str,
+    query: &KanbanQuery,
+    include_mr_count: bool,
+) -> Result<IssuesResult, WebPlatformError> {
     let todo_limit = query.effective_todo_limit();
     let parsed_labels = query.parsed_labels();
 
@@ -168,12 +159,11 @@ pub async fn get_kanban(
         todo_options.labels = Some(labels.clone());
     }
 
-    let todo_result = client
-        .list_issues(&platform_token, &project_path, &todo_options)
+    let (todo_issues, todo_total) = client
+        .list_issues(token, project_path, &todo_options)
         .await
         .map_err(map_platform_error)?;
 
-    let (todo_issues, todo_total) = todo_result;
     let todo_kanban_issues: Vec<KanbanIssue> = todo_issues
         .into_iter()
         .map(|i| KanbanIssue {
@@ -190,8 +180,7 @@ pub async fn get_kanban(
         })
         .collect();
 
-    // Fetch in-progress issues once per workflow label because platform label filters require
-    // all requested labels rather than any one of them.
+    // Fetch in-progress issues once per workflow label
     let mut in_progress_issue_groups = Vec::new();
     for in_progress_label in in_progress_issue_labels() {
         let in_progress_options = ListIssuesOptions {
@@ -202,13 +191,13 @@ pub async fn get_kanban(
             assignee: query.assignee.clone(),
             author: query.author.clone(),
             search: query.search.clone(),
-            limit: 100, // Fetch all in-progress (usually limited)
+            limit: 100,
             state: Some("opened".to_string()),
             ..Default::default()
         };
 
         let (issues, _) = client
-            .list_issues(&platform_token, &project_path, &in_progress_options)
+            .list_issues(token, project_path, &in_progress_options)
             .await
             .map_err(map_platform_error)?;
         in_progress_issue_groups.extend(issues);
@@ -222,81 +211,64 @@ pub async fn get_kanban(
     );
     let in_progress_total = in_progress_issues.len() as u64;
 
-    // Fetch related MRs for in-progress issues (parallel, max 10 concurrent)
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
-    let mut mr_futures = Vec::new();
+    // Build in-progress kanban issues, optionally with mr_count
+    let in_progress_kanban_issues = if include_mr_count {
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
+        let mut mr_futures = Vec::new();
 
-    for issue in &in_progress_issues {
-        let sem = semaphore.clone();
-        let token = platform_token.clone();
-        let path = project_path.clone();
-        let iid = issue.iid;
-        let client_ref = &client;
+        for issue in &in_progress_issues {
+            let sem = semaphore.clone();
+            let tok = token.to_string();
+            let path = project_path.to_string();
+            let iid = issue.iid;
+            let client_ref = client;
 
-        mr_futures.push(async move {
-            let _permit = sem.acquire().await.unwrap();
-            client_ref
-                .get_issue_merge_requests(&token, &path, iid)
-                .await
-                .unwrap_or_default()
-        });
-    }
+            mr_futures.push(async move {
+                let _permit = sem.acquire().await.unwrap();
+                client_ref
+                    .get_issue_merge_requests(&tok, &path, iid)
+                    .await
+                    .unwrap_or_default()
+            });
+        }
 
-    let mr_results = futures::future::join_all(mr_futures).await;
+        let mr_results = futures::future::join_all(mr_futures).await;
 
-    // Build in-progress kanban issues with mr_count
-    let mut in_progress_kanban_issues: Vec<KanbanIssue> = Vec::new();
-
-    for (issue, mrs) in in_progress_issues.into_iter().zip(mr_results) {
-        let mr_count = mrs.len() as u64;
-        in_progress_kanban_issues.push(KanbanIssue {
-            iid: issue.iid,
-            title: issue.title,
-            state: issue.state,
-            labels: issue.labels,
-            author: issue.author,
-            assignees: issue.assignees,
-            created_at: issue.created_at,
-            updated_at: issue.updated_at,
-            web_url: issue.web_url,
-            mr_count: Some(mr_count),
-        });
-    }
-
-    let pr_options = ListMergeRequestsOptions {
-        limit: 100,
-        state: Some("opened".to_string()),
+        in_progress_issues
+            .into_iter()
+            .zip(mr_results)
+            .map(|(issue, mrs)| KanbanIssue {
+                iid: issue.iid,
+                title: issue.title,
+                state: issue.state,
+                labels: issue.labels,
+                author: issue.author,
+                assignees: issue.assignees,
+                created_at: issue.created_at,
+                updated_at: issue.updated_at,
+                web_url: issue.web_url,
+                mr_count: Some(mrs.len() as u64),
+            })
+            .collect()
+    } else {
+        in_progress_issues
+            .into_iter()
+            .map(|issue| KanbanIssue {
+                iid: issue.iid,
+                title: issue.title,
+                state: issue.state,
+                labels: issue.labels,
+                author: issue.author,
+                assignees: issue.assignees,
+                created_at: issue.created_at,
+                updated_at: issue.updated_at,
+                web_url: issue.web_url,
+                mr_count: None,
+            })
+            .collect()
     };
-    let (all_mrs, pr_error) = match client
-        .list_merge_requests(&platform_token, &project_path, &pr_options)
-        .await
-    {
-        Ok(mrs) => (
-            sort_pending_merge_requests(mrs)
-                .into_iter()
-                .map(|mr| KanbanMergeRequest {
-                    iid: mr.iid,
-                    title: mr.title,
-                    state: normalize_merge_request_state(&mr.state),
-                    repository: project_path.clone(),
-                    author: mr.author,
-                    source_branch: mr.source_branch,
-                    target_branch: mr.target_branch,
-                    ci_status: mr.ci_status,
-                    review_status: mr.review_status,
-                    related_issue_iids: mr.related_issue_iids,
-                    created_at: mr.created_at,
-                    updated_at: mr.updated_at,
-                    web_url: mr.web_url,
-                })
-                .collect(),
-            None,
-        ),
-        Err(err) => (Vec::new(), Some(format!("PR/MR 数据加载失败：{}", err))),
-    };
-    let mr_total = all_mrs.len() as u64;
 
-    let kanban_data = KanbanData {
+    Ok(IssuesResult {
         todo: TodoColumn {
             has_more: todo_total > todo_limit as u64,
             issues: todo_kanban_issues,
@@ -306,17 +278,233 @@ pub async fn get_kanban(
             issues: in_progress_kanban_issues,
             total_count: in_progress_total,
         },
-        pr: PrColumn {
-            merge_requests: all_mrs,
-            total_count: mr_total,
-            error: pr_error,
-        },
-        platform: project.platform.clone(),
+    })
+}
+
+pub(crate) fn build_pr_column(
+    merge_requests: Vec<crate::models::PlatformMergeRequest>,
+    project_path: &str,
+) -> PrColumn {
+    let mrs: Vec<KanbanMergeRequest> = sort_pending_merge_requests(merge_requests)
+        .into_iter()
+        .map(|mr| KanbanMergeRequest {
+            iid: mr.iid,
+            title: mr.title,
+            state: normalize_merge_request_state(&mr.state),
+            repository: project_path.to_string(),
+            author: mr.author,
+            source_branch: mr.source_branch,
+            target_branch: mr.target_branch,
+            ci_status: mr.ci_status,
+            review_status: mr.review_status,
+            related_issue_iids: mr.related_issue_iids,
+            created_at: mr.created_at,
+            updated_at: mr.updated_at,
+            web_url: mr.web_url,
+        })
+        .collect();
+    let total_count = mrs.len() as u64;
+    PrColumn {
+        merge_requests: mrs,
+        total_count,
+        error: None,
+    }
+}
+
+pub(crate) async fn fetch_prs_internal(
+    client: &dyn GitPlatformClient,
+    token: &str,
+    project_path: &str,
+) -> Result<PrColumn, WebPlatformError> {
+    let pr_options = ListMergeRequestsOptions {
+        limit: 100,
+        state: Some("opened".to_string()),
+    };
+    match client
+        .list_merge_requests(token, project_path, &pr_options)
+        .await
+    {
+        Ok(mrs) => Ok(build_pr_column(mrs, project_path)),
+        Err(err) => Ok(PrColumn {
+            merge_requests: Vec::new(),
+            total_count: 0,
+            error: Some(format!("PR/MR 数据加载失败：{}", err)),
+        }),
+    }
+}
+
+// ==================== Cache Helpers ====================
+
+fn set_cached_at(state: &AppState, cache_key: &str, cached_at_field: &mut Option<String>) {
+    if let Some(cached_at) = state.api_cache.get_cached_at(cache_key) {
+        let elapsed = cached_at.elapsed();
+        let cached_time =
+            chrono::Utc::now() - chrono::Duration::from_std(elapsed).unwrap_or_default();
+        *cached_at_field = Some(cached_time.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+    }
+}
+
+// ==================== Public Handlers ====================
+
+/// GET /api/projects/:id/kanban/issues
+pub async fn get_kanban_issues(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(project_id): Path<i64>,
+    Query(query): Query<KanbanQuery>,
+) -> Result<Json<ResponseData<KanbanIssuesData>>, WebPlatformError> {
+    let user_id: i64 = claims
+        .sub
+        .parse()
+        .map_err(|_| WebPlatformError::Internal("invalid user id in token".to_string()))?;
+
+    if let Err(retry_after) = state.phase3_rate_limiter.check("kanban", user_id, 30) {
+        return Err(WebPlatformError::RateLimited(retry_after));
+    }
+
+    let ctx = resolve_project_context(&state, &claims, user_id, project_id).await?;
+
+    let cache_key = format!(
+        "{}:{}:kanban:issues:{}",
+        user_id,
+        project_id,
+        query_hash(&query)
+    );
+
+    if query.no_cache != Some(true) {
+        if let Some(cached_json) = state.api_cache.get(&cache_key) {
+            if let Ok(mut data) = serde_json::from_str::<KanbanIssuesData>(&cached_json) {
+                data.cached = true;
+                set_cached_at(&state, &cache_key, &mut data.cached_at);
+                return Ok(Json(ResponseData::success(data)));
+            }
+        }
+    }
+
+    let result = fetch_issues_internal(
+        ctx.client.as_ref(),
+        &ctx.platform_token,
+        &ctx.project_path,
+        &query,
+        true,
+    )
+    .await?;
+
+    let data = KanbanIssuesData {
+        todo: result.todo,
+        in_progress: result.in_progress,
+        platform: ctx.platform,
         cached: false,
         cached_at: None,
     };
 
-    // Store in cache
+    if let Ok(json) = serde_json::to_string(&data) {
+        state.api_cache.set(cache_key, json, false);
+    }
+
+    Ok(Json(ResponseData::success(data)))
+}
+
+/// GET /api/projects/:id/kanban/prs
+pub async fn get_kanban_prs(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(project_id): Path<i64>,
+    Query(query): Query<KanbanPrsQuery>,
+) -> Result<Json<ResponseData<KanbanPrsData>>, WebPlatformError> {
+    let user_id: i64 = claims
+        .sub
+        .parse()
+        .map_err(|_| WebPlatformError::Internal("invalid user id in token".to_string()))?;
+
+    if let Err(retry_after) = state.phase3_rate_limiter.check("kanban", user_id, 30) {
+        return Err(WebPlatformError::RateLimited(retry_after));
+    }
+
+    let ctx = resolve_project_context(&state, &claims, user_id, project_id).await?;
+
+    let cache_key = format!("{}:{}:kanban:prs:0", user_id, project_id);
+
+    if query.no_cache != Some(true) {
+        if let Some(cached_json) = state.api_cache.get(&cache_key) {
+            if let Ok(mut data) = serde_json::from_str::<KanbanPrsData>(&cached_json) {
+                data.cached = true;
+                set_cached_at(&state, &cache_key, &mut data.cached_at);
+                return Ok(Json(ResponseData::success(data)));
+            }
+        }
+    }
+
+    let pr_column =
+        fetch_prs_internal(ctx.client.as_ref(), &ctx.platform_token, &ctx.project_path).await?;
+
+    let data = KanbanPrsData {
+        pr: pr_column,
+        platform: ctx.platform,
+        cached: false,
+        cached_at: None,
+    };
+
+    if data.pr.error.is_none() {
+        if let Ok(json) = serde_json::to_string(&data) {
+            state.api_cache.set(cache_key, json, false);
+        }
+    }
+
+    Ok(Json(ResponseData::success(data)))
+}
+
+/// GET /api/projects/:id/kanban (compatibility shim)
+pub async fn get_kanban(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(project_id): Path<i64>,
+    Query(query): Query<KanbanQuery>,
+) -> Result<Json<ResponseData<KanbanData>>, WebPlatformError> {
+    let user_id: i64 = claims
+        .sub
+        .parse()
+        .map_err(|_| WebPlatformError::Internal("invalid user id in token".to_string()))?;
+
+    if let Err(retry_after) = state.phase3_rate_limiter.check("kanban", user_id, 30) {
+        return Err(WebPlatformError::RateLimited(retry_after));
+    }
+
+    let ctx = resolve_project_context(&state, &claims, user_id, project_id).await?;
+
+    let cache_key = format!("{}:{}:kanban:{}", user_id, project_id, query_hash(&query));
+
+    if query.no_cache != Some(true) {
+        if let Some(cached_json) = state.api_cache.get(&cache_key) {
+            if let Ok(mut kanban_data) = serde_json::from_str::<KanbanData>(&cached_json) {
+                kanban_data.cached = true;
+                set_cached_at(&state, &cache_key, &mut kanban_data.cached_at);
+                return Ok(Json(ResponseData::success(kanban_data)));
+            }
+        }
+    }
+
+    let issues_result = fetch_issues_internal(
+        ctx.client.as_ref(),
+        &ctx.platform_token,
+        &ctx.project_path,
+        &query,
+        true,
+    )
+    .await?;
+
+    let pr_column =
+        fetch_prs_internal(ctx.client.as_ref(), &ctx.platform_token, &ctx.project_path).await?;
+
+    let kanban_data = KanbanData {
+        todo: issues_result.todo,
+        in_progress: issues_result.in_progress,
+        pr: pr_column,
+        platform: ctx.platform,
+        cached: false,
+        cached_at: None,
+    };
+
     if kanban_data.pr.error.is_none() {
         if let Ok(json) = serde_json::to_string(&kanban_data) {
             state.api_cache.set(cache_key, json, false);
@@ -325,6 +513,8 @@ pub async fn get_kanban(
 
     Ok(Json(ResponseData::success(kanban_data)))
 }
+
+// ==================== Utility Functions ====================
 
 fn is_pending_merge_request_state(state: &str) -> bool {
     matches!(

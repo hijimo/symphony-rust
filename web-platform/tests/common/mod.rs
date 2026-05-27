@@ -17,7 +17,7 @@ use web_platform::process_manager::ProcessManager;
 use web_platform::repository::{SqliteRepository, UserConfigRepository, UserRepository};
 use web_platform::router::{create_router, create_router_with_static_dir};
 use web_platform::services::cache::ApiCache;
-use web_platform::{AppState, Phase3RateLimiter};
+use web_platform::{AppState, Phase3RateLimiter, PlatformHostSemaphores};
 
 #[allow(dead_code)]
 pub struct TestApp {
@@ -92,6 +92,7 @@ impl TestApp {
             symphony_bin: symphony_bin.to_string(),
             workspace_root: dir.path().to_str().unwrap().to_string(),
             alert_manager: None,
+            platform_host_semaphores: Arc::new(PlatformHostSemaphores::new(5)),
         };
 
         let repo = state.repo.clone();

@@ -13,7 +13,7 @@ use utoipa_swagger_ui::SwaggerUi;
 use crate::auth::middleware::{jwt_auth, require_admin};
 use crate::handlers::{
     admin_config, admin_users, ai_generate, alerts, auth, concurrency, contributors, issue_mrs,
-    issues, kanban, merge_requests, network_proxy, project_members, project_service,
+    issues, kanban, merge_requests, network_proxy, overview, project_members, project_service,
     project_workflow, projects, token_validation, user_profile,
 };
 use crate::AppState;
@@ -215,6 +215,14 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
         )
         // Phase 3: Kanban & Issues
         .route("/api/projects/{id}/kanban", get(kanban::get_kanban))
+        .route(
+            "/api/projects/{id}/kanban/issues",
+            get(kanban::get_kanban_issues),
+        )
+        .route(
+            "/api/projects/{id}/kanban/prs",
+            get(kanban::get_kanban_prs),
+        )
         .route("/api/projects/{id}/issues", post(issues::create_issue))
         .route(
             "/api/projects/{id}/issues/ai-generate",
@@ -256,6 +264,18 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
         )
         .layer(middleware::from_fn_with_state(state.clone(), jwt_auth));
 
+    // Overview routes (global kanban)
+    let overview_routes = Router::new()
+        .route(
+            "/api/overview/kanban/issues",
+            get(overview::get_overview_issues),
+        )
+        .route(
+            "/api/overview/kanban/prs",
+            get(overview::get_overview_prs),
+        )
+        .layer(middleware::from_fn_with_state(state.clone(), jwt_auth));
+
     // Phase 4: SSE endpoint (uses ticket auth, no JWT middleware)
     let sse_routes = Router::new().route(
         "/api/admin/concurrency/events",
@@ -268,6 +288,7 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
         .merge(admin_routes)
         .merge(project_routes)
         .merge(token_validation_routes)
+        .merge(overview_routes)
         .merge(sse_routes)
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .with_state(state);

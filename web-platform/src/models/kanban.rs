@@ -46,6 +46,29 @@ pub struct PrColumn {
     pub error: Option<String>,
 }
 
+// ==================== Split Kanban Response Structures ====================
+
+/// Response for GET /api/projects/:id/kanban/issues
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct KanbanIssuesData {
+    pub todo: TodoColumn,
+    pub in_progress: InProgressColumn,
+    pub platform: String,
+    pub cached: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_at: Option<String>,
+}
+
+/// Response for GET /api/projects/:id/kanban/prs
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct KanbanPrsData {
+    pub pr: PrColumn,
+    pub platform: String,
+    pub cached: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_at: Option<String>,
+}
+
 // ==================== Query Parameters ====================
 
 /// Query parameters for the kanban endpoint.
@@ -75,6 +98,12 @@ impl KanbanQuery {
     pub fn effective_todo_limit(&self) -> u32 {
         self.todo_limit.unwrap_or(50).clamp(1, 100)
     }
+}
+
+/// Query parameters for the kanban/prs endpoint.
+#[derive(Debug, Clone, Deserialize)]
+pub struct KanbanPrsQuery {
+    pub no_cache: Option<bool>,
 }
 
 // ==================== AI Generation ====================

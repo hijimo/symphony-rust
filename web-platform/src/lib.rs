@@ -21,6 +21,7 @@ pub mod templates;
 use chrono::Utc;
 use dashmap::DashMap;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 use crate::auth::rate_limit::RateLimiter;
 use crate::concurrency::ConcurrencyManager;
@@ -170,6 +171,30 @@ pub struct AppState {
     pub workspace_root: String,
     /// Alert manager for Phase 5 notification dispatch. None until initialized.
     pub alert_manager: Option<AlertManager>,
+    /// Per-platform-host concurrency limiter for overview fan-out.
+    pub platform_host_semaphores: Arc<PlatformHostSemaphores>,
+}
+
+/// Per-platform-host semaphore registry for limiting concurrent API calls to the same host.
+pub struct PlatformHostSemaphores {
+    semaphores: DashMap<String, Arc<Semaphore>>,
+    max_concurrent: usize,
+}
+
+impl PlatformHostSemaphores {
+    pub fn new(max_concurrent: usize) -> Self {
+        Self {
+            semaphores: DashMap::new(),
+            max_concurrent,
+        }
+    }
+
+    pub fn get(&self, host: &str) -> Arc<Semaphore> {
+        self.semaphores
+            .entry(host.to_lowercase())
+            .or_insert_with(|| Arc::new(Semaphore::new(self.max_concurrent)))
+            .clone()
+    }
 }
 
 /// Per-endpoint rate limiter for Phase 3 using sliding window counters.

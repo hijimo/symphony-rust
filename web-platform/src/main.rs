@@ -27,7 +27,7 @@ use web_platform::router::create_router_with_static_dir;
 use web_platform::services::ai_service::{AiService, AiServiceConfig};
 use web_platform::services::cache::ApiCache;
 use web_platform::shutdown::shutdown_signal;
-use web_platform::{AlertManager, AppState, Phase3RateLimiter};
+use web_platform::{AlertManager, AppState, Phase3RateLimiter, PlatformHostSemaphores};
 
 #[tokio::main]
 async fn main() {
@@ -196,6 +196,7 @@ async fn main() {
         symphony_bin: config.symphony_bin,
         workspace_root: config.workspace_root,
         alert_manager: Some(alert_manager),
+        platform_host_semaphores: Arc::new(PlatformHostSemaphores::new(5)),
     };
 
     web_platform::services::mr_create::spawn_merge_request_reconciler(state.clone());
