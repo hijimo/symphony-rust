@@ -1,9 +1,11 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { ThemeProvider } from '@mui/material/styles';
+import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import theme from '../../theme';
 import { useKanbanStore } from '../../store/kanbanStore';
+import { server } from '../../test/mocks/server';
 import type { KanbanData, KanbanIssue } from '../../types/kanban';
 import KanbanPage from '../projects/KanbanPage';
 
@@ -48,6 +50,56 @@ function createKanbanData(issue: KanbanIssue): KanbanData {
     cached: false,
     cached_at: null,
     platform: 'github',
+  };
+}
+
+function mockKanbanStore(issueTitle = 'Initial issue') {
+  const fetchKanban = vi.fn(async () => {
+    useKanbanStore.setState({
+      kanbanData: createKanbanData(createIssue(1, issueTitle)),
+    });
+  });
+
+  useKanbanStore.setState({
+    kanbanData: null,
+    loading: false,
+    error: null,
+    filters: {},
+    fetchKanban,
+    refresh: vi.fn(),
+    setFilters: vi.fn(),
+    clearError: vi.fn(),
+  });
+
+  return { fetchKanban };
+}
+
+function createProjectResponse(name: string) {
+  return {
+    id: 1,
+    name,
+    description: 'A test project on GitLab',
+    git_url: 'https://gitlab.com/group/my-project.git',
+    platform: 'gitlab',
+    platform_host: 'gitlab.com',
+    namespace: 'group',
+    repo_name: 'my-project',
+    default_branch: 'main',
+    workflow_template: 'default',
+    service_status: 'running',
+    service_pid: 12345,
+    max_concurrent_agents: 2,
+    auto_restart: true,
+    member_count: 3,
+    my_role: 'owner',
+    created_by: 1,
+    created_at: '2024-01-10T00:00:00Z',
+    updated_at: '2024-01-10T00:00:00Z',
+    hooks_after_create: null,
+    hooks_before_remove: null,
+    codex_command: null,
+    codex_approval_policy: null,
+    codex_sandbox: null,
   };
 }
 
@@ -126,5 +178,60 @@ describe('KanbanPage', () => {
     });
 
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the current project name from project data', async () => {
+    vi.useRealTimers();
+    mockKanbanStore();
+
+    renderKanbanPage();
+
+    await waitFor(() => {
+      expect(screen.getByText('My GitLab Project')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('Initial issue')).toBeInTheDocument();
+  });
+
+  it('shows an unnamed project fallback when project name is blank', async () => {
+    vi.useRealTimers();
+    mockKanbanStore();
+    server.use(
+      http.get('*/api/projects/:id', () => {
+        return HttpResponse.json({
+          success: true,
+          retCode: 'SUCCESS',
+          retMsg: 'ok',
+          data: createProjectResponse('   '),
+        });
+      }),
+    );
+
+    renderKanbanPage();
+
+    await waitFor(() => {
+      expect(screen.getByText('未命名项目')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Initial issue')).toBeInTheDocument();
+  });
+
+  it('shows a project name fallback when project data fails to load', async () => {
+    vi.useRealTimers();
+    mockKanbanStore();
+    server.use(
+      http.get('*/api/projects/:id', () => {
+        return HttpResponse.json(
+          { success: false, retCode: 'NOT_FOUND', retMsg: '项目不存在', data: null },
+          { status: 404 },
+        );
+      }),
+    );
+
+    renderKanbanPage();
+
+    await waitFor(() => {
+      expect(screen.getByText('项目名称不可用')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Initial issue')).toBeInTheDocument();
   });
 });

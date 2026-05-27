@@ -8,12 +8,14 @@ import {
   Tooltip,
   Alert,
   Chip,
+  Skeleton,
 } from '@mui/material';
 import { Refresh, Add } from '@mui/icons-material';
 import KanbanBoard from '../../components/kanban/KanbanBoard';
 import KanbanSkeleton from '../../components/kanban/KanbanSkeleton';
 import AuthorFilter from '../../components/kanban/AuthorFilter';
 import { useKanbanStore } from '../../store/kanbanStore';
+import { getProject } from '../../api/projects';
 import type { PlatformUser } from '../../types/kanban';
 import { getPendingMergeRequests } from '../../utils/kanbanPrs';
 
@@ -30,7 +32,44 @@ export default function KanbanPage() {
   const [searchInput, setSearchInput] = useState('');
   const [labelsInput, setLabelsInput] = useState('');
   const [assigneeFilter, setAssigneeFilter] = useState('');
+  const [projectName, setProjectName] = useState<string | null>(null);
+  const [projectNameLoading, setProjectNameLoading] = useState(true);
+  const [projectNameError, setProjectNameError] = useState(false);
   const initialFetchDone = useRef(false);
+
+  useEffect(() => {
+    if (!projectId) {
+      setProjectName(null);
+      setProjectNameLoading(false);
+      setProjectNameError(true);
+      return;
+    }
+
+    let cancelled = false;
+    setProjectNameLoading(true);
+    setProjectNameError(false);
+
+    getProject(projectId)
+      .then((project) => {
+        if (cancelled) return;
+        const name = project.name.trim();
+        setProjectName(name || null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setProjectName(null);
+        setProjectNameError(true);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setProjectNameLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   // Fetch on mount
   useEffect(() => {
@@ -112,6 +151,8 @@ export default function KanbanPage() {
     return Array.from(map.values());
   }, [kanbanData]);
 
+  const projectTitle = projectName || (projectNameError ? '项目名称不可用' : '未命名项目');
+
   return (
     <Box>
       {/* Header */}
@@ -121,11 +162,28 @@ export default function KanbanPage() {
           justifyContent: 'space-between',
           alignItems: 'center',
           mb: 2,
+          gap: 2,
         }}
       >
-        <Typography variant="h5" color="text.primary">
-          看板
-        </Typography>
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          {projectNameLoading ? (
+            <Skeleton variant="text" width={220} height={32} aria-label="项目名称加载中" />
+          ) : (
+            <Tooltip title={projectTitle}>
+              <Typography
+                variant="h5"
+                color="text.primary"
+                noWrap
+                sx={{ fontWeight: 600, maxWidth: '100%' }}
+              >
+                {projectTitle}
+              </Typography>
+            </Tooltip>
+          )}
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
+            看板
+          </Typography>
+        </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <Button
             size="small"
