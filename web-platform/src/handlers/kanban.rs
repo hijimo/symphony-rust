@@ -13,7 +13,7 @@ use crate::models::issue::KanbanIssue;
 use crate::models::merge_request::KanbanMergeRequest;
 use crate::models::{
     InProgressColumn, KanbanData, KanbanIssuesData, KanbanPrsData, KanbanPrsQuery, KanbanQuery,
-    PlatformIssue, PrColumn, ResponseData, TodoColumn,
+    PlatformIssue, PrColumn, ResponseData, TestingColumn, TodoColumn,
 };
 use crate::repository::{ProjectRepository, UserConfigRepository};
 use crate::services::git_platform::{
@@ -66,6 +66,7 @@ struct ProjectContext {
     project_path: String,
     platform_token: String,
     client: Box<dyn GitPlatformClient>,
+    testing_enabled: bool,
 }
 
 async fn resolve_project_context(
@@ -125,6 +126,7 @@ async fn resolve_project_context(
         project_path,
         platform_token,
         client,
+        testing_enabled: project.testing_enabled,
     })
 }
 
@@ -390,9 +392,46 @@ pub async fn get_kanban_issues(
     )
     .await?;
 
+    let testing = if ctx.testing_enabled {
+        let testing_options = ListIssuesOptions {
+            labels: Some(vec!["Testing".to_string()]),
+            limit: 100,
+            state: Some("opened".to_string()),
+            ..Default::default()
+        };
+        let (testing_issues, _) = ctx
+            .client
+            .list_issues(&ctx.platform_token, &ctx.project_path, &testing_options)
+            .await
+            .map_err(map_platform_error)?;
+        let issues: Vec<KanbanIssue> = testing_issues
+            .into_iter()
+            .map(|i| KanbanIssue {
+                iid: i.iid,
+                title: i.title,
+                state: i.state,
+                labels: i.labels,
+                author: i.author,
+                assignees: i.assignees,
+                created_at: i.created_at,
+                updated_at: i.updated_at,
+                web_url: i.web_url,
+                mr_count: None,
+            })
+            .collect();
+        let total_count = issues.len() as u64;
+        Some(TestingColumn {
+            issues,
+            total_count,
+        })
+    } else {
+        None
+    };
+
     let data = KanbanIssuesData {
         todo: result.todo,
         in_progress: result.in_progress,
+        testing,
         platform: ctx.platform,
         cached: false,
         cached_at: None,

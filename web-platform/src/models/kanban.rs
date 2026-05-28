@@ -36,6 +36,13 @@ pub struct InProgressColumn {
     pub total_count: u64,
 }
 
+/// The "testing" column: open issues with the Testing label.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TestingColumn {
+    pub issues: Vec<KanbanIssue>,
+    pub total_count: u64,
+}
+
 /// The "PR" column: merge requests associated with in-progress issues.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PrColumn {
@@ -53,6 +60,8 @@ pub struct PrColumn {
 pub struct KanbanIssuesData {
     pub todo: TodoColumn,
     pub in_progress: InProgressColumn,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub testing: Option<TestingColumn>,
     pub platform: String,
     pub cached: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

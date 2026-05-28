@@ -14,6 +14,8 @@ import {
   Skeleton,
   CircularProgress,
   Chip,
+  Switch,
+  FormControlLabel,
 } from '@mui/material';
 import { WarningAmber } from '@mui/icons-material';
 import ConfirmDialog from '../../components/ConfirmDialog';
@@ -87,6 +89,14 @@ export default function ProjectSettingsPage() {
   const [codexSandbox, setCodexSandbox] = useState('workspace-write');
   const [agentConfigSaving, setAgentConfigSaving] = useState(false);
 
+  // Testing agent config state
+  const [testingEnabled, setTestingEnabled] = useState(false);
+  const [testingMaxAttempts, setTestingMaxAttempts] = useState(3);
+  const [testingMaxTurns, setTestingMaxTurns] = useState(12);
+  const [testingSkipLabels, setTestingSkipLabels] = useState('');
+  const [testingAllowedCommands, setTestingAllowedCommands] = useState('');
+  const [testingConfigSaving, setTestingConfigSaving] = useState(false);
+
   const showSnack = (message: string, severity: 'success' | 'error') => {
     setSnack({ open: true, message, severity });
   };
@@ -105,6 +115,11 @@ export default function ProjectSettingsPage() {
       setCodexCommand(p.codex_command || '');
       setCodexApprovalPolicy(p.codex_approval_policy || 'never');
       setCodexSandbox(p.codex_sandbox || 'workspace-write');
+      setTestingEnabled(p.testing_enabled);
+      setTestingMaxAttempts(p.testing_max_attempts);
+      setTestingMaxTurns(p.testing_max_turns);
+      setTestingSkipLabels(p.testing_skip_labels || '');
+      setTestingAllowedCommands(p.testing_allowed_commands || '');
     } catch (err: any) {
       showSnack(err?.message || '加载项目失败', 'error');
     } finally {
@@ -264,6 +279,34 @@ export default function ProjectSettingsPage() {
       codexCommand !== (project.codex_command || '') ||
       codexApprovalPolicy !== (project.codex_approval_policy || 'never') ||
       codexSandbox !== (project.codex_sandbox || 'workspace-write'));
+
+  // Testing agent config
+  const handleTestingConfigSave = async () => {
+    setTestingConfigSaving(true);
+    try {
+      const updated = await updateProject(projectId, {
+        testing_enabled: testingEnabled,
+        testing_max_attempts: testingMaxAttempts,
+        testing_max_turns: testingMaxTurns,
+        testing_skip_labels: testingSkipLabels || undefined,
+        testing_allowed_commands: testingAllowedCommands || undefined,
+      });
+      setProject(updated);
+      showSnack('测试 Agent 配置已保存', 'success');
+    } catch (err: any) {
+      showSnack(err?.message || '保存失败', 'error');
+    } finally {
+      setTestingConfigSaving(false);
+    }
+  };
+
+  const testingConfigChanged =
+    project !== null &&
+    (testingEnabled !== project.testing_enabled ||
+      testingMaxAttempts !== project.testing_max_attempts ||
+      testingMaxTurns !== project.testing_max_turns ||
+      testingSkipLabels !== (project.testing_skip_labels || '') ||
+      testingAllowedCommands !== (project.testing_allowed_commands || ''));
 
   // Delete project
   const handleDelete = async () => {
@@ -480,6 +523,74 @@ export default function ProjectSettingsPage() {
                 onClick={handleAgentConfigSave}
                 disabled={!agentConfigChanged || agentConfigSaving}
                 startIcon={agentConfigSaving ? <CircularProgress size={16} color="inherit" /> : undefined}
+              >
+                保存
+              </Button>
+            </Box>
+
+            {/* Testing Agent Config */}
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3, maxWidth: 600, mt: 5 }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                测试 Agent
+              </Typography>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={testingEnabled}
+                    onChange={(e) => setTestingEnabled(e.target.checked)}
+                  />
+                }
+                label="启用测试 Agent"
+              />
+              <TextField
+                label="最大打回次数"
+                type="number"
+                helperText="测试失败后最多打回几次（1-5）"
+                value={testingMaxAttempts}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  if (!isNaN(v)) setTestingMaxAttempts(Math.min(5, Math.max(1, v)));
+                }}
+                fullWidth
+                inputProps={{ min: 1, max: 5 }}
+                disabled={!testingEnabled}
+              />
+              <TextField
+                label="最大 Turns"
+                type="number"
+                helperText="测试 Agent 单次执行的最大对话轮数（5-30）"
+                value={testingMaxTurns}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  if (!isNaN(v)) setTestingMaxTurns(Math.min(30, Math.max(5, v)));
+                }}
+                fullWidth
+                inputProps={{ min: 5, max: 30 }}
+                disabled={!testingEnabled}
+              />
+              <TextField
+                label="跳过测试标签"
+                helperText="带有这些标签的 Issue 跳过测试，直接进入 Human Review（逗号分隔）"
+                value={testingSkipLabels}
+                onChange={(e) => setTestingSkipLabels(e.target.value)}
+                fullWidth
+                disabled={!testingEnabled}
+              />
+              <TextField
+                label="额外允许命令"
+                helperText="测试 Agent 额外允许执行的命令（逗号分隔，如 make test, pytest）"
+                value={testingAllowedCommands}
+                onChange={(e) => setTestingAllowedCommands(e.target.value)}
+                fullWidth
+                disabled={!testingEnabled}
+              />
+            </Box>
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 3 }}>
+              <Button
+                variant="contained"
+                onClick={handleTestingConfigSave}
+                disabled={!testingConfigChanged || testingConfigSaving}
+                startIcon={testingConfigSaving ? <CircularProgress size={16} color="inherit" /> : undefined}
               >
                 保存
               </Button>

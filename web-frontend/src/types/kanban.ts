@@ -50,6 +50,11 @@ export interface KanbanInProgressColumn {
   total_count: number;
 }
 
+export interface KanbanTestingColumn {
+  issues: KanbanIssue[];
+  total_count: number;
+}
+
 export interface KanbanPrColumn {
   merge_requests: KanbanMergeRequest[];
   total_count: number;
@@ -59,6 +64,7 @@ export interface KanbanPrColumn {
 export interface KanbanData {
   todo: KanbanTodoColumn;
   in_progress: KanbanInProgressColumn;
+  testing?: KanbanTestingColumn;
   pr: KanbanPrColumn;
   cached: boolean;
   cached_at: string | null;
@@ -79,6 +85,7 @@ export interface KanbanParams {
 export interface KanbanIssuesData {
   todo: KanbanTodoColumn;
   in_progress: KanbanInProgressColumn;
+  testing?: KanbanTestingColumn;
   platform: 'gitlab' | 'github';
   cached: boolean;
   cached_at: string | null;

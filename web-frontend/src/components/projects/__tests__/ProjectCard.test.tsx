@@ -41,6 +41,11 @@ const baseProject: Project = {
   codex_command: null,
   codex_approval_policy: null,
   codex_sandbox: null,
+  testing_enabled: false,
+  testing_max_attempts: 3,
+  testing_max_turns: 12,
+  testing_skip_labels: null,
+  testing_allowed_commands: null,
 };
 
 function renderCard(project: Partial<Project> = {}, overrides = {}) {

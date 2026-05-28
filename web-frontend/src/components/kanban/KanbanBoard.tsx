@@ -15,12 +15,14 @@ interface KanbanBoardProps {
 export default function KanbanBoard({ data, onLoadMore, loadingMore, prsLoading }: KanbanBoardProps) {
   const prColumnTitle = data.platform === 'github' ? 'PR' : 'MR';
   const pendingMergeRequests = getPendingMergeRequests(data.pr.merge_requests);
+  const hasTesting = !!data.testing;
+  const columnCount = hasTesting ? 4 : 3;
 
   return (
     <Box
       sx={{
         display: 'grid',
-        gridTemplateColumns: { xs: '1fr', md: 'repeat(3, 1fr)' },
+        gridTemplateColumns: { xs: '1fr', md: `repeat(${columnCount}, 1fr)` },
         gap: 2,
         alignItems: 'start',
       }}
@@ -74,6 +76,23 @@ export default function KanbanBoard({ data, onLoadMore, loadingMore, prsLoading 
           ))
         )}
       </KanbanColumn>
+
+      {/* Testing column (conditional) */}
+      {hasTesting && (
+        <KanbanColumn
+          title="测试中"
+          count={data.testing!.total_count}
+          headerColor="#b45309"
+        >
+          {data.testing!.issues.length === 0 ? (
+            <EmptyColumn message="暂无测试中 Issue" />
+          ) : (
+            data.testing!.issues.map((issue) => (
+              <IssueCard key={issue.iid} issue={issue} />
+            ))
+          )}
+        </KanbanColumn>
+      )}
 
       {/* PR column */}
       <KanbanColumn

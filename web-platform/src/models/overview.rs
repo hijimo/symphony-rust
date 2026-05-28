@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use super::{InProgressColumn, PrColumn, TodoColumn};
+use super::{InProgressColumn, PrColumn, TestingColumn, TodoColumn};
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ProjectMeta {
@@ -18,6 +18,8 @@ pub struct ProjectIssuesEntry {
     pub meta: ProjectMeta,
     pub todo: TodoColumn,
     pub in_progress: InProgressColumn,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub testing: Option<TestingColumn>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }

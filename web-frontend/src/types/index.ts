@@ -101,6 +101,11 @@ export interface Project {
   codex_command: string | null;
   codex_approval_policy: string | null;
   codex_sandbox: string | null;
+  testing_enabled: boolean;
+  testing_max_attempts: number;
+  testing_max_turns: number;
+  testing_skip_labels: string | null;
+  testing_allowed_commands: string | null;
 }
 
 export interface ProjectMember {
@@ -119,6 +124,8 @@ export interface ServiceStatusData {
   uptime_seconds: number | null;
   restart_count: number;
   error_message: string | null;
+  testing_status?: string | null;
+  testing_pid?: number | null;
 }
 
 export interface WorkflowData {
@@ -144,6 +151,11 @@ export interface UpdateProjectParams {
   codex_command?: string;
   codex_approval_policy?: string;
   codex_sandbox?: string;
+  testing_enabled?: boolean;
+  testing_max_attempts?: number;
+  testing_max_turns?: number;
+  testing_skip_labels?: string;
+  testing_allowed_commands?: string;
 }
 
 export interface AddMemberParams {

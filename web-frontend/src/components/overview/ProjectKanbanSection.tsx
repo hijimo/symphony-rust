@@ -107,7 +107,7 @@ export default function ProjectKanbanSection({
         <Box
           sx={{
             display: 'grid',
-            gridTemplateColumns: { xs: '1fr', md: 'repeat(3, 1fr)' },
+            gridTemplateColumns: { xs: '1fr', md: `repeat(${issuesData?.testing ? 4 : 3}, 1fr)` },
             gap: 1.5,
             alignItems: 'start',
           }}
@@ -145,6 +145,23 @@ export default function ProjectKanbanSection({
               ))
             )}
           </KanbanColumn>
+
+          {/* Testing (conditional) */}
+          {issuesData?.testing && (
+            <KanbanColumn
+              title="测试中"
+              count={issuesData.testing.total_count}
+              headerColor="#b45309"
+            >
+              {issuesData.testing.issues.length === 0 ? (
+                <EmptyHint message="暂无" />
+              ) : (
+                issuesData.testing.issues.map((issue) => (
+                  <IssueCard key={issue.iid} issue={issue} />
+                ))
+              )}
+            </KanbanColumn>
+          )}
 
           {/* PR/MR */}
           <KanbanColumn

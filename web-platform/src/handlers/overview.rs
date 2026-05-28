@@ -116,6 +116,7 @@ pub async fn get_overview_issues(
                                 issues: Vec::new(),
                                 total_count: 0,
                             },
+                            testing: None,
                             error: Some("no_token".to_string()),
                         };
                     }
@@ -140,6 +141,7 @@ pub async fn get_overview_issues(
                                 issues: Vec::new(),
                                 total_count: 0,
                             },
+                            testing: None,
                             error: Some("semaphore_closed".to_string()),
                         };
                     }
@@ -171,6 +173,7 @@ pub async fn get_overview_issues(
                                 issues: Vec::new(),
                                 total_count: 0,
                             },
+                            testing: None,
                             error: Some(format!("client_error: {}", e)),
                         };
                     }
@@ -203,6 +206,7 @@ pub async fn get_overview_issues(
                         meta,
                         todo: issues_result.todo,
                         in_progress: issues_result.in_progress,
+                        testing: None,
                         error: None,
                     },
                     Ok(Err(e)) => ProjectIssuesEntry {
@@ -216,6 +220,7 @@ pub async fn get_overview_issues(
                             issues: Vec::new(),
                             total_count: 0,
                         },
+                        testing: None,
                         error: Some(e.to_string()),
                     },
                     Err(_) => ProjectIssuesEntry {
@@ -229,6 +234,7 @@ pub async fn get_overview_issues(
                             issues: Vec::new(),
                             total_count: 0,
                         },
+                        testing: None,
                         error: Some("timeout".to_string()),
                     },
                 };

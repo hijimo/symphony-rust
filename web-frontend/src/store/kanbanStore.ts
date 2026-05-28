@@ -24,6 +24,7 @@ function assembleKanbanData(
   return {
     todo: issues.todo,
     in_progress: issues.in_progress,
+    testing: issues.testing,
     pr: prs?.pr ?? { merge_requests: [], total_count: 0 },
     cached: issues.cached || (prs?.cached ?? false),
     cached_at: issues.cached_at ?? prs?.cached_at ?? null,

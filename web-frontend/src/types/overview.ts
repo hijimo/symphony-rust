@@ -1,4 +1,4 @@
-import type { KanbanTodoColumn, KanbanInProgressColumn, KanbanPrColumn } from './kanban';
+import type { KanbanTodoColumn, KanbanInProgressColumn, KanbanTestingColumn, KanbanPrColumn } from './kanban';
 
 export interface ProjectMeta {
   project_id: number;
@@ -11,6 +11,7 @@ export interface ProjectMeta {
 export interface ProjectIssuesEntry extends ProjectMeta {
   todo: KanbanTodoColumn;
   in_progress: KanbanInProgressColumn;
+  testing?: KanbanTestingColumn;
   error: string | null;
 }
 
