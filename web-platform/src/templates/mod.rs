@@ -2,6 +2,8 @@ use crate::git_url::Platform;
 
 const GITHUB_TEMPLATE: &str = include_str!("workflow_github.md");
 const GITLAB_TEMPLATE: &str = include_str!("workflow_gitlab.md");
+const TEST_GITHUB_TEMPLATE: &str = include_str!("workflow_test_github.md");
+const TEST_GITLAB_TEMPLATE: &str = include_str!("workflow_test_gitlab.md");
 
 /// Context variables for rendering workflow templates.
 pub struct WorkflowTemplateContext {
@@ -16,6 +18,8 @@ pub struct WorkflowTemplateContext {
     pub codex_command: Option<String>,
     pub codex_approval_policy: Option<String>,
     pub codex_sandbox: Option<String>,
+    pub testing_max_turns: Option<i64>,
+    pub testing_skip_labels: Option<String>,
 }
 
 /// Get the raw template content for a given platform.
@@ -26,11 +30,25 @@ pub fn get_default_template(platform: &Platform) -> &'static str {
     }
 }
 
+/// Get the raw test-engineer template content for a given platform.
+pub fn get_test_template(platform: &Platform) -> &'static str {
+    match platform {
+        Platform::GitHub => TEST_GITHUB_TEMPLATE,
+        Platform::GitLab => TEST_GITLAB_TEMPLATE,
+    }
+}
+
 /// Render a workflow template with the given context variables.
 ///
 /// Uses simple `{{variable}}` placeholder replacement (no external template engine needed).
 pub fn render_template(ctx: &WorkflowTemplateContext) -> String {
     let template = get_default_template(&ctx.platform);
+    render_template_string(template, ctx)
+}
+
+/// Render the test-engineer workflow template with the given context variables.
+pub fn render_test_template(ctx: &WorkflowTemplateContext) -> String {
+    let template = get_test_template(&ctx.platform);
     render_template_string(template, ctx)
 }
 
@@ -48,6 +66,12 @@ pub fn render_template_string(template: &str, ctx: &WorkflowTemplateContext) -> 
         &ctx.codex_sandbox,
     );
 
+    let testing_max_turns = ctx.testing_max_turns.unwrap_or(12).to_string();
+    let testing_skip_labels = ctx
+        .testing_skip_labels
+        .as_deref()
+        .unwrap_or(r#"["hotfix", "urgent", "docs-only"]"#);
+
     template
         .replace("{{project_slug}}", &ctx.project_slug)
         .replace("{{platform_host}}", &ctx.platform_host)
@@ -60,6 +84,8 @@ pub fn render_template_string(template: &str, ctx: &WorkflowTemplateContext) -> 
         .replace("{{default_branch}}", &ctx.default_branch)
         .replace("{{hooks_section}}", &hooks_section)
         .replace("{{codex_section}}", &codex_section)
+        .replace("{{testing_max_turns}}", &testing_max_turns)
+        .replace("{{testing_skip_labels}}", testing_skip_labels)
 }
 
 fn build_hooks_section(after_create: &Option<String>, before_remove: &Option<String>) -> String {
@@ -123,6 +149,8 @@ mod tests {
             codex_command: None,
             codex_approval_policy: None,
             codex_sandbox: None,
+            testing_max_turns: None,
+            testing_skip_labels: None,
         };
         let rendered = render_template(&ctx);
         assert!(rendered.contains("kind: github"));
@@ -152,6 +180,8 @@ mod tests {
             ),
             codex_approval_policy: Some("never".to_string()),
             codex_sandbox: Some("workspace-write".to_string()),
+            testing_max_turns: None,
+            testing_skip_labels: None,
         };
         let rendered = render_template(&ctx);
         assert!(rendered.contains("kind: gitlab"));
@@ -161,6 +191,56 @@ mod tests {
         assert!(rendered.contains("origin/develop"));
         assert!(rendered.contains("hooks:\n  after_create:"));
         assert!(rendered.contains("codex:\n  command:"));
+    }
+
+    #[test]
+    fn test_render_test_github_template() {
+        let ctx = WorkflowTemplateContext {
+            platform: Platform::GitHub,
+            project_slug: "owner/my-repo".to_string(),
+            platform_host: "https://github.com".to_string(),
+            workspace_root: "~/symphony-workspaces/1".to_string(),
+            max_concurrent_agents: 2,
+            default_branch: "main".to_string(),
+            hooks_after_create: None,
+            hooks_before_remove: None,
+            codex_command: None,
+            codex_approval_policy: None,
+            codex_sandbox: None,
+            testing_max_turns: Some(12),
+            testing_skip_labels: Some(r#"["hotfix", "urgent"]"#.to_string()),
+        };
+        let rendered = render_test_template(&ctx);
+        assert!(rendered.contains("kind: github"));
+        assert!(rendered.contains("active_states:\n    - Testing"));
+        assert!(rendered.contains("max_turns: 12"));
+        assert!(rendered.contains("test-engineer agent"));
+        assert!(rendered.contains("FAIL-MINOR"));
+        assert!(rendered.contains("FAIL-MAJOR"));
+    }
+
+    #[test]
+    fn test_render_test_gitlab_template() {
+        let ctx = WorkflowTemplateContext {
+            platform: Platform::GitLab,
+            project_slug: "group/project".to_string(),
+            platform_host: "https://gitlab.example.com".to_string(),
+            workspace_root: "~/symphony-workspaces/2".to_string(),
+            max_concurrent_agents: 2,
+            default_branch: "main".to_string(),
+            hooks_after_create: None,
+            hooks_before_remove: None,
+            codex_command: None,
+            codex_approval_policy: None,
+            codex_sandbox: None,
+            testing_max_turns: Some(10),
+            testing_skip_labels: None,
+        };
+        let rendered = render_test_template(&ctx);
+        assert!(rendered.contains("kind: gitlab"));
+        assert!(rendered.contains("active_states:\n    - Testing"));
+        assert!(rendered.contains("max_turns: 10"));
+        assert!(rendered.contains("test-engineer agent"));
     }
 
     #[test]
