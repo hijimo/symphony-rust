@@ -17,6 +17,7 @@ tracker:
   workflow_labels:
     - Backlog
     - Human Review
+    - Testing
 polling:
   interval_ms: 5000
 workspace:
@@ -120,6 +121,7 @@ glab issue view <iid> --json labels,title,description,web_url
 - `Human Review` -> MR is attached and validated; waiting on human approval.
 - `Merging` -> approved by human; execute the `land` skill flow.
 - `Rework` -> reviewer requested changes; planning + implementation required.
+- `Testing` -> test-engineer agent is running; do not modify.
 - `Done` -> terminal state; no further action required.
 
 ## Step 0: Determine current issue state and route
@@ -263,15 +265,25 @@ Use this only when completion is blocked by missing required tools or missing au
     - Confirm every required issue-provided validation/test-plan item is explicitly marked complete in the workpad.
     - Repeat this check-address-verify loop until no outstanding comments remain and pipeline is fully passing.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
-12. Only then move issue to `Human Review`:
-    ```bash
-    glab issue update <iid> --label "Human Review" --unlabel "In Progress"
+12. Before state transition, add a `### Test Points` section to the workpad listing what changed:
+    ```markdown
+    ### Test Points（供 test agent 参考）
+
+    - <describe each changed function/module and what needs testing>
     ```
-    - Exception: if blocked by missing required tools/auth per the blocked-access escape hatch, move to `Human Review` with the blocker brief and explicit unblock actions.
-13. For `Todo` issues that already had an MR attached at kickoff:
+13. Determine the target state using the **Testing Gate**:
+    - If issue has any label in {{testing_skip_labels}} → move to `Human Review`
+    - If the diff only contains documentation/config files (no `.rs`/`.ts`/`.tsx`/`.js` changes) → move to `Human Review`
+    - Otherwise → move to `Testing`:
+      ```bash
+      glab issue update <iid> --label "Testing" --unlabel "In Progress"
+      ```
+    - After moving to `Testing`, immediately end your turn.
+    - Fallback to `Human Review` if blocked by missing required tools/auth per the blocked-access escape hatch.
+14. For `Todo` issues that already had an MR attached at kickoff:
     - Ensure all existing MR feedback was reviewed and resolved, including inline diff comments (code changes or explicit, justified pushback response).
     - Ensure branch was pushed with any required updates.
-    - Then move to `Human Review`.
+    - Then apply the Testing Gate (step 13).
 
 ## Step 3: Human Review and merge handling
 
@@ -291,6 +303,24 @@ Use this only when completion is blocked by missing required tools or missing au
    ```bash
    glab issue update <iid> --label "Done" --unlabel "Merging"
    ```
+
+## Step 3.5: Handling test-engineer feedback (FAIL-MINOR)
+
+When the issue is in `In Progress` and the latest issue note contains a `## Test Report` with `FAIL-MINOR`:
+
+1. This means the test-engineer agent found minor gaps (missing test coverage only, ≤2 items).
+2. Do NOT perform a full Rework reset.
+3. Read the latest Test Report note (find the one with the highest `test-report-version` number).
+4. Address only the specific failures listed in the report:
+   - Add missing tests
+   - Fix the identified coverage gaps
+5. Update the workpad `### Test Points` section with what was fixed.
+6. Re-run validation, push changes.
+7. Move back to `Testing`:
+   ```bash
+   glab issue update <iid> --label "Testing" --unlabel "In Progress"
+   ```
+8. Immediately end your turn after the state transition.
 
 ## Step 4: Rework handling
 
