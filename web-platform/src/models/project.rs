@@ -134,6 +134,16 @@ pub struct Project {
     pub service_workdir: Option<String>,
     pub last_lifecycle_op: Option<String>,
     pub service_proxy_config_version: Option<String>,
+    // Testing agent configuration
+    pub testing_enabled: bool,
+    pub testing_max_attempts: i64,
+    pub testing_max_turns: i64,
+    pub testing_skip_labels: Option<String>,
+    pub testing_allowed_commands: Option<String>,
+    pub testing_service_status: String,
+    pub testing_service_pid: Option<i64>,
+    pub testing_service_instance_id: Option<String>,
+    pub testing_service_generation: i64,
 }
 
 /// Data required to create a new project.
@@ -165,6 +175,11 @@ pub struct ProjectUpdate {
     pub codex_command: Option<String>,
     pub codex_approval_policy: Option<String>,
     pub codex_sandbox: Option<String>,
+    pub testing_enabled: Option<bool>,
+    pub testing_max_attempts: Option<i64>,
+    pub testing_max_turns: Option<i64>,
+    pub testing_skip_labels: Option<String>,
+    pub testing_allowed_commands: Option<String>,
 }
 
 /// Service status update payload.
@@ -243,6 +258,11 @@ pub struct UpdateProjectRequest {
     pub codex_command: Option<String>,
     pub codex_approval_policy: Option<String>,
     pub codex_sandbox: Option<String>,
+    pub testing_enabled: Option<bool>,
+    pub testing_max_attempts: Option<i64>,
+    pub testing_max_turns: Option<i64>,
+    pub testing_skip_labels: Option<String>,
+    pub testing_allowed_commands: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

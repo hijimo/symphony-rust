@@ -404,10 +404,19 @@ fn row_to_project(row: &rusqlite::Row) -> rusqlite::Result<Project> {
         service_workdir: row.get(38)?,
         last_lifecycle_op: row.get(39)?,
         service_proxy_config_version: row.get(40)?,
+        testing_enabled: row.get::<_, i64>(41)? != 0,
+        testing_max_attempts: row.get(42)?,
+        testing_max_turns: row.get(43)?,
+        testing_skip_labels: row.get(44)?,
+        testing_allowed_commands: row.get(45)?,
+        testing_service_status: row.get(46)?,
+        testing_service_pid: row.get(47)?,
+        testing_service_instance_id: row.get(48)?,
+        testing_service_generation: row.get(49)?,
     })
 }
 
-const PROJECT_COLUMNS: &str = "id, name, description, git_url, platform, platform_host, namespace, repo_name, default_branch, workflow_template, workflow_content, service_status, service_pid, max_concurrent_agents, auto_restart, restart_count, last_started_at, last_stopped_at, error_message, created_by, created_at, updated_at, hooks_after_create, hooks_before_remove, codex_command, codex_approval_policy, codex_sandbox, web_instance_id, lifecycle_op_id, lifecycle_lease_expires_at, service_owner_web_instance_id, service_owner_lease_expires_at, service_owner_heartbeat_at, service_generation, service_instance_id, service_pgid, service_session_id, service_cmdline_hash, service_workdir, last_lifecycle_op, service_proxy_config_version";
+const PROJECT_COLUMNS: &str = "id, name, description, git_url, platform, platform_host, namespace, repo_name, default_branch, workflow_template, workflow_content, service_status, service_pid, max_concurrent_agents, auto_restart, restart_count, last_started_at, last_stopped_at, error_message, created_by, created_at, updated_at, hooks_after_create, hooks_before_remove, codex_command, codex_approval_policy, codex_sandbox, web_instance_id, lifecycle_op_id, lifecycle_lease_expires_at, service_owner_web_instance_id, service_owner_lease_expires_at, service_owner_heartbeat_at, service_generation, service_instance_id, service_pgid, service_session_id, service_cmdline_hash, service_workdir, last_lifecycle_op, service_proxy_config_version, testing_enabled, testing_max_attempts, testing_max_turns, testing_skip_labels, testing_allowed_commands, testing_service_status, testing_service_pid, testing_service_instance_id, testing_service_generation";
 
 #[async_trait]
 impl ProjectRepository for SqliteRepository {
@@ -536,11 +545,13 @@ impl ProjectRepository for SqliteRepository {
             )?;
 
             // Query with member_count subquery
+            let prefixed_cols = PROJECT_COLUMNS.split(", ").map(|c| format!("p.{}", c)).collect::<Vec<_>>().join(", ");
             let query_sql = format!(
-                "SELECT p.id, p.name, p.description, p.git_url, p.platform, p.platform_host, p.namespace, p.repo_name, p.default_branch, p.workflow_template, p.workflow_content, p.service_status, p.service_pid, p.max_concurrent_agents, p.auto_restart, p.restart_count, p.last_started_at, p.last_stopped_at, p.error_message, p.created_by, p.created_at, p.updated_at, p.hooks_after_create, p.hooks_before_remove, p.codex_command, p.codex_approval_policy, p.codex_sandbox, p.web_instance_id, p.lifecycle_op_id, p.lifecycle_lease_expires_at, p.service_owner_web_instance_id, p.service_owner_lease_expires_at, p.service_owner_heartbeat_at, p.service_generation, p.service_instance_id, p.service_pgid, p.service_session_id, p.service_cmdline_hash, p.service_workdir, p.last_lifecycle_op, p.service_proxy_config_version, \
+                "SELECT {}, \
                  (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id) as member_count, \
                  (SELECT pm2.role FROM project_members pm2 WHERE pm2.project_id = p.id AND pm2.user_id = ?{}) as my_role \
                  FROM projects p {} ORDER BY p.id DESC LIMIT ?{} OFFSET ?{}",
+                prefixed_cols,
                 params.len() + 1,
                 where_clause,
                 params.len() + 2,
@@ -556,8 +567,8 @@ impl ProjectRepository for SqliteRepository {
                     rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
                     |row| {
                         let mut p = row_to_project(row)?;
-                        p.member_count = row.get(41)?;
-                        p.my_role = row.get(42)?;
+                        p.member_count = row.get(50)?;
+                        p.my_role = row.get(51)?;
                         Ok(p)
                     },
                 )?
@@ -680,6 +691,31 @@ impl ProjectRepository for SqliteRepository {
                 set_clauses.push(format!("codex_sandbox = ?{}", idx));
                 params.push(Box::new(v.clone()));
             }
+            if let Some(testing_enabled) = updates.testing_enabled {
+                let idx = params.len() + 1;
+                set_clauses.push(format!("testing_enabled = ?{}", idx));
+                params.push(Box::new(testing_enabled as i64));
+            }
+            if let Some(v) = updates.testing_max_attempts {
+                let idx = params.len() + 1;
+                set_clauses.push(format!("testing_max_attempts = ?{}", idx));
+                params.push(Box::new(v));
+            }
+            if let Some(v) = updates.testing_max_turns {
+                let idx = params.len() + 1;
+                set_clauses.push(format!("testing_max_turns = ?{}", idx));
+                params.push(Box::new(v));
+            }
+            if let Some(ref v) = updates.testing_skip_labels {
+                let idx = params.len() + 1;
+                set_clauses.push(format!("testing_skip_labels = ?{}", idx));
+                params.push(Box::new(v.clone()));
+            }
+            if let Some(ref v) = updates.testing_allowed_commands {
+                let idx = params.len() + 1;
+                set_clauses.push(format!("testing_allowed_commands = ?{}", idx));
+                params.push(Box::new(v.clone()));
+            }
 
             if set_clauses.is_empty() {
                 return Ok(());
@@ -743,6 +779,30 @@ impl ProjectRepository for SqliteRepository {
 
             let rows = conn.execute(
                 &sql,
+                rusqlite::params![status_str, pid, error_message, id],
+            )?;
+            if rows == 0 {
+                return Err(WebPlatformError::NotFound("Project not found".to_string()));
+            }
+            Ok(())
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn update_testing_service_status(
+        &self,
+        id: i64,
+        status: &ServiceStatusUpdate,
+    ) -> Result<()> {
+        let pool = self.pool.clone();
+        let status_str = status.status.as_str().to_string();
+        let pid = status.pid;
+        let error_message = status.error_message.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get()?;
+            let rows = conn.execute(
+                "UPDATE projects SET testing_service_status = ?1, testing_service_pid = ?2, error_message = COALESCE(?3, error_message), updated_at = datetime('now') WHERE id = ?4",
                 rusqlite::params![status_str, pid, error_message, id],
             )?;
             if rows == 0 {

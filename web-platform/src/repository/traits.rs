@@ -97,6 +97,11 @@ pub trait ProjectRepository: Send + Sync {
     async fn update_project(&self, id: i64, updates: &ProjectUpdate) -> Result<()>;
     async fn delete_project(&self, id: i64) -> Result<()>;
     async fn update_service_status(&self, id: i64, status: &ServiceStatusUpdate) -> Result<()>;
+    async fn update_testing_service_status(
+        &self,
+        id: i64,
+        status: &ServiceStatusUpdate,
+    ) -> Result<()>;
     async fn update_service_lifecycle(
         &self,
         id: i64,

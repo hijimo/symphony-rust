@@ -278,6 +278,20 @@ pub async fn update_project(
             ));
         }
     }
+    if let Some(v) = req.testing_max_attempts {
+        if !(1..=5).contains(&v) {
+            return Err(WebPlatformError::BadRequest(
+                "testing_max_attempts must be 1-5".to_string(),
+            ));
+        }
+    }
+    if let Some(v) = req.testing_max_turns {
+        if !(5..=30).contains(&v) {
+            return Err(WebPlatformError::BadRequest(
+                "testing_max_turns must be 5-30".to_string(),
+            ));
+        }
+    }
 
     let updates = ProjectUpdate {
         name: req.name,
@@ -290,6 +304,11 @@ pub async fn update_project(
         codex_command: req.codex_command,
         codex_approval_policy: req.codex_approval_policy,
         codex_sandbox: req.codex_sandbox,
+        testing_enabled: req.testing_enabled,
+        testing_max_attempts: req.testing_max_attempts,
+        testing_max_turns: req.testing_max_turns,
+        testing_skip_labels: req.testing_skip_labels,
+        testing_allowed_commands: req.testing_allowed_commands,
     };
 
     state.repo.update_project(id, &updates).await?;
