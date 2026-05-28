@@ -110,6 +110,27 @@ pub fn spawn_watcher(
     });
 }
 
+pub fn spawn_test_watcher(
+    project_id: i64,
+    process_manager: ProcessManager,
+    repo: SqliteRepository,
+    encryption_key: [u8; 32],
+    symphony_bin: String,
+    workspace_root: String,
+) {
+    tokio::spawn(async move {
+        watch_test_process(
+            project_id,
+            process_manager,
+            repo,
+            encryption_key,
+            symphony_bin,
+            workspace_root,
+        )
+        .await;
+    });
+}
+
 async fn watch_process(
     project_id: i64,
     process_manager: ProcessManager,
@@ -134,7 +155,7 @@ async fn watch_process(
             continue;
         }
 
-        let log_tail = read_log_tail(project_id, &workspace_root);
+        let log_tail = read_log_tail(project_id, &workspace_root, "symphony.log");
         warn!(
             project_id,
             pid = state.pid,
@@ -285,10 +306,10 @@ async fn watch_process(
     }
 }
 
-fn read_log_tail(project_id: i64, workspace_root: &str) -> String {
+fn read_log_tail(project_id: i64, workspace_root: &str, filename: &str) -> String {
     let log_path = std::path::PathBuf::from(workspace_root)
         .join(project_id.to_string())
-        .join("symphony.log");
+        .join(filename);
 
     match std::fs::read_to_string(&log_path) {
         Ok(content) => {
@@ -297,5 +318,206 @@ fn read_log_tail(project_id: i64, workspace_root: &str) -> String {
             lines[start..].join("\n")
         }
         Err(_) => "(no log file available)".to_string(),
+    }
+}
+
+async fn watch_test_process(
+    project_id: i64,
+    process_manager: ProcessManager,
+    repo: SqliteRepository,
+    encryption_key: [u8; 32],
+    symphony_bin: String,
+    workspace_root: String,
+) {
+    loop {
+        sleep(HEALTH_CHECK_INTERVAL).await;
+
+        let state = match process_manager.get_test_state(project_id) {
+            Some(s) => s,
+            None => break,
+        };
+
+        if state.status != ServiceStatus::Running {
+            break;
+        }
+
+        if pid_verify::verify_pid(state.pid, state.started_at.timestamp()) {
+            continue;
+        }
+
+        let log_tail = read_log_tail(project_id, &workspace_root, "symphony_test.log");
+        warn!(
+            project_id,
+            pid = state.pid,
+            log_tail = %log_tail,
+            "Test process died unexpectedly, attempting recovery"
+        );
+
+        let project = match repo.get_project(project_id).await {
+            Ok(Some(p)) => p,
+            _ => {
+                error!(project_id, "Failed to load project for test crash recovery");
+                break;
+            }
+        };
+
+        if !project.testing_enabled || state.restart_count >= MAX_RESTART_ATTEMPTS {
+            info!(
+                project_id,
+                restart_count = state.restart_count,
+                "Test instance: max restart attempts reached or testing disabled"
+            );
+
+            let status_update = ServiceStatusUpdate {
+                status: ServiceStatus::Failed,
+                pid: None,
+                error_message: Some(format!(
+                    "Test process crashed after {} restart attempts. Last output:\n{}",
+                    state.restart_count, log_tail
+                )),
+            };
+            let _ = repo
+                .update_testing_service_status(project_id, &status_update)
+                .await;
+
+            process_manager.set_test_state(
+                project_id,
+                ProcessState {
+                    pid: 0,
+                    started_at: state.started_at,
+                    status: ServiceStatus::Failed,
+                    restart_count: state.restart_count,
+                },
+            );
+            break;
+        }
+
+        let delay = match state.restart_count {
+            0 => Duration::from_secs(5),
+            1 => Duration::from_secs(15),
+            _ => Duration::from_secs(60),
+        };
+
+        info!(
+            project_id,
+            restart_count = state.restart_count + 1,
+            delay_secs = delay.as_secs(),
+            "Scheduling test instance auto-restart"
+        );
+
+        let status_update = ServiceStatusUpdate {
+            status: ServiceStatus::Error,
+            pid: None,
+            error_message: Some("Test process crashed, auto-restarting...".to_string()),
+        };
+        let _ = repo
+            .update_testing_service_status(project_id, &status_update)
+            .await;
+
+        process_manager.set_test_state(
+            project_id,
+            ProcessState {
+                pid: 0,
+                started_at: state.started_at,
+                status: ServiceStatus::Error,
+                restart_count: state.restart_count + 1,
+            },
+        );
+
+        sleep(delay).await;
+
+        // Re-fetch project after backoff to get fresh state
+        let project = match repo.get_project(project_id).await {
+            Ok(Some(p)) => p,
+            _ => {
+                error!(project_id, "Failed to reload project after backoff");
+                break;
+            }
+        };
+
+        if !project.testing_enabled {
+            info!(project_id, "Testing disabled during backoff, aborting restart");
+            let status_update = ServiceStatusUpdate {
+                status: ServiceStatus::Stopped,
+                pid: None,
+                error_message: None,
+            };
+            let _ = repo
+                .update_testing_service_status(project_id, &status_update)
+                .await;
+            process_manager.remove_test_state(project_id);
+            break;
+        }
+
+        let test_instance_id = format!(
+            "test-{}-{}-{}",
+            project.id,
+            project.testing_service_generation + 1,
+            uuid::Uuid::new_v4()
+        );
+
+        match spawn::spawn_test_symphony(
+            &project,
+            &repo,
+            &encryption_key,
+            &symphony_bin,
+            &workspace_root,
+            &test_instance_id,
+        )
+        .await
+        {
+            Ok(result) => {
+                let now = chrono::Utc::now();
+                let new_pid = result.pid;
+
+                let status_update = ServiceStatusUpdate {
+                    status: ServiceStatus::Running,
+                    pid: Some(new_pid as i64),
+                    error_message: None,
+                };
+                let _ = repo
+                    .update_testing_service_status(project_id, &status_update)
+                    .await;
+
+                process_manager.set_test_state(
+                    project_id,
+                    ProcessState {
+                        pid: new_pid,
+                        started_at: now,
+                        status: ServiceStatus::Running,
+                        restart_count: state.restart_count + 1,
+                    },
+                );
+
+                info!(
+                    project_id,
+                    pid = new_pid,
+                    "Test process restarted successfully"
+                );
+            }
+            Err(e) => {
+                error!(project_id, error = %e, "Failed to restart test process");
+
+                let status_update = ServiceStatusUpdate {
+                    status: ServiceStatus::Failed,
+                    pid: None,
+                    error_message: Some(format!("Test restart failed: {}", e)),
+                };
+                let _ = repo
+                    .update_testing_service_status(project_id, &status_update)
+                    .await;
+
+                process_manager.set_test_state(
+                    project_id,
+                    ProcessState {
+                        pid: 0,
+                        started_at: state.started_at,
+                        status: ServiceStatus::Failed,
+                        restart_count: state.restart_count + 1,
+                    },
+                );
+                break;
+            }
+        }
     }
 }

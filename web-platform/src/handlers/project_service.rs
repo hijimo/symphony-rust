@@ -145,6 +145,10 @@ pub struct ServiceStatusResponse {
     pub uptime_seconds: Option<i64>,
     pub restart_count: u32,
     pub error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub testing_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub testing_pid: Option<u32>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -325,6 +329,68 @@ pub async fn start_service(
         state.workspace_root.clone(),
     );
 
+    // Spawn test instance if testing is enabled
+    let (testing_status, testing_pid) = if project.testing_enabled {
+        let test_instance_id = format!("test-{}-{}-{}", project.id, service_generation, Uuid::new_v4());
+        match spawn::spawn_test_symphony(
+            &project,
+            &state.repo,
+            &state.encryption_key,
+            &state.symphony_bin,
+            &state.workspace_root,
+            &test_instance_id,
+        )
+        .await
+        {
+            Ok(test_result) => {
+                let test_pid = test_result.pid;
+                let test_state = ProcessState {
+                    pid: test_pid,
+                    started_at: now,
+                    status: ServiceStatus::Running,
+                    restart_count: 0,
+                };
+                state.process_manager.set_test_state(project_id, test_state);
+
+                let test_status_update = ServiceStatusUpdate {
+                    status: ServiceStatus::Running,
+                    pid: Some(test_pid as i64),
+                    error_message: None,
+                };
+                let _ = state
+                    .repo
+                    .update_testing_service_status(project_id, &test_status_update)
+                    .await;
+
+                watcher::spawn_test_watcher(
+                    project_id,
+                    state.process_manager.clone(),
+                    state.repo.clone(),
+                    state.encryption_key,
+                    state.symphony_bin.clone(),
+                    state.workspace_root.clone(),
+                );
+
+                (Some("running".to_string()), Some(test_pid))
+            }
+            Err(e) => {
+                tracing::warn!(project_id, error = %e, "Failed to spawn test instance");
+                let test_status_update = ServiceStatusUpdate {
+                    status: ServiceStatus::Failed,
+                    pid: None,
+                    error_message: Some(format!("{}", e)),
+                };
+                let _ = state
+                    .repo
+                    .update_testing_service_status(project_id, &test_status_update)
+                    .await;
+                (Some("failed".to_string()), None)
+            }
+        }
+    } else {
+        (None, None)
+    };
+
     let response = ServiceStatusResponse {
         status: "running".to_string(),
         pid: Some(pid),
@@ -332,6 +398,8 @@ pub async fn start_service(
         uptime_seconds: Some(0),
         restart_count: 0,
         error_message: None,
+        testing_status,
+        testing_pid,
     };
 
     Ok(Json(ResponseData::success(response)))
@@ -426,6 +494,47 @@ pub async fn stop_service(
     // Clean up process manager state
     state.process_manager.remove_state(project_id);
 
+    // Stop test instance if running
+    if let Some(test_state) = state.process_manager.get_test_state(project_id) {
+        if test_state.pid > 0 {
+            if pid_verify::verify_pid(test_state.pid, test_state.started_at.timestamp()) {
+                pid_verify::send_sigterm(test_state.pid);
+                if !pid_verify::wait_for_exit(test_state.pid, STOP_TIMEOUT).await {
+                    pid_verify::send_sigkill(test_state.pid);
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+        state.process_manager.remove_test_state(project_id);
+        let test_status_update = ServiceStatusUpdate {
+            status: ServiceStatus::Stopped,
+            pid: None,
+            error_message: None,
+        };
+        let _ = state
+            .repo
+            .update_testing_service_status(project_id, &test_status_update)
+            .await;
+    } else if let Some(test_pid) = project.testing_service_pid {
+        let pid = test_pid as u32;
+        if pid_verify::verify_pid(pid, 0) {
+            pid_verify::send_sigterm(pid);
+            if !pid_verify::wait_for_exit(pid, STOP_TIMEOUT).await {
+                pid_verify::send_sigkill(pid);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+        let test_status_update = ServiceStatusUpdate {
+            status: ServiceStatus::Stopped,
+            pid: None,
+            error_message: None,
+        };
+        let _ = state
+            .repo
+            .update_testing_service_status(project_id, &test_status_update)
+            .await;
+    }
+
     let response = ServiceStatusResponse {
         status: "stopped".to_string(),
         pid: None,
@@ -433,6 +542,8 @@ pub async fn stop_service(
         uptime_seconds: None,
         restart_count: 0,
         error_message: None,
+        testing_status: None,
+        testing_pid: None,
     };
 
     Ok(Json(ResponseData::success(response)))
@@ -563,6 +674,72 @@ pub async fn restart_service(
         state.workspace_root.clone(),
     );
 
+    // Handle test instance restart
+    // First stop existing test instance
+    if let Some(test_state) = state.process_manager.get_test_state(project_id) {
+        if test_state.pid > 0 && pid_verify::verify_pid(test_state.pid, test_state.started_at.timestamp()) {
+            pid_verify::send_sigterm(test_state.pid);
+            if !pid_verify::wait_for_exit(test_state.pid, STOP_TIMEOUT).await {
+                pid_verify::send_sigkill(test_state.pid);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+        state.process_manager.remove_test_state(project_id);
+    }
+
+    // Spawn test instance if testing is enabled
+    let (testing_status, testing_pid) = if project.testing_enabled {
+        let test_instance_id = format!("test-{}-{}-{}", project.id, service_generation, Uuid::new_v4());
+        match spawn::spawn_test_symphony(
+            &project,
+            &state.repo,
+            &state.encryption_key,
+            &state.symphony_bin,
+            &state.workspace_root,
+            &test_instance_id,
+        )
+        .await
+        {
+            Ok(test_result) => {
+                let test_pid = test_result.pid;
+                let test_state = ProcessState {
+                    pid: test_pid,
+                    started_at: now,
+                    status: ServiceStatus::Running,
+                    restart_count: 0,
+                };
+                state.process_manager.set_test_state(project_id, test_state);
+
+                let test_status_update = ServiceStatusUpdate {
+                    status: ServiceStatus::Running,
+                    pid: Some(test_pid as i64),
+                    error_message: None,
+                };
+                let _ = state
+                    .repo
+                    .update_testing_service_status(project_id, &test_status_update)
+                    .await;
+
+                watcher::spawn_test_watcher(
+                    project_id,
+                    state.process_manager.clone(),
+                    state.repo.clone(),
+                    state.encryption_key,
+                    state.symphony_bin.clone(),
+                    state.workspace_root.clone(),
+                );
+
+                (Some("running".to_string()), Some(test_pid))
+            }
+            Err(e) => {
+                tracing::warn!(project_id, error = %e, "Failed to spawn test instance on restart");
+                (Some("failed".to_string()), None)
+            }
+        }
+    } else {
+        (None, None)
+    };
+
     let response = ServiceStatusResponse {
         status: "running".to_string(),
         pid: Some(pid),
@@ -570,6 +747,8 @@ pub async fn restart_service(
         uptime_seconds: Some(0),
         restart_count: 0,
         error_message: None,
+        testing_status,
+        testing_pid,
     };
 
     Ok(Json(ResponseData::success(response)))
@@ -621,6 +800,23 @@ pub async fn get_service_status(
         .map(|s| s.restart_count)
         .unwrap_or(project.restart_count as u32);
 
+    let (testing_status, testing_pid) = if project.testing_enabled {
+        let ts = if let Some(test_state) = state.process_manager.get_test_state(project_id) {
+            (
+                Some(format!("{:?}", test_state.status).to_lowercase()),
+                if test_state.pid > 0 { Some(test_state.pid) } else { None },
+            )
+        } else {
+            (
+                Some(project.testing_service_status.clone()),
+                project.testing_service_pid.map(|p| p as u32),
+            )
+        };
+        ts
+    } else {
+        (None, None)
+    };
+
     let response = ServiceStatusResponse {
         status: project.service_status,
         pid: project.service_pid.map(|p| p as u32),
@@ -628,6 +824,8 @@ pub async fn get_service_status(
         uptime_seconds,
         restart_count,
         error_message: project.error_message,
+        testing_status,
+        testing_pid,
     };
 
     Ok(Json(ResponseData::success(response)))

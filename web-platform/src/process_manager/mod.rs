@@ -25,10 +25,14 @@ pub struct ProcessState {
 /// mutexes to serialize start/stop operations on the same project.
 #[derive(Clone)]
 pub struct ProcessManager {
-    /// project_id -> current process state
+    /// project_id -> current process state (dev instance)
     pub processes: Arc<DashMap<i64, ProcessState>>,
     /// per-project mutex to serialize lifecycle operations
     pub locks: Arc<DashMap<i64, Arc<Mutex<()>>>>,
+    /// project_id -> current process state (test-engineer instance)
+    pub test_processes: Arc<DashMap<i64, ProcessState>>,
+    /// per-project mutex for test instance lifecycle operations
+    pub test_locks: Arc<DashMap<i64, Arc<Mutex<()>>>>,
 }
 
 impl ProcessManager {
@@ -36,12 +40,22 @@ impl ProcessManager {
         Self {
             processes: Arc::new(DashMap::new()),
             locks: Arc::new(DashMap::new()),
+            test_processes: Arc::new(DashMap::new()),
+            test_locks: Arc::new(DashMap::new()),
         }
     }
 
     /// Get or create the per-project mutex.
     pub fn get_lock(&self, project_id: i64) -> Arc<Mutex<()>> {
         self.locks
+            .entry(project_id)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    /// Get or create the per-project mutex for the test instance.
+    pub fn get_test_lock(&self, project_id: i64) -> Arc<Mutex<()>> {
+        self.test_locks
             .entry(project_id)
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
@@ -71,6 +85,21 @@ impl ProcessManager {
     /// Remove the process state for a project.
     pub fn remove_state(&self, project_id: i64) {
         self.processes.remove(&project_id);
+    }
+
+    /// Get the current test process state for a project.
+    pub fn get_test_state(&self, project_id: i64) -> Option<ProcessState> {
+        self.test_processes.get(&project_id).map(|r| r.clone())
+    }
+
+    /// Set the test process state for a project.
+    pub fn set_test_state(&self, project_id: i64, state: ProcessState) {
+        self.test_processes.insert(project_id, state);
+    }
+
+    /// Remove the test process state for a project.
+    pub fn remove_test_state(&self, project_id: i64) {
+        self.test_processes.remove(&project_id);
     }
 
     pub fn is_active_process(state: &ProcessState) -> bool {
