@@ -70,6 +70,7 @@ pub fn create_git_host() -> Box<dyn GitHost> {
     let platform = std::env::var("E2E_PLATFORM").unwrap_or_else(|_| "github".to_string());
     match platform.as_str() {
         "gitlab" => Box::new(super::gitlab_host::GitlabHost::from_env()),
+        "gitea" => Box::new(super::gitea_host::GiteaHost::from_env()),
         _ => Box::new(super::github_host::GithubHost::from_env()),
     }
 }

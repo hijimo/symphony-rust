@@ -26,6 +26,8 @@ pub struct UserConfig {
     pub gitlab_token: Option<String>,
     pub gitlab_host: Option<String>,
     pub github_token: Option<String>,
+    pub gitea_token: Option<String>,
+    pub gitea_host: Option<String>,
     #[schema(value_type = String)]
     pub updated_at: NaiveDateTime,
 }

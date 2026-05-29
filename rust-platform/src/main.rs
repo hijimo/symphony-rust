@@ -31,6 +31,7 @@ use symphony_platform::logging::init_logging;
 use symphony_platform::models::OrchestratorEvent as ModelOrchestratorEvent;
 use symphony_platform::orchestrator::scheduler::DispatchConfig;
 use symphony_platform::orchestrator::Orchestrator;
+use symphony_platform::platform::gitea::GiteaAdapter;
 use symphony_platform::platform::github::GithubAdapter;
 use symphony_platform::platform::gitlab::GitlabAdapter;
 use symphony_platform::prompt::PromptEngine;
@@ -116,6 +117,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         TrackerKind::GitLab => {
             tracing::info!("GitLab tracker mode — tracker client deferred to platform adapter");
+        }
+        TrackerKind::Gitea => {
+            tracing::info!("Gitea tracker mode — tracker client deferred to platform adapter");
         }
     }
 
@@ -276,6 +280,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        TrackerKind::Gitea => {
+            let platform_config = build_platform_config(&service_config, "gitea");
+
+            match GiteaAdapter::new_with_token(platform_config, &service_config.tracker_api_key) {
+                Ok(adapter) => {
+                    if let Err(e) = adapter.http_client().ensure_workflow_labels().await {
+                        tracing::warn!(error = %e, "Failed to verify workflow labels");
+                    }
+
+                    let tracker = Arc::new(GitlabTrackerAdapter::new(
+                        Arc::new(adapter),
+                        service_config.active_states.clone(),
+                        service_config.terminal_states.clone(),
+                    ));
+                    orchestrator.set_tracker(tracker);
+                    tracing::info!("Gitea tracker wired into orchestrator");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to create Gitea adapter, dispatch disabled");
+                }
+            }
+        }
     }
 
     // 15. Optionally start HTTP server (wired to orchestrator channels)
@@ -375,7 +401,7 @@ fn build_platform_config(
         .trim_end_matches('/')
         .to_string();
 
-    let (owner, repo, project_id) = if platform_kind == "github" {
+    let (owner, repo, project_id) = if platform_kind == "github" || platform_kind == "gitea" {
         let mut parts = service_config.tracker_project_slug.splitn(2, '/');
         let owner = parts.next().unwrap_or_default().to_string();
         let repo = parts.next().unwrap_or_default().to_string();
@@ -414,13 +440,13 @@ fn build_workflow_states(
 ) -> std::collections::HashMap<String, String> {
     let mut states = std::collections::HashMap::new();
     for s in &service_config.active_states {
-        states.insert(s.to_lowercase().replace(' ', "_"), s.clone());
+        states.insert(s.trim().to_lowercase().replace([' ', '-'], "_"), s.clone());
     }
     for s in &service_config.terminal_states {
-        states.insert(s.to_lowercase().replace(' ', "_"), s.clone());
+        states.insert(s.trim().to_lowercase().replace([' ', '-'], "_"), s.clone());
     }
     for s in &service_config.workflow_labels {
-        states.insert(s.to_lowercase().replace(' ', "_"), s.clone());
+        states.insert(s.trim().to_lowercase().replace([' ', '-'], "_"), s.clone());
     }
     states
 }

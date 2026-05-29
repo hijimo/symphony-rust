@@ -173,7 +173,9 @@ impl HttpClient {
     /// - GitLab: `GET /projects/:id/labels`
     pub async fn list_labels(&self) -> Result<Vec<Label>, PlatformError> {
         let path = match self.config.kind.as_str() {
-            "github" => format!("/repos/{}/{}/labels", self.config.owner, self.config.repo),
+            "github" | "gitea" => {
+                format!("/repos/{}/{}/labels", self.config.owner, self.config.repo)
+            }
             "gitlab" => {
                 let project_id = self.resolve_project_id();
                 format!("/projects/{}/labels", urlencoding::encode(&project_id))
@@ -258,7 +260,7 @@ impl HttpClient {
         for label_name in &missing {
             tracing::info!(label = label_name, "Auto-creating missing workflow label");
             match self.config.kind.as_str() {
-                "github" => self.create_github_label(label_name, "428BCA").await?,
+                "github" | "gitea" => self.create_github_label(label_name, "428BCA").await?,
                 "gitlab" => self.create_label(label_name, "#428BCA").await?,
                 _ => {}
             }
@@ -351,6 +353,17 @@ fn build_client_with_token(
             headers.insert(
                 HeaderName::from_static("private-token"),
                 HeaderValue::from_str(token).map_err(|_| PlatformError::InvalidToken)?,
+            );
+        }
+        "gitea" => {
+            let auth_value = format!("token {}", token);
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&auth_value).map_err(|_| PlatformError::InvalidToken)?,
+            );
+            headers.insert(
+                reqwest::header::ACCEPT,
+                HeaderValue::from_static("application/json"),
             );
         }
         _ => {

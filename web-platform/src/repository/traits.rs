@@ -65,6 +65,8 @@ pub trait UserConfigRepository: Send + Sync {
         gitlab_token: Option<&str>,
         gitlab_host: Option<&str>,
         github_token: Option<&str>,
+        gitea_token: Option<&str>,
+        gitea_host: Option<&str>,
     ) -> Result<()>;
 }
 

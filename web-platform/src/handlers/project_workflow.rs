@@ -32,6 +32,7 @@ pub async fn get_workflow(
         // Render default template with project variables
         let platform = match project.platform.as_str() {
             "github" => Platform::GitHub,
+            "gitea" => Platform::Gitea,
             _ => Platform::GitLab,
         };
         let ctx = WorkflowTemplateContext {
@@ -108,6 +109,7 @@ pub async fn update_workflow(
     } else {
         let platform = match project.platform.as_str() {
             "github" => Platform::GitHub,
+            "gitea" => Platform::Gitea,
             _ => Platform::GitLab,
         };
         let ctx = WorkflowTemplateContext {

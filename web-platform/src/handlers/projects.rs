@@ -188,6 +188,14 @@ pub async fn create_project(
                 Some(format!("{}://{}", scheme, parsed.host))
             }
         }
+        Platform::Gitea => {
+            let scheme = if req.git_url.starts_with("http://") {
+                "http"
+            } else {
+                "https"
+            };
+            Some(format!("{}://{}", scheme, parsed.host))
+        }
     };
 
     let new_project = NewProject {

@@ -90,6 +90,8 @@ pub struct UserConfigResponse {
     pub has_gitlab_token: bool,
     pub gitlab_host: Option<String>,
     pub has_github_token: bool,
+    pub has_gitea_token: bool,
+    pub gitea_host: Option<String>,
 }
 
 #[utoipa::path(
@@ -116,11 +118,15 @@ pub async fn get_config(
             has_gitlab_token: c.gitlab_token.is_some(),
             gitlab_host: c.gitlab_host,
             has_github_token: c.github_token.is_some(),
+            has_gitea_token: c.gitea_token.is_some(),
+            gitea_host: c.gitea_host,
         }))),
         None => Ok(Json(ResponseData::success(UserConfigResponse {
             has_gitlab_token: false,
             gitlab_host: None,
             has_github_token: false,
+            has_gitea_token: false,
+            gitea_host: None,
         }))),
     }
 }
@@ -131,6 +137,8 @@ pub struct UpdateConfigRequest {
     pub gitlab_token: Option<String>,
     pub gitlab_host: Option<String>,
     pub github_token: Option<String>,
+    pub gitea_token: Option<String>,
+    pub gitea_host: Option<String>,
 }
 
 #[utoipa::path(
@@ -166,6 +174,13 @@ pub async fn update_config(
         .map(|t| crypto::encrypt(t, &state.encryption_key))
         .transpose()?;
 
+    let encrypted_gitea = req
+        .gitea_token
+        .as_deref()
+        .filter(|t| !t.is_empty())
+        .map(|t| crypto::encrypt(t, &state.encryption_key))
+        .transpose()?;
+
     state
         .repo
         .upsert_config(
@@ -173,6 +188,8 @@ pub async fn update_config(
             encrypted_gitlab.as_deref(),
             req.gitlab_host.as_deref(),
             encrypted_github.as_deref(),
+            encrypted_gitea.as_deref(),
+            req.gitea_host.as_deref(),
         )
         .await?;
 

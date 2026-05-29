@@ -241,7 +241,7 @@ impl UserConfigRepository for SqliteRepository {
         tokio::task::spawn_blocking(move || {
             let conn = pool.get()?;
             let result = conn.query_row(
-                "SELECT id, user_id, gitlab_token, gitlab_host, github_token, updated_at FROM user_configs WHERE user_id = ?1",
+                "SELECT id, user_id, gitlab_token, gitlab_host, github_token, gitea_token, gitea_host, updated_at FROM user_configs WHERE user_id = ?1",
                 [user_id],
                 |row| {
                     Ok(UserConfig {
@@ -250,7 +250,9 @@ impl UserConfigRepository for SqliteRepository {
                         gitlab_token: row.get(2)?,
                         gitlab_host: row.get(3)?,
                         github_token: row.get(4)?,
-                        updated_at: parse_datetime(&row.get::<_, String>(5)?),
+                        gitea_token: row.get(5)?,
+                        gitea_host: row.get(6)?,
+                        updated_at: parse_datetime(&row.get::<_, String>(7)?),
                     })
                 },
             );
@@ -268,22 +270,28 @@ impl UserConfigRepository for SqliteRepository {
         gitlab_token: Option<&str>,
         gitlab_host: Option<&str>,
         github_token: Option<&str>,
+        gitea_token: Option<&str>,
+        gitea_host: Option<&str>,
     ) -> Result<()> {
         let pool = self.pool.clone();
         let gitlab_token = gitlab_token.map(|s| s.to_string());
         let gitlab_host = gitlab_host.map(|s| s.to_string());
         let github_token = github_token.map(|s| s.to_string());
+        let gitea_token = gitea_token.map(|s| s.to_string());
+        let gitea_host = gitea_host.map(|s| s.to_string());
         tokio::task::spawn_blocking(move || {
             let conn = pool.get()?;
             conn.execute(
-                "INSERT INTO user_configs (user_id, gitlab_token, gitlab_host, github_token)
-                 VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO user_configs (user_id, gitlab_token, gitlab_host, github_token, gitea_token, gitea_host)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(user_id) DO UPDATE SET
                     gitlab_token = COALESCE(?2, gitlab_token),
                     gitlab_host = COALESCE(?3, gitlab_host),
                     github_token = COALESCE(?4, github_token),
+                    gitea_token = COALESCE(?5, gitea_token),
+                    gitea_host = COALESCE(?6, gitea_host),
                     updated_at = datetime('now')",
-                rusqlite::params![user_id, gitlab_token, gitlab_host, github_token],
+                rusqlite::params![user_id, gitlab_token, gitlab_host, github_token, gitea_token, gitea_host],
             )?;
             Ok(())
         })
@@ -2222,7 +2230,7 @@ mod tests {
             .create_user("cfguser", "hash", None, "user")
             .await
             .unwrap();
-        repo.upsert_config(user.id, Some("glpat-xxx"), Some("https://gitlab.com"), None)
+        repo.upsert_config(user.id, Some("glpat-xxx"), Some("https://gitlab.com"), None, None, None)
             .await
             .unwrap();
         let config = repo.get_config(user.id).await.unwrap().unwrap();
@@ -2238,10 +2246,10 @@ mod tests {
             .create_user("cfgupd", "hash", None, "user")
             .await
             .unwrap();
-        repo.upsert_config(user.id, Some("token1"), None, None)
+        repo.upsert_config(user.id, Some("token1"), None, None, None, None)
             .await
             .unwrap();
-        repo.upsert_config(user.id, Some("token2"), None, None)
+        repo.upsert_config(user.id, Some("token2"), None, None, None, None)
             .await
             .unwrap();
         let config = repo.get_config(user.id).await.unwrap().unwrap();

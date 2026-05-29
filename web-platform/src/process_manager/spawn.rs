@@ -34,6 +34,7 @@ pub async fn spawn_symphony(
 
     let platform = match project.platform.as_str() {
         "github" => Platform::GitHub,
+        "gitea" => Platform::Gitea,
         _ => Platform::GitLab,
     };
     let encrypted_token = match platform {
@@ -42,6 +43,9 @@ pub async fn spawn_symphony(
         })?,
         Platform::GitHub => user_config.github_token.ok_or_else(|| {
             WebPlatformError::Internal("Project owner has no GitHub token".to_string())
+        })?,
+        Platform::Gitea => user_config.gitea_token.ok_or_else(|| {
+            WebPlatformError::Internal("Project owner has no Gitea token".to_string())
         })?,
     };
 
@@ -64,6 +68,10 @@ pub async fn spawn_symphony(
             .unwrap_or_else(|| match &platform {
                 Platform::GitLab => "https://gitlab.com".to_string(),
                 Platform::GitHub => "https://github.com".to_string(),
+                Platform::Gitea => {
+                    tracing::error!("Gitea project missing platform_host");
+                    String::new()
+                }
             });
         let ctx = WorkflowTemplateContext {
             platform: platform.clone(),
@@ -107,6 +115,12 @@ pub async fn spawn_symphony(
         }
         Platform::GitHub => {
             cmd.env("GITHUB_TOKEN", &token);
+        }
+        Platform::Gitea => {
+            cmd.env("GITEA_TOKEN", &token);
+            if let Some(ref host) = project.platform_host {
+                cmd.env("GITEA_HOST", host);
+            }
         }
     }
 
@@ -170,6 +184,7 @@ pub async fn spawn_test_symphony(
 
     let platform = match project.platform.as_str() {
         "github" => Platform::GitHub,
+        "gitea" => Platform::Gitea,
         _ => Platform::GitLab,
     };
     let encrypted_token = match platform {
@@ -178,6 +193,9 @@ pub async fn spawn_test_symphony(
         })?,
         Platform::GitHub => user_config.github_token.ok_or_else(|| {
             WebPlatformError::Internal("Project owner has no GitHub token".to_string())
+        })?,
+        Platform::Gitea => user_config.gitea_token.ok_or_else(|| {
+            WebPlatformError::Internal("Project owner has no Gitea token".to_string())
         })?,
     };
 
@@ -197,6 +215,10 @@ pub async fn spawn_test_symphony(
         .unwrap_or_else(|| match &platform {
             Platform::GitLab => "https://gitlab.com".to_string(),
             Platform::GitHub => "https://github.com".to_string(),
+            Platform::Gitea => {
+                tracing::error!("Gitea project missing platform_host");
+                String::new()
+            }
         });
     let ctx = WorkflowTemplateContext {
         platform: platform.clone(),
@@ -241,6 +263,12 @@ pub async fn spawn_test_symphony(
         }
         Platform::GitHub => {
             cmd.env("GITHUB_TOKEN", &token);
+        }
+        Platform::Gitea => {
+            cmd.env("GITEA_TOKEN", &token);
+            if let Some(ref host) = project.platform_host {
+                cmd.env("GITEA_HOST", host);
+            }
         }
     }
 

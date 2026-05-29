@@ -2,8 +2,10 @@ use crate::git_url::Platform;
 
 const GITHUB_TEMPLATE: &str = include_str!("workflow_github.md");
 const GITLAB_TEMPLATE: &str = include_str!("workflow_gitlab.md");
+const GITEA_TEMPLATE: &str = include_str!("workflow_gitea.md");
 const TEST_GITHUB_TEMPLATE: &str = include_str!("workflow_test_github.md");
 const TEST_GITLAB_TEMPLATE: &str = include_str!("workflow_test_gitlab.md");
+const TEST_GITEA_TEMPLATE: &str = include_str!("workflow_test_gitea.md");
 
 /// Context variables for rendering workflow templates.
 pub struct WorkflowTemplateContext {
@@ -27,6 +29,7 @@ pub fn get_default_template(platform: &Platform) -> &'static str {
     match platform {
         Platform::GitHub => GITHUB_TEMPLATE,
         Platform::GitLab => GITLAB_TEMPLATE,
+        Platform::Gitea => GITEA_TEMPLATE,
     }
 }
 
@@ -35,6 +38,7 @@ pub fn get_test_template(platform: &Platform) -> &'static str {
     match platform {
         Platform::GitHub => TEST_GITHUB_TEMPLATE,
         Platform::GitLab => TEST_GITLAB_TEMPLATE,
+        Platform::Gitea => TEST_GITEA_TEMPLATE,
     }
 }
 
@@ -57,6 +61,7 @@ pub fn render_template_string(template: &str, ctx: &WorkflowTemplateContext) -> 
     let platform_endpoint = match ctx.platform {
         Platform::GitLab => format!("{}/api/v4", ctx.platform_host.trim_end_matches('/')),
         Platform::GitHub => ctx.platform_host.clone(),
+        Platform::Gitea => ctx.platform_host.clone(),
     };
 
     let hooks_section = build_hooks_section(&ctx.hooks_after_create, &ctx.hooks_before_remove);

@@ -7,6 +7,7 @@ use thiserror::Error;
 pub enum Platform {
     GitHub,
     GitLab,
+    Gitea,
 }
 
 impl std::fmt::Display for Platform {
@@ -14,6 +15,7 @@ impl std::fmt::Display for Platform {
         match self {
             Platform::GitHub => write!(f, "github"),
             Platform::GitLab => write!(f, "gitlab"),
+            Platform::Gitea => write!(f, "gitea"),
         }
     }
 }

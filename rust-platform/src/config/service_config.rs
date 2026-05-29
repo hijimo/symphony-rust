@@ -19,6 +19,7 @@ pub enum TrackerKind {
     Linear,
     GitHub,
     GitLab,
+    Gitea,
 }
 
 /// Hooks configuration (SPEC Section 5.3.4).
@@ -309,6 +310,24 @@ impl ServiceConfig {
             ));
         }
 
+        // tracker.project_slug required for GitHub/Gitea (owner/repo format)
+        if (self.tracker_kind == TrackerKind::GitHub || self.tracker_kind == TrackerKind::Gitea)
+            && self.tracker_project_slug.is_empty()
+        {
+            return Err(ServiceConfigError::ValidationFailed(
+                "tracker.project_slug is required for GitHub/Gitea tracker (format: owner/repo)"
+                    .to_string(),
+            ));
+        }
+
+        // Gitea is self-hosted, endpoint is mandatory
+        if self.tracker_kind == TrackerKind::Gitea && self.tracker_endpoint.is_empty() {
+            return Err(ServiceConfigError::ValidationFailed(
+                "tracker.endpoint is required for Gitea (e.g. https://gitea.example.com/api/v1)"
+                    .to_string(),
+            ));
+        }
+
         // codex.command must be non-empty
         if self.codex.command.is_empty() {
             return Err(ServiceConfigError::ValidationFailed(
@@ -463,6 +482,7 @@ fn parse_tracker_kind(
         "linear" => Ok(TrackerKind::Linear),
         "github" => Ok(TrackerKind::GitHub),
         "gitlab" => Ok(TrackerKind::GitLab),
+        "gitea" => Ok(TrackerKind::Gitea),
         other => Err(ServiceConfigError::UnsupportedTrackerKind(
             other.to_string(),
         )),
@@ -475,6 +495,7 @@ fn default_endpoint_for_kind(kind: &TrackerKind) -> String {
         TrackerKind::Linear => "https://api.linear.app/graphql".to_string(),
         TrackerKind::GitHub => "https://api.github.com".to_string(),
         TrackerKind::GitLab => "https://gitlab.com/api/v4".to_string(),
+        TrackerKind::Gitea => String::new(),
     }
 }
 
@@ -493,6 +514,7 @@ fn resolve_tracker_api_key(
                 TrackerKind::Linear => "LINEAR_API_KEY",
                 TrackerKind::GitHub => "GITHUB_TOKEN",
                 TrackerKind::GitLab => "GITLAB_TOKEN",
+                TrackerKind::Gitea => "GITEA_TOKEN",
             };
             match std::env::var(canonical_var) {
                 Ok(v) if !v.is_empty() => Ok(v),

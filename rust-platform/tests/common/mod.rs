@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 pub mod git_host;
+pub mod gitea_host;
 pub mod github_host;
 pub mod gitlab_host;
 pub mod mock_codex;
