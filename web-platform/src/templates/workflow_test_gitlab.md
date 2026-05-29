@@ -84,20 +84,6 @@ curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "{{platform_endpoint}}/user" | g
 2. You may add supplementary test points for paths obviously needing coverage in the diff (mark as "补充项" in report)
 3. Do NOT test code unrelated to this diff
 4. Supplementary items must not exceed 50% of the original Test Points count
-5. **Check the issue description for `Validation`, `Test Plan`, or `Testing` sections** — these contain human/AI-authored test cases and acceptance scenarios. Treat them as mandatory test inputs: execute each scenario and report results in the Test Report.
-
-### E2E / Integration Test Decision
-
-Evaluate whether this MR needs new E2E or integration tests:
-
-| Condition | Action |
-|-----------|--------|
-| MR adds a new user-facing feature entry (page, API endpoint, CLI command) | Write E2E test |
-| MR modifies cross-module data flow (auth, payment, state machine) | Write integration test |
-| Acceptance Criteria describe end-to-end behavior with no existing E2E coverage | Write E2E test |
-| MR is a small bugfix/refactor with existing test coverage | Skip — run existing tests only |
-
-If you decide to write E2E/integration tests, commit them to the MR branch before producing the Test Report.
 
 ## Step 2: Adversarial Testing Strategy
 
@@ -173,8 +159,7 @@ PASS / FAIL-MINOR / FAIL-MAJOR（附原因）
 | 指标 | 值 | 门槛 | 状态 |
 |------|-----|------|------|
 | 全量测试通过率 | X/Y | 100% | PASS/FAIL |
-| 新增单元测试数 | N | - | - |
-| 新增集成/E2E测试数 | N | - | - |
+| 新增测试数 | N | - | - |
 | 新增断言数 | N | - | - |
 | 增量行覆盖率 | N% | >= 70% | PASS/FAIL/N/A |
 
@@ -250,8 +235,6 @@ Failures > 2 OR logic bugs / design flaws:
 ## Guardrails
 
 - After state transition, immediately end your turn
-- Do not implement features or fix bugs — only write tests, commit them to the MR branch, and report
-- You MAY commit new test files or add test cases to existing test files on the MR branch
-- You MUST NOT modify business/production code (src/, lib/, handlers/, etc.)
+- Do not implement features or fix bugs — only write tests and report
 - If blocked (missing tools/auth), move to Human Review with blocker description
 - Keep the Test Report concise and actionable for the human reviewer
