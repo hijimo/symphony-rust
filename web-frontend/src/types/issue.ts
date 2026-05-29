@@ -93,6 +93,7 @@ export interface SSEChunkEvent {
 export interface SSEDoneEvent {
   type: 'done';
   content: string;
+  title?: string;
 }
 
 export interface SSEErrorEvent {

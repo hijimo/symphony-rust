@@ -132,7 +132,11 @@ pub enum SseEvent {
     #[serde(rename = "chunk")]
     Chunk { content: String },
     #[serde(rename = "done")]
-    Done { content: String },
+    Done {
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
     #[serde(rename = "error")]
     Error {
         error: String,

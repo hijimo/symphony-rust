@@ -9,7 +9,7 @@ export async function aiGenerateIssue(
   data: AIGenerateRequest,
   callbacks: {
     onChunk: (content: string) => void;
-    onDone: (fullContent: string) => void;
+    onDone: (fullContent: string, title?: string) => void;
     onError: (error: string, retCode?: string) => void;
   },
   signal?: AbortSignal,
@@ -75,7 +75,7 @@ export async function aiGenerateIssue(
                 callbacks.onChunk(event.content);
                 break;
               case 'done':
-                callbacks.onDone(event.content);
+                callbacks.onDone(event.content, event.title);
                 return;
               case 'error':
                 callbacks.onError(event.error, event.retCode);

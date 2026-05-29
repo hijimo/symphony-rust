@@ -8,6 +8,7 @@ interface IssueState {
   // AI generation state
   aiStatus: AIGenerateStatus;
   generatedContent: string;
+  generatedTitle: string;
   aiError: string | null;
   abortController: AbortController | null;
 
@@ -21,6 +22,7 @@ interface IssueState {
 export const useIssueStore = create<IssueState>((set, get) => ({
   aiStatus: 'idle',
   generatedContent: '',
+  generatedTitle: '',
   aiError: null,
   abortController: null,
 
@@ -35,6 +37,7 @@ export const useIssueStore = create<IssueState>((set, get) => ({
     set({
       aiStatus: 'generating',
       generatedContent: '',
+      generatedTitle: '',
       aiError: null,
       abortController: controller,
     });
@@ -48,10 +51,11 @@ export const useIssueStore = create<IssueState>((set, get) => ({
             generatedContent: state.generatedContent + content,
           }));
         },
-        onDone: (fullContent) => {
+        onDone: (fullContent, title) => {
           set({
             aiStatus: 'done',
             generatedContent: fullContent,
+            generatedTitle: title ?? '',
             abortController: null,
           });
         },
@@ -86,6 +90,7 @@ export const useIssueStore = create<IssueState>((set, get) => ({
     set({
       aiStatus: 'idle',
       generatedContent: '',
+      generatedTitle: '',
       aiError: null,
       abortController: null,
     });

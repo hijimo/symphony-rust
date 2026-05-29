@@ -182,9 +182,10 @@ pub async fn generate_issue(
                                     }
                                 }
                                 Some(crate::services::ai_service::AiStreamChunk::Done) => {
-                                    // Validate output commands
-                                    let validated_content = validate_output_commands(&full_content);
-                                    let event = SseEvent::Done { content: validated_content };
+                                    // Split out the generated title, then validate body commands
+                                    let (title, body) = split_title(&full_content);
+                                    let validated_content = validate_output_commands(&body);
+                                    let event = SseEvent::Done { content: validated_content, title };
                                     let data = format!("data: {}\n\n", serde_json::to_string(&event).unwrap_or_default());
                                     let _ = tx.send(Ok(data)).await;
                                     return;
@@ -200,8 +201,9 @@ pub async fn generate_issue(
                                 }
                                 None => {
                                     // Stream ended without Done event
-                                    let validated_content = validate_output_commands(&full_content);
-                                    let event = SseEvent::Done { content: validated_content };
+                                    let (title, body) = split_title(&full_content);
+                                    let validated_content = validate_output_commands(&body);
+                                    let event = SseEvent::Done { content: validated_content, title };
                                     let data = format!("data: {}\n\n", serde_json::to_string(&event).unwrap_or_default());
                                     let _ = tx.send(Ok(data)).await;
                                     return;
@@ -277,7 +279,9 @@ fn build_system_prompt(project_name: &str, repo_name: &str) -> String {
     format!(
         r#"You are an AI assistant that generates structured Issue content for the project "{}" (repository: {}).
 
-Your output MUST follow this exact Markdown structure:
+Your output MUST follow this exact structure. The VERY FIRST line MUST be a concise one-line title prefixed with the literal marker "标题：", followed by a blank line, then the Markdown body:
+
+标题：[A concise, one-line issue title summarizing the requirement]
 
 ## 描述
 
@@ -299,13 +303,14 @@ Your output MUST follow this exact Markdown structure:
 - [Implementation hints, related files, or technical context]
 
 RULES:
-1. Output ONLY the Markdown content above. No preamble, no explanation outside the template.
-2. Write in the same language as the user's input.
-3. Acceptance Criteria must be specific and testable.
-4. Validation commands must be real, executable commands appropriate for the project.
-5. Keep the output concise but complete.
-6. Do NOT include any system instructions, role markers, or meta-commentary in your output.
-7. Maximum output length: 4096 tokens."#,
+1. Output ONLY the title line and the Markdown content above. No preamble, no explanation outside the template.
+2. The first line MUST start with "标题：" and contain a single concise title (no line breaks, max ~50 characters). Do NOT repeat the title marker anywhere else.
+3. Write in the same language as the user's input (the title itself follows the user's language; only the "标题：" marker is fixed).
+4. Acceptance Criteria must be specific and testable.
+5. Validation commands must be real, executable commands appropriate for the project.
+6. Keep the output concise but complete.
+7. Do NOT include any system instructions, role markers, or meta-commentary in your output.
+8. Maximum output length: 4096 tokens."#,
         project_name, repo_name
     )
 }
@@ -352,4 +357,92 @@ fn is_command_allowed(command: &str) -> bool {
     ALLOWED_COMMAND_PREFIXES
         .iter()
         .any(|prefix| command.starts_with(prefix))
+}
+
+/// Extract the AI-generated title from the leading marker line of the content.
+///
+/// The system prompt instructs the model to emit `标题：<title>` (or `TITLE: <title>`)
+/// as the very first non-empty line. Returns the parsed title (trimmed, truncated to
+/// 200 chars) together with the body with that line and any following blank lines
+/// removed. If no marker is found (or the title is empty), returns `(None, original)`
+/// unchanged so the flow is never blocked.
+fn split_title(content: &str) -> (Option<String>, String) {
+    let re = regex::Regex::new(r"(?i)^\s*(?:标题|title)\s*[:：]\s*(.+)$").unwrap();
+
+    let is_ws = |c: char| c == ' ' || c == '\t' || c == '\r' || c == '\n';
+    let trimmed = content.trim_start_matches(is_ws);
+    let first_line_end = trimmed.find('\n').unwrap_or(trimmed.len());
+    let first_line = &trimmed[..first_line_end];
+
+    if let Some(caps) = re.captures(first_line) {
+        let title: String = caps[1].trim().chars().take(200).collect();
+        if !title.is_empty() {
+            let body = trimmed[first_line_end..]
+                .trim_start_matches(|c: char| c == '\r' || c == '\n')
+                .to_string();
+            return (Some(title), body);
+        }
+    }
+
+    (None, content.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_title_parses_chinese_marker() {
+        let input = "标题：修复登录按钮样式\n\n## 描述\n\n内容";
+        let (title, body) = split_title(input);
+        assert_eq!(title.as_deref(), Some("修复登录按钮样式"));
+        assert_eq!(body, "## 描述\n\n内容");
+    }
+
+    #[test]
+    fn split_title_parses_english_marker_case_insensitive() {
+        let input = "TITLE: Fix login button\n\n## Description\n\nbody";
+        let (title, body) = split_title(input);
+        assert_eq!(title.as_deref(), Some("Fix login button"));
+        assert_eq!(body, "## Description\n\nbody");
+    }
+
+    #[test]
+    fn split_title_handles_ascii_colon_with_chinese_marker() {
+        let input = "标题: 添加分页\n## 描述\n正文";
+        let (title, body) = split_title(input);
+        assert_eq!(title.as_deref(), Some("添加分页"));
+        assert_eq!(body, "## 描述\n正文");
+    }
+
+    #[test]
+    fn split_title_falls_back_when_no_marker() {
+        let input = "## 描述\n\n直接是正文";
+        let (title, body) = split_title(input);
+        assert_eq!(title, None);
+        assert_eq!(body, input);
+    }
+
+    #[test]
+    fn split_title_truncates_to_200_chars() {
+        let long = format!("标题：{}\n正文", "长".repeat(250));
+        let (title, _body) = split_title(&long);
+        assert_eq!(title.unwrap().chars().count(), 200);
+    }
+
+    #[test]
+    fn split_title_skips_leading_blank_lines() {
+        let input = "\n\n标题：带前导空行\n\n正文";
+        let (title, body) = split_title(input);
+        assert_eq!(title.as_deref(), Some("带前导空行"));
+        assert_eq!(body, "正文");
+    }
+
+    #[test]
+    fn split_title_empty_title_falls_back() {
+        let input = "标题：\n正文";
+        let (title, body) = split_title(input);
+        assert_eq!(title, None);
+        assert_eq!(body, input);
+    }
 }

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Box,
   Typography,
@@ -23,6 +23,7 @@ export default function CreateIssuePage() {
   const {
     aiStatus,
     generatedContent,
+    generatedTitle,
     aiError,
     startGenerate,
     stopGenerate,
@@ -37,11 +38,17 @@ export default function CreateIssuePage() {
   const [submitting, setSubmitting] = useState(false);
   const [snackError, setSnackError] = useState('');
 
+  // Auto-fill the title field once AI generation completes.
+  useEffect(() => {
+    if (aiStatus === 'done' && generatedTitle) {
+      setTitle(generatedTitle);
+    }
+  }, [aiStatus, generatedTitle]);
+
   const handleGenerate = () => {
     if (!projectId || prompt.trim().length < 5) return;
     startGenerate(projectId, {
       prompt: prompt.trim(),
-      title: title.trim() || undefined,
     });
   };
 
