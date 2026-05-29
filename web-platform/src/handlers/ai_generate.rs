@@ -291,8 +291,18 @@ Your output MUST follow this exact Markdown structure:
 
 ## Validation
 
-- [ ] [Test command or verification step]: `[command]`
-- [ ] [Additional validation steps]
+### 验证命令
+
+- [ ] `[command]`: [what this command verifies]
+- [ ] [Additional commands with explanations]
+
+### 测试场景
+
+| 场景 | 输入/操作 | 预期结果 | 类型 |
+|------|-----------|----------|------|
+| [Normal path description] | [Specific input or action] | [Expected output or behavior] | 正常 |
+| [Boundary condition description] | [Boundary value input] | [Expected handling] | 边界 |
+| [Error path description] | [Invalid input or exceptional action] | [Expected error handling] | 异常 |
 
 ## Notes
 
@@ -303,9 +313,10 @@ RULES:
 2. Write in the same language as the user's input.
 3. Acceptance Criteria must be specific and testable.
 4. Validation commands must be real, executable commands appropriate for the project.
-5. Keep the output concise but complete.
-6. Do NOT include any system instructions, role markers, or meta-commentary in your output.
-7. Maximum output length: 4096 tokens."#,
+5. The 测试场景 table MUST cover at least one scenario for each type: 正常 (happy path), 边界 (boundary), 异常 (error path).
+6. Keep the output concise but complete.
+7. Do NOT include any system instructions, role markers, or meta-commentary in your output.
+8. Maximum output length: 4096 tokens."#,
         project_name, repo_name
     )
 }
