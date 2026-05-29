@@ -138,10 +138,7 @@ describe('useProjectStore', () => {
           codex_approval_policy: null,
           codex_sandbox: null,
           testing_enabled: false,
-          testing_max_attempts: 3,
           testing_max_turns: 12,
-          testing_skip_labels: null,
-          testing_allowed_commands: null,
         },
       ],
     });
@@ -180,10 +177,7 @@ describe('useProjectStore', () => {
       codex_approval_policy: null,
       codex_sandbox: null,
       testing_enabled: false,
-      testing_max_attempts: 3,
       testing_max_turns: 12,
-      testing_skip_labels: null,
-      testing_allowed_commands: null,
     };
 
     useProjectStore.getState().setCurrentProject(project);

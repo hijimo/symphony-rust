@@ -85,8 +85,8 @@ pub async fn spawn_symphony(
             codex_command: project.codex_command.clone(),
             codex_approval_policy: project.codex_approval_policy.clone(),
             codex_sandbox: project.codex_sandbox.clone(),
+            testing_enabled: project.testing_enabled,
             testing_max_turns: Some(project.testing_max_turns),
-            testing_skip_labels: project.testing_skip_labels.clone(),
         };
         templates::render_template(&ctx)
     };
@@ -232,8 +232,8 @@ pub async fn spawn_test_symphony(
         codex_command: project.codex_command.clone(),
         codex_approval_policy: project.codex_approval_policy.clone(),
         codex_sandbox: project.codex_sandbox.clone(),
+        testing_enabled: project.testing_enabled,
         testing_max_turns: Some(project.testing_max_turns),
-        testing_skip_labels: project.testing_skip_labels.clone(),
     };
     let workflow_content = templates::render_test_template(&ctx);
 

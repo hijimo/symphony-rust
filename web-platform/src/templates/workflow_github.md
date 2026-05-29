@@ -16,7 +16,7 @@ tracker:
   workflow_labels:
     - Backlog
     - Human Review
-    - Testing
+{{testing_workflow_labels}}
 polling:
   interval_ms: 5000
 workspace:
@@ -120,8 +120,7 @@ gh issue view <number> --json labels,title,body,url
 - `Human Review` -> PR is attached and validated; waiting on human approval.
 - `Merging` -> approved by human; execute the `land` skill flow (do not call `gh pr merge` directly).
 - `Rework` -> reviewer requested changes; planning + implementation required.
-- `Testing` -> test-engineer agent is running; do not modify.
-- `Done` -> terminal state; no further action required.
+{{testing_status_map}}- `Done` -> terminal state; no further action required.
 
 ## Step 0: Determine current issue state and route
 
@@ -269,26 +268,7 @@ Use this only when completion is blocked by missing required tools or missing au
     - Confirm every required issue-provided validation/test-plan item is explicitly marked complete in the workpad.
     - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
-12. Before state transition, add a `### Test Points` section to the workpad listing what changed:
-    ```markdown
-    ### Test Points（供 test agent 参考）
-
-    - <describe each changed function/module and what needs testing>
-    ```
-13. Determine the target state using the **Testing Gate**:
-    - If issue has any label in {{testing_skip_labels}} → move to `Human Review`
-    - If the diff only contains documentation/config files (no `.rs`/`.ts`/`.tsx`/`.js` changes) → move to `Human Review`
-    - Otherwise → move to `Testing`:
-      ```bash
-      gh issue edit <number> --add-label "Testing" --remove-label "In Progress"
-      ```
-    - After moving to `Testing`, immediately end your turn.
-    - Fallback to `Human Review` if blocked by missing required tools/auth per the blocked-access escape hatch.
-14. For `Todo` issues that already had a PR attached at kickoff:
-    - Ensure all existing PR feedback was reviewed and resolved, including inline review comments (code changes or explicit, justified pushback response).
-    - Ensure branch was pushed with any required updates.
-    - Then apply the Testing Gate (step 13).
-
+{{testing_gate_section}}
 ## Step 3: Human Review and merge handling
 
 1. When the issue is in `Human Review`, do not code or change issue content.
@@ -305,25 +285,7 @@ Use this only when completion is blocked by missing required tools or missing au
    gh issue edit <number> --add-label "Done" --remove-label "Merging"
    ```
 
-## Step 3.5: Handling test-engineer feedback (FAIL-MINOR)
-
-When the issue is in `In Progress` and the latest issue comment contains a `## Test Report` with `FAIL-MINOR`:
-
-1. This means the test-engineer agent found minor gaps (missing test coverage only, ≤2 items).
-2. Do NOT perform a full Rework reset.
-3. Read the latest Test Report comment (find the one with the highest `test-report-version` number).
-4. Address only the specific failures listed in the report:
-   - Add missing tests
-   - Fix the identified coverage gaps
-5. Update the workpad `### Test Points` section with what was fixed.
-6. Re-run validation, push changes.
-7. Move back to `Testing`:
-   ```bash
-   gh issue edit <number> --add-label "Testing" --remove-label "In Progress"
-   ```
-8. Immediately end your turn after the state transition.
-
-## Step 4: Rework handling
+{{testing_fail_minor_section}}## Step 4: Rework handling
 
 1. Treat `Rework` as a full approach reset, not incremental patching.
 2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.

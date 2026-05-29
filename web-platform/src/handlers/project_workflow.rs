@@ -49,8 +49,8 @@ pub async fn get_workflow(
             codex_command: project.codex_command,
             codex_approval_policy: project.codex_approval_policy,
             codex_sandbox: project.codex_sandbox,
+            testing_enabled: project.testing_enabled,
             testing_max_turns: Some(project.testing_max_turns),
-            testing_skip_labels: project.testing_skip_labels,
         };
         templates::render_template(&ctx)
     };
@@ -126,8 +126,8 @@ pub async fn update_workflow(
             codex_command: project.codex_command,
             codex_approval_policy: project.codex_approval_policy,
             codex_sandbox: project.codex_sandbox,
+            testing_enabled: project.testing_enabled,
             testing_max_turns: Some(project.testing_max_turns),
-            testing_skip_labels: project.testing_skip_labels,
         };
         templates::render_template(&ctx)
     };
@@ -179,8 +179,8 @@ pub async fn reset_workflow(
         codex_command: project.codex_command,
         codex_approval_policy: project.codex_approval_policy,
         codex_sandbox: project.codex_sandbox,
+        testing_enabled: project.testing_enabled,
         testing_max_turns: Some(project.testing_max_turns),
-        testing_skip_labels: project.testing_skip_labels,
     };
     let content = templates::render_template(&ctx);
 

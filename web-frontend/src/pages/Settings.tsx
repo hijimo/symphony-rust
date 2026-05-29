@@ -52,6 +52,8 @@ export default function Settings() {
   const [gitlabToken, setGitlabToken] = useState('');
   const [gitlabHost, setGitlabHost] = useState('');
   const [githubToken, setGithubToken] = useState('');
+  const [giteaToken, setGiteaToken] = useState('');
+  const [giteaHost, setGiteaHost] = useState('');
   const [tokenSaving, setTokenSaving] = useState(false);
 
   useEffect(() => {
@@ -63,6 +65,7 @@ export default function Settings() {
         setUsername(profile.username || '');
         setConfig(cfg);
         setGitlabHost(cfg.gitlabHost || '');
+        setGiteaHost(cfg.giteaHost || '');
       } catch (err: any) {
         showSnack(err?.message || '加载数据失败', 'error');
       } finally {
@@ -127,13 +130,17 @@ export default function Settings() {
       if (gitlabToken) data.gitlabToken = gitlabToken;
       if (gitlabHost !== (config?.gitlabHost || '')) data.gitlabHost = gitlabHost;
       if (githubToken) data.githubToken = githubToken;
+      if (giteaToken) data.giteaToken = giteaToken;
+      if (giteaHost !== (config?.giteaHost || '')) data.giteaHost = giteaHost;
 
       await updateConfig(data);
       const newConfig = await getConfig();
       setConfig(newConfig);
       setGitlabToken('');
       setGithubToken('');
+      setGiteaToken('');
       setGitlabHost(newConfig.gitlabHost || '');
+      setGiteaHost(newConfig.giteaHost || '');
       showSnack('Token 配置已保存', 'success');
     } catch (err: any) {
       showSnack(err?.message || '保存失败', 'error');
@@ -144,7 +151,7 @@ export default function Settings() {
 
   const profileChanged = displayName.trim() !== originalDisplayName;
   const passwordFilled = oldPassword || newPassword || confirmPassword;
-  const tokenChanged = gitlabToken || githubToken || gitlabHost !== (config?.gitlabHost || '');
+  const tokenChanged = gitlabToken || githubToken || giteaToken || gitlabHost !== (config?.gitlabHost || '') || giteaHost !== (config?.giteaHost || '');
 
   if (loading) {
     return (
@@ -338,6 +345,42 @@ export default function Settings() {
                 onChange={(e) => setGithubToken(e.target.value)}
                 placeholder={config?.hasGithubToken ? '••••••••（已保存，输入新值覆盖）' : '请输入 GitHub Personal Access Token'}
                 helperText="用于访问 GitHub API，需要 repo 权限"
+              />
+            </Box>
+
+            <Divider sx={{ mb: 3 }} />
+
+            {/* Gitea Token */}
+            <Box sx={{ mb: 2 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
+                <Typography variant="subtitle2">Gitea Token</Typography>
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  color={config?.hasGiteaToken ? 'success' : 'default'}
+                  icon={config?.hasGiteaToken ? <CheckCircle /> : <RadioButtonUnchecked />}
+                  label={config?.hasGiteaToken ? '已配置' : '未配置'}
+                  aria-label={`Gitea Token 状态：${config?.hasGiteaToken ? '已配置' : '未配置'}`}
+                />
+              </Box>
+              <PasswordField
+                fullWidth
+                value={giteaToken}
+                onChange={(e) => setGiteaToken(e.target.value)}
+                placeholder={config?.hasGiteaToken ? '••••••••（已保存，输入新值覆盖）' : '请输入 Gitea Access Token'}
+                helperText="用于访问 Gitea API，需要 repo 和 issue 权限"
+              />
+            </Box>
+
+            {/* Gitea Host */}
+            <Box sx={{ mb: 3 }}>
+              <TextField
+                label="Gitea Base URL"
+                fullWidth
+                value={giteaHost}
+                onChange={(e) => setGiteaHost(e.target.value)}
+                placeholder="https://gitea.example.com"
+                helperText="Gitea 实例地址，例如 https://gitea.example.com"
               />
             </Box>
           </Box>

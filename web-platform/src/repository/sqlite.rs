@@ -413,18 +413,15 @@ fn row_to_project(row: &rusqlite::Row) -> rusqlite::Result<Project> {
         last_lifecycle_op: row.get(39)?,
         service_proxy_config_version: row.get(40)?,
         testing_enabled: row.get::<_, i64>(41)? != 0,
-        testing_max_attempts: row.get(42)?,
-        testing_max_turns: row.get(43)?,
-        testing_skip_labels: row.get(44)?,
-        testing_allowed_commands: row.get(45)?,
-        testing_service_status: row.get(46)?,
-        testing_service_pid: row.get(47)?,
-        testing_service_instance_id: row.get(48)?,
-        testing_service_generation: row.get(49)?,
+        testing_max_turns: row.get(42)?,
+        testing_service_status: row.get(43)?,
+        testing_service_pid: row.get(44)?,
+        testing_service_instance_id: row.get(45)?,
+        testing_service_generation: row.get(46)?,
     })
 }
 
-const PROJECT_COLUMNS: &str = "id, name, description, git_url, platform, platform_host, namespace, repo_name, default_branch, workflow_template, workflow_content, service_status, service_pid, max_concurrent_agents, auto_restart, restart_count, last_started_at, last_stopped_at, error_message, created_by, created_at, updated_at, hooks_after_create, hooks_before_remove, codex_command, codex_approval_policy, codex_sandbox, web_instance_id, lifecycle_op_id, lifecycle_lease_expires_at, service_owner_web_instance_id, service_owner_lease_expires_at, service_owner_heartbeat_at, service_generation, service_instance_id, service_pgid, service_session_id, service_cmdline_hash, service_workdir, last_lifecycle_op, service_proxy_config_version, testing_enabled, testing_max_attempts, testing_max_turns, testing_skip_labels, testing_allowed_commands, testing_service_status, testing_service_pid, testing_service_instance_id, testing_service_generation";
+const PROJECT_COLUMNS: &str = "id, name, description, git_url, platform, platform_host, namespace, repo_name, default_branch, workflow_template, workflow_content, service_status, service_pid, max_concurrent_agents, auto_restart, restart_count, last_started_at, last_stopped_at, error_message, created_by, created_at, updated_at, hooks_after_create, hooks_before_remove, codex_command, codex_approval_policy, codex_sandbox, web_instance_id, lifecycle_op_id, lifecycle_lease_expires_at, service_owner_web_instance_id, service_owner_lease_expires_at, service_owner_heartbeat_at, service_generation, service_instance_id, service_pgid, service_session_id, service_cmdline_hash, service_workdir, last_lifecycle_op, service_proxy_config_version, testing_enabled, testing_max_turns, testing_service_status, testing_service_pid, testing_service_instance_id, testing_service_generation";
 
 #[async_trait]
 impl ProjectRepository for SqliteRepository {
@@ -575,8 +572,8 @@ impl ProjectRepository for SqliteRepository {
                     rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
                     |row| {
                         let mut p = row_to_project(row)?;
-                        p.member_count = row.get(50)?;
-                        p.my_role = row.get(51)?;
+                        p.member_count = row.get(47)?;
+                        p.my_role = row.get(48)?;
                         Ok(p)
                     },
                 )?
@@ -704,25 +701,10 @@ impl ProjectRepository for SqliteRepository {
                 set_clauses.push(format!("testing_enabled = ?{}", idx));
                 params.push(Box::new(testing_enabled as i64));
             }
-            if let Some(v) = updates.testing_max_attempts {
-                let idx = params.len() + 1;
-                set_clauses.push(format!("testing_max_attempts = ?{}", idx));
-                params.push(Box::new(v));
-            }
             if let Some(v) = updates.testing_max_turns {
                 let idx = params.len() + 1;
                 set_clauses.push(format!("testing_max_turns = ?{}", idx));
                 params.push(Box::new(v));
-            }
-            if let Some(ref v) = updates.testing_skip_labels {
-                let idx = params.len() + 1;
-                set_clauses.push(format!("testing_skip_labels = ?{}", idx));
-                params.push(Box::new(v.clone()));
-            }
-            if let Some(ref v) = updates.testing_allowed_commands {
-                let idx = params.len() + 1;
-                set_clauses.push(format!("testing_allowed_commands = ?{}", idx));
-                params.push(Box::new(v.clone()));
             }
 
             if set_clauses.is_empty() {
