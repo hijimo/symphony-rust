@@ -142,7 +142,7 @@ fn build_codex_section(
 
 fn build_testing_workflow_labels(testing_enabled: bool) -> String {
     if testing_enabled {
-        "    - Testing\n    - hotfix\n    - urgent\n    - docs-only".to_string()
+        "    - Testing\n    - hotfix\n    - urgent\n    - docs-only\n    - test-passed".to_string()
     } else {
         String::new()
     }
@@ -296,6 +296,7 @@ mod tests {
         assert!(rendered.contains("- hotfix"));
         assert!(rendered.contains("- urgent"));
         assert!(rendered.contains("- docs-only"));
+        assert!(rendered.contains("- test-passed"));
         assert!(rendered.contains("Step 3.5"));
     }
 

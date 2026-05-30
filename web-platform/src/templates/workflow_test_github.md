@@ -188,6 +188,14 @@ PASS / FAIL-MINOR / FAIL-MAJOR（附原因）
 All gates met, no failures:
 ```bash
 gh issue comment {{ issue.identifier }} -b "<Test Report>"
+
+# Add test-passed label and comment on the PR
+PR_NUMBER=$(gh pr list --search "head:$(git branch --show-current)" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+if [ -n "$PR_NUMBER" ]; then
+  gh pr edit "$PR_NUMBER" --add-label "test-passed"
+  gh pr comment "$PR_NUMBER" -b "✅ **Test Report: PASS** — all gates met, ready for human review."
+fi
+
 gh issue edit {{ issue.identifier }} --add-label "Human Review" --remove-label "Testing"
 ```
 

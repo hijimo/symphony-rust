@@ -49,12 +49,14 @@ Description:
 No description provided.
 {% endif %}
 
-## Prerequisite: GitLab API access
+## Prerequisite: `glab` CLI is available and authenticated
 
-The agent must have `GITLAB_TOKEN` set with scope `api`. Verify:
+The agent must have `glab` CLI in PATH with a valid `GITLAB_TOKEN` (scope: `api`). Verify:
 ```bash
-curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "{{platform_endpoint}}/user" | grep -q '"id"' || { echo "GitLab API not accessible"; exit 1; }
+command -v glab >/dev/null || { echo "glab CLI not found"; exit 1; }
+glab auth status || { echo "glab not authenticated"; exit 1; }
 ```
+If `glab` is not available or not authenticated, stop and report the blocker.
 
 ## Your Mission
 
@@ -66,12 +68,16 @@ curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "{{platform_endpoint}}/user" | g
 
 ## Step 0: Gather Context
 
-1. Fetch the issue notes to find the `## Codex Workpad` comment with `### Test Points`
-2. Find the associated MR:
+1. Fetch the issue:
    ```bash
-   git log --oneline origin/{{default_branch}}..HEAD
+   glab issue view {{ issue.identifier }} --json labels,title,description,web_url,notes
    ```
-3. Get the diff:
+2. Find the `## Codex Workpad` comment — locate the `### Test Points` section
+3. Find the associated MR:
+   ```bash
+   glab mr list --source-branch "$(git branch --show-current)" --json iid,source_branch
+   ```
+4. Get the diff:
    ```bash
    git diff origin/{{default_branch}}...HEAD
    ```
@@ -144,9 +150,13 @@ If the answer is "none" → that line lacks effective test coverage.
 
 ## Step 6: Produce Test Report
 
-Post a note on the issue with this exact format:
+Post a note on the issue:
 
-```markdown
+```bash
+glab issue note {{ issue.identifier }} -m "<Test Report content>"
+```
+
+Report format:
 ## Test Report (attempt N/3)
 <!-- test-report-version: N -->
 
@@ -181,34 +191,45 @@ PASS / FAIL-MINOR / FAIL-MAJOR（附原因）
 
 ## Step 7: Judgment and State Transition
 
-State transitions use GitLab labels:
+State transitions use `glab` CLI (consistent with dev agent):
 
 ### PASS
+All gates met, no failures:
 ```bash
 # Post Test Report as issue note
-curl -s --request POST --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-  "{{platform_endpoint}}/projects/$(echo '{{project_slug}}' | sed 's/\//%2F/g')/issues/{{ issue.identifier }}/notes" \
-  --data-urlencode "body=<Test Report>"
+glab issue note {{ issue.identifier }} -m "<Test Report>"
 
-# Move to Human Review
-# Remove Testing label, add Human Review label
+# Add test-passed label and comment on the MR
+MR_IID=$(glab mr list --source-branch "$(git branch --show-current)" --json iid --jq '.[0].iid' 2>/dev/null || echo "")
+if [ -n "$MR_IID" ]; then
+  glab mr update "$MR_IID" --label "test-passed"
+  glab mr note "$MR_IID" -m "✅ **Test Report: PASS** — all gates met, ready for human review."
+fi
+
+# Move issue to Human Review
+glab issue update {{ issue.identifier }} --label "Human Review" --unlabel "Testing"
 ```
 
 ### FAIL-MINOR
 Failures ≤ 2 AND only "missing test coverage":
-- Post Test Report
-- Update test-attempt label
-- Move to In Progress (remove Testing, add In Progress)
+```bash
+glab issue note {{ issue.identifier }} -m "<Test Report with FAIL-MINOR>"
+glab issue update {{ issue.identifier }} --label "In Progress" --unlabel "Testing"
+```
 
 ### FAIL-MAJOR
 Failures > 2 OR logic bugs / design flaws:
-- Post Test Report
-- Update test-attempt label
-- Move to Rework (remove Testing, add Rework)
+```bash
+glab issue note {{ issue.identifier }} -m "<Test Report with FAIL-MAJOR>"
+glab issue update {{ issue.identifier }} --label "Rework" --unlabel "Testing"
+```
 
 ### Escalation (attempt 3 or repeated same failure)
-- Post Test Report with escalation summary
-- Move to Human Review with `needs-human-test-review` label
+```bash
+glab issue note {{ issue.identifier }} -m "<Test Report with escalation summary>"
+glab issue update {{ issue.identifier }} --label "Human Review" --unlabel "Testing"
+glab issue update {{ issue.identifier }} --label "needs-human-test-review"
+```
 
 ## Turn Budget Management
 
@@ -224,7 +245,7 @@ Failures > 2 OR logic bugs / design flaws:
    - `npm test`, `npm run`, `jest`, `vitest`, `tsc`
    - `cat`, `grep`, `diff`, `find`, `ls`, `head`, `tail`, `wc`
    - `git diff`, `git log`, `git status`, `git show`
-   - `curl` (only to GitLab API with PRIVATE-TOKEN header)
+   - `glab issue`, `glab mr`, `glab api`
 3. Do NOT modify:
    - `build.rs`, `Makefile`, `package.json` (scripts section), `.git/hooks/`
    - `Cargo.toml` (only `[dev-dependencies]` additions allowed)

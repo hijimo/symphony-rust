@@ -242,7 +242,20 @@ PASS / FAIL-MINOR / FAIL-MAJOR（附原因）
 ### PASS
 All gates met, no failures:
 ```bash
-# Post test report comment first, then transition
+# Post test report comment first
+gitea_api POST "${REPO_PATH}/issues/{{ issue.identifier }}/comments" \
+  -d "$(jq -n --arg body '<Test Report content>' '{body: $body}')"
+
+# Add test-passed label and comment on the PR
+PR_NUMBER=$(gitea_api GET "${REPO_PATH}/pulls?state=open" | jq -r --arg branch "$(git branch --show-current)" '.[] | select(.head.ref==$branch) | .number' 2>/dev/null || echo "")
+if [ -n "$PR_NUMBER" ]; then
+  TEST_PASSED_ID=$(get_label_id "test-passed") && \
+    gitea_api POST "${REPO_PATH}/issues/${PR_NUMBER}/labels" -d "{\"labels\":[${TEST_PASSED_ID}]}"
+  gitea_api POST "${REPO_PATH}/issues/${PR_NUMBER}/comments" \
+    -d "$(jq -n --arg body '✅ **Test Report: PASS** — all gates met, ready for human review.' '{body: $body}')"
+fi
+
+# Then transition issue label
 transition_label {{ issue.identifier }} "Testing" "Human Review"
 ```
 
