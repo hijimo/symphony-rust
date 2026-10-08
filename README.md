@@ -252,6 +252,12 @@ npm run test:e2e
 6. 在项目页调整 workflow、Codex 命令、Hook 和并发配置。
 7. 启动项目服务后，`web-platform` 会调用 `rust-platform` 二进制在独立工作空间中运行。
 
+> Codex 命令留空的项目会回落到「系统配置」页的 `codex.default_command`（默认
+> `codex app-server -c 'model_provider="kiro"'`），修改后需重启对应项目服务才生效。
+> 非内置 provider（例如 `kiro`）还需要在 `~/.codex/config.toml` 中定义
+> `[model_providers.kiro]`（`wire_api` 必须是 `responses`，Codex 已移除 `chat`），
+> 否则 app-server 会以 `Model provider 'kiro' not found` 直接退出。
+
 ## `rust-platform` 独立运行
 
 `rust-platform` 也可以不经过 Web 平台，直接使用 `WORKFLOW.md` 启动。示例：

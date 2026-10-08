@@ -8,6 +8,7 @@ use crate::git_url::Platform;
 use crate::handlers::network_proxy::load_effective_proxy_config;
 use crate::models::project::Project;
 use crate::repository::{SqliteRepository, UserConfigRepository};
+use crate::services::codex_command::resolve_codex_command;
 use crate::templates::{self, WorkflowTemplateContext};
 
 pub struct SpawnResult {
@@ -82,7 +83,7 @@ pub async fn spawn_symphony(
             default_branch: project.default_branch.clone(),
             hooks_after_create: project.hooks_after_create.clone(),
             hooks_before_remove: project.hooks_before_remove.clone(),
-            codex_command: project.codex_command.clone(),
+            codex_command: resolve_codex_command(repo, project.codex_command.clone()).await,
             codex_approval_policy: project.codex_approval_policy.clone(),
             codex_sandbox: project.codex_sandbox.clone(),
             testing_enabled: project.testing_enabled,
@@ -229,7 +230,7 @@ pub async fn spawn_test_symphony(
         default_branch: project.default_branch.clone(),
         hooks_after_create: project.hooks_after_create.clone(),
         hooks_before_remove: project.hooks_before_remove.clone(),
-        codex_command: project.codex_command.clone(),
+        codex_command: resolve_codex_command(repo, project.codex_command.clone()).await,
         codex_approval_policy: project.codex_approval_policy.clone(),
         codex_sandbox: project.codex_sandbox.clone(),
         testing_enabled: project.testing_enabled,

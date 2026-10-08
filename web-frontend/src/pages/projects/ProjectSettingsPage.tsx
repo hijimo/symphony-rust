@@ -484,7 +484,7 @@ export default function ProjectSettingsPage() {
               </Typography>
               <TextField
                 label="command"
-                helperText="Codex 启动命令（如 codex --config ... app-server）"
+                helperText="Codex 启动命令（如 codex app-server ...）；留空则使用「系统配置」里的 codex.default_command"
                 value={codexCommand}
                 onChange={(e) => setCodexCommand(e.target.value)}
                 fullWidth

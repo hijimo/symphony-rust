@@ -134,3 +134,74 @@ async fn test_workflow_non_member() {
         .await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn test_workflow_uses_global_default_codex_command() {
+    let app = common::TestApp::new().await;
+    let create_body = app
+        .create_test_project(
+            "https://github.com/owner/wf-codex-default",
+            &app.admin_token,
+        )
+        .await;
+    let project_id = app.get_project_id(&create_body);
+
+    let resp = app
+        .get(
+            &format!("/api/projects/{}/workflow", project_id),
+            Some(&app.admin_token),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let content = body["data"]["content"].as_str().unwrap();
+
+    // Seeded by V013: a project without its own codex_command falls back to codex.default_command.
+    assert!(
+        content.contains("command: codex app-server -c 'model_provider=\"kiro\"'"),
+        "expected the global default codex command, got:\n{}",
+        content
+    );
+}
+
+#[tokio::test]
+async fn test_workflow_project_codex_command_overrides_global_default() {
+    let app = common::TestApp::new().await;
+    let create_body = app
+        .create_test_project(
+            "https://github.com/owner/wf-codex-override",
+            &app.admin_token,
+        )
+        .await;
+    let project_id = app.get_project_id(&create_body);
+
+    let resp = app
+        .put(
+            &format!("/api/projects/{}", project_id),
+            &json!({ "codex_command": "codex app-server -c 'model_provider=\"openai\"'" }),
+            Some(&app.admin_token),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = app
+        .get(
+            &format!("/api/projects/{}/workflow", project_id),
+            Some(&app.admin_token),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let content = body["data"]["content"].as_str().unwrap();
+
+    assert!(
+        content.contains("command: codex app-server -c 'model_provider=\"openai\"'"),
+        "expected the project-level codex command, got:\n{}",
+        content
+    );
+    assert!(
+        !content.contains("model_provider=\"kiro\""),
+        "project-level codex command should win over the global default, got:\n{}",
+        content
+    );
+}
