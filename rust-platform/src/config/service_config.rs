@@ -92,6 +92,139 @@ impl Default for CodexConfig {
     }
 }
 
+/// Team route selected when a team run starts (teamwork scheme Section 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TeamworkRoute {
+    #[default]
+    SweLight,
+    General,
+}
+
+/// twd single-agent kill budget: `TW_STALE_SECS` (1800s) + `TW_NUDGE_GRACE_SECS` (600s).
+///
+/// The team-level idle timeout must stay above this so the orchestrator gets a
+/// chance to replace a hung sub-agent before Symphony gives up (teamwork scheme
+/// Section 3.2).
+pub const TEAMWORK_TWD_KILL_BUDGET_MS: u64 = 2_400_000;
+
+/// Teamwork multi-agent configuration (teamwork scheme Sections 3.5, 6 and 7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TeamworkConfig {
+    /// When false the existing single-Codex flow is kept untouched.
+    pub enabled: bool,
+    pub default_route: TeamworkRoute,
+    /// Label that upgrades an issue from the default route to a full team.
+    pub full_team_label: String,
+    pub default_prompt_template: String,
+    /// Template name -> path resolved against the WORKFLOW.md directory.
+    pub prompt_templates: HashMap<String, PathBuf>,
+    pub max_concurrent_teams: usize,
+    pub max_team_attempts: u32,
+    pub poll_interval_ms: u64,
+    pub startup_timeout_ms: u64,
+    pub idle_timeout_ms: u64,
+    pub max_duration_ms: u64,
+    pub exit_grace_ms: u64,
+    pub twd_restart_limit: u32,
+    /// `tw spawn` command; `{workspace}` is substituted by the runner.
+    pub spawn_cmd: String,
+}
+
+impl Default for TeamworkConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_route: TeamworkRoute::SweLight,
+            full_team_label: "teamwork:full".to_string(),
+            default_prompt_template: "default".to_string(),
+            prompt_templates: HashMap::new(),
+            max_concurrent_teams: 3,
+            max_team_attempts: 2,
+            poll_interval_ms: 30_000,
+            startup_timeout_ms: 120_000,
+            idle_timeout_ms: 3_600_000,
+            max_duration_ms: 14_400_000,
+            exit_grace_ms: 300_000,
+            twd_restart_limit: 3,
+            spawn_cmd: "codex exec --sandbox workspace-write --add-dir {workspace} -".to_string(),
+        }
+    }
+}
+
+impl TeamworkConfig {
+    /// Threshold constraints for the team-level timeout ladder (teamwork scheme
+    /// Sections 3.2 and 3.5). Only called when teamwork is enabled.
+    pub fn validate_thresholds(&self) -> Result<(), ServiceConfigError> {
+        fn positive(field: &str, value: u64) -> Result<(), ServiceConfigError> {
+            if value == 0 {
+                return Err(ServiceConfigError::InvalidValue {
+                    field: field.to_string(),
+                    detail: "must be > 0".to_string(),
+                });
+            }
+            Ok(())
+        }
+
+        if self.max_concurrent_teams == 0 {
+            return Err(ServiceConfigError::InvalidValue {
+                field: "teamwork.max_concurrent_teams".to_string(),
+                detail: "must be > 0".to_string(),
+            });
+        }
+
+        if self.max_team_attempts == 0 {
+            return Err(ServiceConfigError::InvalidValue {
+                field: "teamwork.max_team_attempts".to_string(),
+                detail: "must be > 0".to_string(),
+            });
+        }
+
+        if self.twd_restart_limit == 0 {
+            return Err(ServiceConfigError::InvalidValue {
+                field: "teamwork.twd_restart_limit".to_string(),
+                detail: "must be > 0".to_string(),
+            });
+        }
+
+        positive("teamwork.poll_interval_ms", self.poll_interval_ms)?;
+        positive("teamwork.startup_timeout_ms", self.startup_timeout_ms)?;
+        positive("teamwork.max_duration_ms", self.max_duration_ms)?;
+        positive("teamwork.exit_grace_ms", self.exit_grace_ms)?;
+
+        if self.idle_timeout_ms <= TEAMWORK_TWD_KILL_BUDGET_MS {
+            return Err(ServiceConfigError::InvalidValue {
+                field: "teamwork.idle_timeout_ms".to_string(),
+                detail: format!(
+                    "must be > {TEAMWORK_TWD_KILL_BUDGET_MS} (twd stale + nudge grace) so the \
+                     orchestrator can replace a hung sub-agent first"
+                ),
+            });
+        }
+
+        if self.max_duration_ms < self.idle_timeout_ms {
+            return Err(ServiceConfigError::InvalidValue {
+                field: "teamwork.max_duration_ms".to_string(),
+                detail: "must be >= teamwork.idle_timeout_ms".to_string(),
+            });
+        }
+
+        if self.spawn_cmd.trim().is_empty() {
+            return Err(ServiceConfigError::ValidationFailed(
+                "teamwork.spawn_cmd is empty".to_string(),
+            ));
+        }
+
+        if self.default_prompt_template.trim().is_empty() {
+            return Err(ServiceConfigError::InvalidValue {
+                field: "teamwork.default_prompt_template".to_string(),
+                detail: "must be a non-empty template name".to_string(),
+            });
+        }
+
+        Ok(())
+    }
+}
+
 /// Typed runtime configuration (SPEC Section 4.1.3 + Section 6.4).
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
@@ -123,6 +256,9 @@ pub struct ServiceConfig {
 
     // -- codex --
     pub codex: CodexConfig,
+
+    // -- teamwork --
+    pub teamwork: TeamworkConfig,
 
     // -- extensions --
     pub server_port: Option<u16>,
@@ -156,6 +292,7 @@ impl Default for ServiceConfig {
             max_concurrent_agents_by_state: HashMap::new(),
             blocker_check_states: vec!["todo".to_string()],
             codex: CodexConfig::default(),
+            teamwork: TeamworkConfig::default(),
             server_port: None,
             ssh_hosts: Vec::new(),
             max_concurrent_agents_per_host: None,
@@ -253,6 +390,10 @@ impl ServiceConfig {
         let codex_section = get_section(config, "codex");
         let codex = parse_codex_config(&codex_section);
 
+        // -- teamwork section --
+        let teamwork_section = get_section(config, "teamwork");
+        let teamwork = parse_teamwork_config(&teamwork_section, workflow_dir)?;
+
         // -- server extension --
         let server = get_section(config, "server");
         let server_port = get_optional_u16(&server, "port");
@@ -286,6 +427,7 @@ impl ServiceConfig {
             max_concurrent_agents_by_state,
             blocker_check_states,
             codex,
+            teamwork,
             server_port,
             ssh_hosts,
             max_concurrent_agents_per_host,
@@ -365,6 +507,10 @@ impl ServiceConfig {
             });
         }
 
+        if self.teamwork.enabled {
+            self.teamwork.validate_thresholds()?;
+        }
+
         Ok(())
     }
 }
@@ -435,6 +581,17 @@ fn get_optional_u16(section: &HashMap<String, YamlValue>, key: &str) -> Option<u
         YamlValue::Number(n) => n.as_u64().and_then(|n| u16::try_from(n).ok()),
         _ => None,
     })
+}
+
+/// Get a bool value from a section, with a default fallback.
+fn get_bool_or_default(section: &HashMap<String, YamlValue>, key: &str, default: bool) -> bool {
+    section
+        .get(key)
+        .and_then(|v| match v {
+            YamlValue::Bool(b) => Some(*b),
+            _ => None,
+        })
+        .unwrap_or(default)
 }
 
 /// Get a list of strings from a section, with a default fallback.
@@ -628,6 +785,105 @@ fn parse_codex_config(section: &HashMap<String, YamlValue>) -> CodexConfig {
         read_timeout_ms: get_u64_or_default(section, "read_timeout_ms", 5_000),
         stall_timeout_ms: get_i64_or_default(section, "stall_timeout_ms", 300_000),
     }
+}
+
+/// Parse teamwork configuration from the teamwork section.
+///
+/// `workflow_dir` resolves relative `prompt_templates` paths, which are
+/// declared relative to WORKFLOW.md.
+fn parse_teamwork_config(
+    section: &HashMap<String, YamlValue>,
+    workflow_dir: &Path,
+) -> Result<TeamworkConfig, ServiceConfigError> {
+    let defaults = TeamworkConfig::default();
+    let default_route = get_string_or_default(section, "default_route", "swe_light".to_string());
+
+    Ok(TeamworkConfig {
+        enabled: get_bool_or_default(section, "enabled", defaults.enabled),
+        default_route: parse_teamwork_route(&default_route)?,
+        full_team_label: get_string_or_default(
+            section,
+            "full_team_label",
+            defaults.full_team_label,
+        ),
+        default_prompt_template: get_string_or_default(
+            section,
+            "default_prompt_template",
+            defaults.default_prompt_template,
+        ),
+        prompt_templates: parse_prompt_templates(section, workflow_dir),
+        max_concurrent_teams: get_u64_or_default(
+            section,
+            "max_concurrent_teams",
+            defaults.max_concurrent_teams as u64,
+        ) as usize,
+        max_team_attempts: get_u64_or_default(
+            section,
+            "max_team_attempts",
+            u64::from(defaults.max_team_attempts),
+        ) as u32,
+        poll_interval_ms: get_u64_or_default(
+            section,
+            "poll_interval_ms",
+            defaults.poll_interval_ms,
+        ),
+        startup_timeout_ms: get_u64_or_default(
+            section,
+            "startup_timeout_ms",
+            defaults.startup_timeout_ms,
+        ),
+        idle_timeout_ms: get_u64_or_default(section, "idle_timeout_ms", defaults.idle_timeout_ms),
+        max_duration_ms: get_u64_or_default(section, "max_duration_ms", defaults.max_duration_ms),
+        exit_grace_ms: get_u64_or_default(section, "exit_grace_ms", defaults.exit_grace_ms),
+        twd_restart_limit: get_u64_or_default(
+            section,
+            "twd_restart_limit",
+            u64::from(defaults.twd_restart_limit),
+        ) as u32,
+        spawn_cmd: get_string_or_default(section, "spawn_cmd", defaults.spawn_cmd),
+    })
+}
+
+/// Parse the team route name (`swe_light` | `general`).
+fn parse_teamwork_route(value: &str) -> Result<TeamworkRoute, ServiceConfigError> {
+    match value.trim().to_lowercase().as_str() {
+        "swe_light" | "swe-light" => Ok(TeamworkRoute::SweLight),
+        "general" => Ok(TeamworkRoute::General),
+        other => Err(ServiceConfigError::InvalidValue {
+            field: "teamwork.default_route".to_string(),
+            detail: format!("unsupported route `{other}`, expected `swe_light` or `general`"),
+        }),
+    }
+}
+
+/// Parse the `prompt_templates` map, resolving paths against `workflow_dir`.
+///
+/// Only declared templates are selectable at runtime; invalid entries are
+/// ignored so a typo cannot point an issue at an arbitrary file.
+fn parse_prompt_templates(
+    section: &HashMap<String, YamlValue>,
+    workflow_dir: &Path,
+) -> HashMap<String, PathBuf> {
+    let mut templates = HashMap::new();
+
+    if let Some(YamlValue::Mapping(mapping)) = section.get("prompt_templates") {
+        for (name, value) in mapping {
+            if let (YamlValue::String(name), YamlValue::String(path)) = (name, value) {
+                if name.trim().is_empty() || path.trim().is_empty() {
+                    continue;
+                }
+                let expanded = expand_tilde(path);
+                let resolved = if expanded.is_relative() {
+                    workflow_dir.join(expanded)
+                } else {
+                    expanded
+                };
+                templates.insert(name.clone(), resolved);
+            }
+        }
+    }
+
+    templates
 }
 
 /// Convert a YAML value to a serde_json::Value, supporting both strings and maps.
@@ -924,5 +1180,118 @@ P
             config.max_concurrent_agents_by_state.get("in progress"),
             Some(&5)
         );
+    }
+
+    #[test]
+    fn test_teamwork_defaults() {
+        let content = "---\ntracker:\n  kind: linear\n  api_key: k\n  project_slug: s\n---\nP\n";
+        let workflow = parse_workflow(content).unwrap();
+        let config = ServiceConfig::from_workflow(&workflow, Path::new("/tmp")).unwrap();
+
+        assert!(!config.teamwork.enabled);
+        assert_eq!(config.teamwork.default_route, TeamworkRoute::SweLight);
+        assert_eq!(config.teamwork.full_team_label, "teamwork:full");
+        assert_eq!(config.teamwork.default_prompt_template, "default");
+        assert!(config.teamwork.prompt_templates.is_empty());
+        assert_eq!(config.teamwork.max_concurrent_teams, 3);
+        assert_eq!(config.teamwork.max_team_attempts, 2);
+        assert_eq!(config.teamwork.poll_interval_ms, 30_000);
+        assert_eq!(config.teamwork.startup_timeout_ms, 120_000);
+        assert_eq!(config.teamwork.idle_timeout_ms, 3_600_000);
+        assert_eq!(config.teamwork.max_duration_ms, 14_400_000);
+        assert_eq!(config.teamwork.exit_grace_ms, 300_000);
+        assert_eq!(config.teamwork.twd_restart_limit, 3);
+        assert_eq!(
+            config.teamwork.spawn_cmd,
+            "codex exec --sandbox workspace-write --add-dir {workspace} -"
+        );
+        assert!(config.validate_for_dispatch().is_ok());
+    }
+
+    #[test]
+    fn test_teamwork_section_overrides_and_template_paths() {
+        let content = r#"---
+tracker:
+  kind: linear
+  api_key: k
+  project_slug: s
+teamwork:
+  enabled: true
+  default_route: general
+  full_team_label: "team:full"
+  default_prompt_template: sentry_fix
+  prompt_templates:
+    sentry_fix: prompts/sentry_fix.md
+  max_concurrent_teams: 5
+  max_team_attempts: 4
+  poll_interval_ms: 15000
+  startup_timeout_ms: 60000
+  idle_timeout_ms: 7200000
+  max_duration_ms: 21600000
+  exit_grace_ms: 120000
+  twd_restart_limit: 5
+  spawn_cmd: "tw spawn --route general"
+---
+P
+"#;
+        let workflow = parse_workflow(content).unwrap();
+        let config = ServiceConfig::from_workflow(&workflow, Path::new("/project/dir")).unwrap();
+
+        assert!(config.teamwork.enabled);
+        assert_eq!(config.teamwork.default_route, TeamworkRoute::General);
+        assert_eq!(config.teamwork.full_team_label, "team:full");
+        assert_eq!(config.teamwork.default_prompt_template, "sentry_fix");
+        assert_eq!(
+            config.teamwork.prompt_templates.get("sentry_fix"),
+            Some(&PathBuf::from("/project/dir/prompts/sentry_fix.md"))
+        );
+        assert_eq!(config.teamwork.max_concurrent_teams, 5);
+        assert_eq!(config.teamwork.max_team_attempts, 4);
+        assert_eq!(config.teamwork.poll_interval_ms, 15_000);
+        assert_eq!(config.teamwork.startup_timeout_ms, 60_000);
+        assert_eq!(config.teamwork.idle_timeout_ms, 7_200_000);
+        assert_eq!(config.teamwork.max_duration_ms, 21_600_000);
+        assert_eq!(config.teamwork.exit_grace_ms, 120_000);
+        assert_eq!(config.teamwork.twd_restart_limit, 5);
+        assert_eq!(config.teamwork.spawn_cmd, "tw spawn --route general");
+        assert!(config.validate_for_dispatch().is_ok());
+    }
+
+    #[test]
+    fn test_teamwork_unsupported_route() {
+        let content =
+            "---\ntracker:\n  kind: linear\n  api_key: k\n  project_slug: s\nteamwork:\n  default_route: swarm\n---\nP\n";
+        let workflow = parse_workflow(content).unwrap();
+        let result = ServiceConfig::from_workflow(&workflow, Path::new("/tmp"));
+
+        assert!(matches!(
+            result,
+            Err(ServiceConfigError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn test_teamwork_idle_timeout_must_exceed_twd_kill_budget() {
+        let content =
+            "---\ntracker:\n  kind: linear\n  api_key: k\n  project_slug: s\nteamwork:\n  enabled: true\n  idle_timeout_ms: 60000\n---\nP\n";
+        let workflow = parse_workflow(content).unwrap();
+        let config = ServiceConfig::from_workflow(&workflow, Path::new("/tmp")).unwrap();
+
+        let result = config.validate_for_dispatch();
+        assert!(matches!(
+            result,
+            Err(ServiceConfigError::InvalidValue { ref field, .. })
+                if field == "teamwork.idle_timeout_ms"
+        ));
+    }
+
+    #[test]
+    fn test_teamwork_disabled_skips_threshold_validation() {
+        let content =
+            "---\ntracker:\n  kind: linear\n  api_key: k\n  project_slug: s\nteamwork:\n  enabled: false\n  idle_timeout_ms: 1\n  max_concurrent_teams: 0\n---\nP\n";
+        let workflow = parse_workflow(content).unwrap();
+        let config = ServiceConfig::from_workflow(&workflow, Path::new("/tmp")).unwrap();
+
+        assert!(config.validate_for_dispatch().is_ok());
     }
 }
