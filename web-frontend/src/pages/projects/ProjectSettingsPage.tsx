@@ -21,6 +21,8 @@ import { WarningAmber } from '@mui/icons-material';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import WorkflowEditor from '../../components/WorkflowEditor';
 import ServiceControlPanel from '../../components/ServiceControlPanel';
+import ProjectReposEditor from '../../components/projects/ProjectReposEditor';
+import { useAuthStore } from '../../store/auth';
 import { getProject, updateProject, deleteProject, getServiceStatus, startService, stopService, restartService } from '../../api/projects';
 import { getWorkflow, updateWorkflow, resetWorkflow } from '../../api/workflow';
 import type { Project, ServiceStatusData, WorkflowData } from '../../types';
@@ -50,6 +52,7 @@ export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const projectId = Number(id);
+  const currentUserId = useAuthStore((s) => s.user?.id);
 
   const [tab, setTab] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -359,6 +362,7 @@ export default function ProjectSettingsPage() {
             <Tab label="工作流" />
             <Tab label="服务控制" />
             <Tab label="Agent 配置" />
+            <Tab label="关联仓库" />
             <Tab label="危险操作" />
           </Tabs>
 
@@ -556,8 +560,17 @@ export default function ProjectSettingsPage() {
             </Box>
           </TabPanel>
 
-          {/* Tab 5: Danger Zone */}
+          {/* Tab 5: Related Repositories */}
           <TabPanel value={tab} index={4}>
+            <ProjectReposEditor
+              projectId={projectId}
+              primaryGitUrl={project.git_url}
+              isCreator={currentUserId !== undefined && currentUserId === project.created_by}
+            />
+          </TabPanel>
+
+          {/* Tab 6: Danger Zone */}
+          <TabPanel value={tab} index={5}>
             <Box
               sx={{
                 p: 3,

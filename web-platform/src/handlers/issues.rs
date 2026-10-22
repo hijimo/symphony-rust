@@ -204,6 +204,7 @@ pub async fn get_issue(
             state: mr.state,
             author: mr.author,
             web_url: mr.web_url,
+            project_path: mr.target_project_path,
         })
         .collect();
 

@@ -91,7 +91,24 @@ impl PromptEngine {
         turn_number: u32,
         max_turns: u32,
     ) -> Result<String, PromptError> {
-        let globals = build_globals(issue, attempt, turn_number, max_turns);
+        self.render_with_repos(issue, attempt, turn_number, max_turns, &[])
+    }
+
+    /// Like [`render`](Self::render) but also exposes the multi-repo globals
+    /// `repos`, `primary_repo` and `is_multi_repo` (design §6.1).
+    ///
+    /// Empty `repos` = single-repo mode: `is_multi_repo` is false and `repos`
+    /// holds one entry for the workspace root, so strict templates that
+    /// reference these variables still render.
+    pub fn render_with_repos(
+        &self,
+        issue: &IssueContext,
+        attempt: Option<u32>,
+        turn_number: u32,
+        max_turns: u32,
+        repos: &[RepoContext],
+    ) -> Result<String, PromptError> {
+        let globals = build_globals(issue, attempt, turn_number, max_turns, repos);
 
         if turn_number > 1 {
             if let Some(ref cont_tmpl) = self.continuation_template {
@@ -140,14 +157,84 @@ pub struct BlockerContext {
     pub state: Option<String>,
 }
 
+/// One repository as seen by the prompt (design §6.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoContext {
+    pub alias: String,
+    pub slug: String,
+    pub path: String,
+    pub role: String,
+    pub writable: bool,
+    pub branch: Option<String>,
+    pub default_branch: String,
+    pub merge_after: Vec<String>,
+}
+
+fn repo_to_liquid(repo: &RepoContext) -> LiquidValue {
+    let mut obj = Object::new();
+    let s = |v: &str| LiquidValue::Scalar(v.to_string().into());
+    obj.insert(KString::from_static("alias"), s(&repo.alias));
+    obj.insert(KString::from_static("slug"), s(&repo.slug));
+    obj.insert(KString::from_static("path"), s(&repo.path));
+    obj.insert(KString::from_static("role"), s(&repo.role));
+    obj.insert(
+        KString::from_static("writable"),
+        LiquidValue::Scalar(liquid::model::Scalar::new(repo.writable)),
+    );
+    obj.insert(
+        KString::from_static("branch"),
+        repo.branch.as_deref().map(s).unwrap_or(LiquidValue::Nil),
+    );
+    obj.insert(
+        KString::from_static("default_branch"),
+        s(&repo.default_branch),
+    );
+    obj.insert(
+        KString::from_static("merge_after"),
+        LiquidValue::Array(repo.merge_after.iter().map(|a| s(a)).collect()),
+    );
+    LiquidValue::Object(obj)
+}
+
 /// Build the Liquid globals object from issue context and metadata.
 fn build_globals(
     issue: &IssueContext,
     attempt: Option<u32>,
     turn_number: u32,
     max_turns: u32,
+    repos: &[RepoContext],
 ) -> Object {
     let mut globals = Object::new();
+
+    // Multi-repo globals; single-repo exposes the workspace root as the only repo.
+    let is_multi_repo = !repos.is_empty();
+    let single = [RepoContext {
+        alias: "primary".to_string(),
+        slug: String::new(),
+        path: ".".to_string(),
+        role: "primary".to_string(),
+        writable: true,
+        branch: issue.branch_name.clone(),
+        default_branch: String::new(),
+        merge_after: Vec::new(),
+    }];
+    let effective: &[RepoContext] = if is_multi_repo { repos } else { &single };
+    let primary = effective
+        .iter()
+        .find(|r| r.role == "primary")
+        .unwrap_or(&effective[0]);
+    globals.insert(
+        KString::from_static("is_multi_repo"),
+        LiquidValue::Scalar(liquid::model::Scalar::new(is_multi_repo)),
+    );
+    globals.insert(
+        KString::from_static("repos"),
+        LiquidValue::Array(effective.iter().map(repo_to_liquid).collect()),
+    );
+    globals.insert(
+        KString::from_static("primary_repo"),
+        repo_to_liquid(primary),
+    );
 
     // Build issue object
     let issue_obj = issue_to_liquid_object(issue);
@@ -508,5 +595,65 @@ mod tests {
 
         let result = engine.render(&issue, None, 1, 20).unwrap();
         assert_eq!(result, "Priority: unset");
+    }
+
+    fn repo(alias: &str, role: &str, writable: bool) -> RepoContext {
+        RepoContext {
+            alias: alias.to_string(),
+            slug: format!("g/{alias}"),
+            path: alias.to_string(),
+            role: role.to_string(),
+            writable,
+            branch: writable.then(|| "symphony/x-1".to_string()),
+            default_branch: "main".to_string(),
+            merge_after: vec![],
+        }
+    }
+
+    #[test]
+    fn single_repo_render_is_unchanged_and_multi_vars_resolve() {
+        let tpl = "{{ issue.identifier }}{% if is_multi_repo %} MULTI{% endif %}";
+        let engine = PromptEngine::compile(tpl).unwrap();
+        let issue = make_test_issue();
+        // Legacy render and repo-aware render with no repos are identical.
+        assert_eq!(engine.render(&issue, None, 1, 20).unwrap(), "ABC-42");
+        assert_eq!(
+            engine.render_with_repos(&issue, None, 1, 20, &[]).unwrap(),
+            "ABC-42"
+        );
+        // Strict mode: referencing repos in single-repo mode does not error.
+        let engine = PromptEngine::compile("{{ primary_repo.path }}|{{ repos.size }}").unwrap();
+        assert_eq!(engine.render(&issue, None, 1, 20).unwrap(), ".|1");
+    }
+
+    #[test]
+    fn multi_repo_globals_are_exposed() {
+        let tpl = "{% if is_multi_repo %}{% for r in repos %}[{{ r.path }} {{ r.role }} {% if r.writable %}{{ r.branch }}{% else %}ro{% endif %} {{ r.default_branch }}]{% endfor %} p={{ primary_repo.slug }}{% endif %}";
+        let engine = PromptEngine::compile(tpl).unwrap();
+        let repos = vec![
+            repo("frontend", "primary", true),
+            repo("backend", "secondary", false),
+        ];
+        let out = engine
+            .render_with_repos(&make_test_issue(), None, 1, 20, &repos)
+            .unwrap();
+        assert_eq!(
+            out,
+            "[frontend primary symphony/x-1 main][backend secondary ro main] p=g/frontend"
+        );
+    }
+
+    #[test]
+    fn continuation_template_also_gets_repo_globals() {
+        let engine = PromptEngine::compile_with_continuation(
+            "main",
+            Some("cont {% if is_multi_repo %}{{ repos.size }}{% endif %}"),
+        )
+        .unwrap();
+        let repos = vec![repo("a", "primary", true), repo("b", "secondary", false)];
+        let out = engine
+            .render_with_repos(&make_test_issue(), None, 2, 20, &repos)
+            .unwrap();
+        assert_eq!(out, "cont 2");
     }
 }

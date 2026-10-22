@@ -268,7 +268,7 @@ pub struct NotificationChannelRow {
 }
 
 /// Parameters for inserting an alert history record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InsertAlertHistory {
     pub rule_id: String,
     pub severity: String,

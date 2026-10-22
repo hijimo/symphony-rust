@@ -151,6 +151,9 @@ impl WorkspaceGc {
             }
         }
 
+        // Read-only repos have write-protected files (multi-repo §5.2);
+        // restore permissions so the delete cannot get stuck on them.
+        super::repos::make_tree_writable(&workspace_path).await;
         match tokio::fs::remove_dir_all(&workspace_path).await {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -192,9 +195,20 @@ impl WorkspaceGc {
                 if summary.quarantine_cleaned >= self.config.gc_batch_size {
                     return Ok(());
                 }
-                let marker_path = entry.path().join(".quarantined_at");
-                let Ok(raw) = tokio::fs::read_to_string(&marker_path).await else {
+                if !entry.path().is_dir() {
                     continue;
+                }
+                // `quarantine_workspace` writes the marker next to the run dirs
+                // (`<key>/.quarantined_at`); older layouts put it inside the run
+                // dir. Accept both.
+                let inner = entry.path().join(".quarantined_at");
+                let outer = root_entry.path().join(".quarantined_at");
+                let raw = match tokio::fs::read_to_string(&inner).await {
+                    Ok(raw) => raw,
+                    Err(_) => match tokio::fs::read_to_string(&outer).await {
+                        Ok(raw) => raw,
+                        Err(_) => continue,
+                    },
                 };
                 let Ok(marked_at) = DateTime::parse_from_rfc3339(raw.trim()) else {
                     continue;
@@ -202,6 +216,7 @@ impl WorkspaceGc {
                 if marked_at.with_timezone(&Utc) + retention > now {
                     continue;
                 }
+                super::repos::make_tree_writable(&entry.path()).await;
                 tokio::fs::remove_dir_all(entry.path())
                     .await
                     .map_err(|e| WorkspaceError::RemoveFailed { source: e })?;
