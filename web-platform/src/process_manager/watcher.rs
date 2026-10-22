@@ -436,7 +436,10 @@ async fn watch_test_process(
         };
 
         if !project.testing_enabled {
-            info!(project_id, "Testing disabled during backoff, aborting restart");
+            info!(
+                project_id,
+                "Testing disabled during backoff, aborting restart"
+            );
             let status_update = ServiceStatusUpdate {
                 status: ServiceStatus::Stopped,
                 pid: None,

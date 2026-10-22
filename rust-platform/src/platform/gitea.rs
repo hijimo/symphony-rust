@@ -178,7 +178,11 @@ impl GiteaAdapter {
             let status = response.status();
             if !status.is_success() {
                 let body = response.text().await.unwrap_or_default();
-                let truncated = if body.len() > 500 { &body[..500] } else { &body };
+                let truncated = if body.len() > 500 {
+                    &body[..500]
+                } else {
+                    &body
+                };
                 return Err(PlatformError::from_status(status.as_u16(), truncated));
             }
 
@@ -292,8 +296,11 @@ impl Platform for GiteaAdapter {
         let mut seen_numbers: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
         for label in &filter_labels {
-            let params: Vec<(&str, &str)> =
-                vec![("labels", label.as_str()), ("state", "open"), ("type", "issues")];
+            let params: Vec<(&str, &str)> = vec![
+                ("labels", label.as_str()),
+                ("state", "open"),
+                ("type", "issues"),
+            ];
             let gi_issues: Vec<GiteaIssue> = self.paginated_get(&path, &params).await?;
             for issue in gi_issues {
                 if seen_numbers.insert(issue.number) {
@@ -329,7 +336,11 @@ impl Platform for GiteaAdapter {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            let truncated = if body.len() > 500 { &body[..500] } else { &body };
+            let truncated = if body.len() > 500 {
+                &body[..500]
+            } else {
+                &body
+            };
             return Err(PlatformError::from_status(status.as_u16(), truncated));
         }
 
@@ -701,7 +712,11 @@ impl Platform for GiteaAdapter {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            let truncated = if body.len() > 500 { &body[..500] } else { &body };
+            let truncated = if body.len() > 500 {
+                &body[..500]
+            } else {
+                &body
+            };
             return Err(PlatformError::from_status(status.as_u16(), truncated));
         }
 

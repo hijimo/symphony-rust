@@ -73,9 +73,16 @@ impl TestApp {
         .unwrap();
         let admin = repo.find_by_username("admin").await.unwrap().unwrap();
         let encrypted_github_token = crypto::encrypt("test-github-token", &[0x42u8; 32]).unwrap();
-        repo.upsert_config(admin.id, None, None, Some(&encrypted_github_token), None, None)
-            .await
-            .unwrap();
+        repo.upsert_config(
+            admin.id,
+            None,
+            None,
+            Some(&encrypted_github_token),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let process_manager = ProcessManager::new();
         let concurrency_manager = Arc::new(ConcurrencyManager::new(10));
