@@ -1134,7 +1134,7 @@ impl Orchestrator {
         }
 
         // 4. Cancel all active workers (triggers after_run hook in each worker)
-        for (_, entry) in self.state.running.iter_mut() {
+        for entry in self.state.running.values_mut() {
             if entry.cancel_sent_at.is_none() {
                 entry.cancel_token.cancel();
                 entry.cancel_sent_at = Some(Instant::now());

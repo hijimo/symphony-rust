@@ -122,10 +122,8 @@ pub async fn get_overview_issues(
                     }
                 };
 
-                let host = normalize_platform_host(
-                    &project.platform,
-                    project.platform_host.as_deref(),
-                );
+                let host =
+                    normalize_platform_host(&project.platform, project.platform_host.as_deref());
                 let sem = state.platform_host_semaphores.get(&host);
                 let _permit = match sem.acquire().await {
                     Ok(p) => p,
@@ -343,10 +341,8 @@ pub async fn get_overview_prs(
                     }
                 };
 
-                let host = normalize_platform_host(
-                    &project.platform,
-                    project.platform_host.as_deref(),
-                );
+                let host =
+                    normalize_platform_host(&project.platform, project.platform_host.as_deref());
                 let sem = state.platform_host_semaphores.get(&host);
                 let _permit = match sem.acquire().await {
                     Ok(p) => p,

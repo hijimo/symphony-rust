@@ -32,8 +32,8 @@ use tokio::process::Command;
 use common::git_host::GitHost;
 use common::gitea_host::GiteaHost;
 
-use symphony_platform::config::platform::{IssueFilter, PlatformConfig, WorkflowConfig};
 use symphony_platform::config::parse_workflow;
+use symphony_platform::config::platform::{IssueFilter, PlatformConfig, WorkflowConfig};
 use symphony_platform::platform::gitea::GiteaAdapter;
 use symphony_platform::platform::{FetchOptions, IssueId, Platform};
 use symphony_platform::prompt::{IssueContext, PromptEngine};
@@ -101,10 +101,7 @@ async fn test_gitea_fetch_candidate_issues() {
         .await
         .unwrap();
 
-    eprintln!(
-        "[GITEA-E2E] ✓ Fetched {} candidate issues",
-        issues.len()
-    );
+    eprintln!("[GITEA-E2E] ✓ Fetched {} candidate issues", issues.len());
     for issue in &issues {
         eprintln!(
             "  - #{}: {} (state: {:?})",
@@ -126,7 +123,11 @@ async fn test_gitea_issue_lifecycle() {
 
     // Step 1: Ensure workflow labels exist
     eprintln!("[GITEA-E2E] Step 1: Ensuring workflow labels exist...");
-    adapter.http_client().ensure_workflow_labels().await.unwrap();
+    adapter
+        .http_client()
+        .ensure_workflow_labels()
+        .await
+        .unwrap();
     eprintln!("[GITEA-E2E] ✓ Workflow labels verified");
 
     // Step 2: Create a test issue with "Todo" label
@@ -176,7 +177,10 @@ async fn test_gitea_issue_lifecycle() {
         .create_comment(issue_id, "## Codex Workpad\n\nE2E test workpad.")
         .await
         .unwrap();
-    eprintln!("[GITEA-E2E] ✓ Workpad comment created (id={})", comment_id.0);
+    eprintln!(
+        "[GITEA-E2E] ✓ Workpad comment created (id={})",
+        comment_id.0
+    );
 
     // Step 6: Find workpad comment
     eprintln!("[GITEA-E2E] Step 6: Finding workpad comment...");
@@ -257,10 +261,7 @@ async fn test_gitea_create_pr() {
         .await
         .unwrap();
 
-    eprintln!(
-        "[GITEA-E2E] ✓ PR created: #{} ({})",
-        pr.number, pr.url
-    );
+    eprintln!("[GITEA-E2E] ✓ PR created: #{} ({})", pr.number, pr.url);
     assert!(pr.number > 0);
     assert_eq!(pr.state, "open");
 
@@ -557,8 +558,8 @@ async fn run_codex_session(workspace_dir: &PathBuf, prompt: &str) -> CodexSessio
 }
 
 async fn setup_workspace(host: &GiteaHost) -> TempDir {
-    let workspace =
-        TempDir::with_prefix("symphony_wf_e2e_gitea_").expect("failed to create temp workspace dir");
+    let workspace = TempDir::with_prefix("symphony_wf_e2e_gitea_")
+        .expect("failed to create temp workspace dir");
 
     let clone_url = host.clone_url();
     let output = Command::new("git")
@@ -607,7 +608,10 @@ async fn test_gitea_workflow_template_renders() {
     let raw_template = include_str!("../../web-platform/src/templates/workflow_gitea.md");
     let rendered_workflow = raw_template
         .replace("{{project_slug}}", "luk/symphony_test_repo")
-        .replace("{{platform_endpoint}}", "https://omv.iloxe.com:23000/api/v1")
+        .replace(
+            "{{platform_endpoint}}",
+            "https://omv.iloxe.com:23000/api/v1",
+        )
         .replace("{{platform_host}}", "https://omv.iloxe.com:23000")
         .replace("{{workspace_root}}", "/tmp/symphony-test")
         .replace("{{max_concurrent_agents}}", "2")
@@ -617,7 +621,8 @@ async fn test_gitea_workflow_template_renders() {
         .replace("{{testing_max_turns}}", "12")
         .replace("{{testing_skip_labels}}", r#"["hotfix", "urgent"]"#);
 
-    let definition = parse_workflow(&rendered_workflow).expect("Failed to parse Gitea workflow template");
+    let definition =
+        parse_workflow(&rendered_workflow).expect("Failed to parse Gitea workflow template");
 
     assert!(
         !definition.prompt_template.is_empty(),
@@ -656,12 +661,27 @@ async fn test_gitea_workflow_template_renders() {
     );
 
     assert!(rendered.contains("#42"), "Should contain issue identifier");
-    assert!(rendered.contains("Implement feature X"), "Should contain issue title");
+    assert!(
+        rendered.contains("Implement feature X"),
+        "Should contain issue title"
+    );
     assert!(rendered.contains("Todo"), "Should contain issue state");
-    assert!(rendered.contains("gitea_api"), "Should contain gitea_api function references");
-    assert!(!rendered.contains("gh issue"), "Should NOT contain gh issue commands");
-    assert!(!rendered.contains("gh pr"), "Should NOT contain gh pr commands");
-    assert!(!rendered.contains("glab "), "Should NOT contain glab CLI references");
+    assert!(
+        rendered.contains("gitea_api"),
+        "Should contain gitea_api function references"
+    );
+    assert!(
+        !rendered.contains("gh issue"),
+        "Should NOT contain gh issue commands"
+    );
+    assert!(
+        !rendered.contains("gh pr"),
+        "Should NOT contain gh pr commands"
+    );
+    assert!(
+        !rendered.contains("glab "),
+        "Should NOT contain glab CLI references"
+    );
 
     eprintln!("[GITEA-E2E] ✓ Template renders correctly");
 }
@@ -696,7 +716,8 @@ async fn test_gitea_workflow_codex_state_transition() {
         .replace("{{codex_section}}", "codex:\n  read_timeout_ms: 30000\n")
         .replace("{{testing_max_turns}}", "12")
         .replace("{{testing_skip_labels}}", r#"["hotfix", "urgent"]"#);
-    let definition = parse_workflow(&rendered_workflow).expect("Failed to parse Gitea workflow template");
+    let definition =
+        parse_workflow(&rendered_workflow).expect("Failed to parse Gitea workflow template");
     let engine =
         PromptEngine::compile(&definition.prompt_template).expect("Failed to compile template");
     eprintln!("[GITEA-E2E] ✓ Template compiled");
@@ -816,18 +837,13 @@ async fn test_gitea_workflow_codex_state_transition() {
     let still_todo = final_labels.iter().any(|l| l.eq_ignore_ascii_case("Todo"));
 
     if transitioned_to_in_progress || transitioned_to_human_review {
-        eprintln!(
-            "[GITEA-E2E] ✓ Agent transitioned state: {:?}",
-            final_labels
-        );
+        eprintln!("[GITEA-E2E] ✓ Agent transitioned state: {:?}", final_labels);
     } else if still_todo {
         eprintln!(
             "[GITEA-E2E] ⚠ Agent did NOT transition from Todo. Labels: {:?}",
             final_labels
         );
-        eprintln!(
-            "[GITEA-E2E]   (This may happen due to LLM non-determinism or API auth issues)"
-        );
+        eprintln!("[GITEA-E2E]   (This may happen due to LLM non-determinism or API auth issues)");
     }
 
     // 6c: Check workpad comment creation
@@ -922,7 +938,9 @@ async fn test_gitea_workflow_codex_state_transition() {
     // Soft assertions: log warnings but don't fail for LLM non-determinism
     if !transitioned_to_in_progress && !has_workpad && !file_created {
         eprintln!("\n[GITEA-E2E] ⚠ WARNING: Agent completed but performed no observable workflow actions.");
-        eprintln!("[GITEA-E2E]   This likely means gitea_api was not accessible from the codex sandbox.");
+        eprintln!(
+            "[GITEA-E2E]   This likely means gitea_api was not accessible from the codex sandbox."
+        );
     }
 
     eprintln!("\n[GITEA-E2E] ✓ WORKFLOW TEMPLATE E2E TEST COMPLETE (Gitea)");
