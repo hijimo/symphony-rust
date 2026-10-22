@@ -196,13 +196,17 @@ impl Drop for ProcessGroupGuard {
     }
 }
 
+fn askpass_path(dir: &Path) -> PathBuf {
+    dir.join("git-askpass.sh")
+}
+
 /// Write the askpass helper. It reads the token from an environment variable
 /// set only on the git child, so the script file never contains a secret.
 async fn ensure_askpass(dir: &Path) -> Result<PathBuf, WorkspaceError> {
     tokio::fs::create_dir_all(dir)
         .await
         .map_err(|e| WorkspaceError::Io { source: e })?;
-    let path = dir.join("git-askpass.sh");
+    let path = askpass_path(dir);
     let script = "#!/bin/sh\ncase \"$1\" in\n  Username*) printf '%s\\n' oauth2 ;;\n  *) printf '%s\\n' \"$SYMPHONY_GIT_TOKEN\" ;;\nesac\n";
     let needs_write = match tokio::fs::read_to_string(&path).await {
         Ok(existing) => existing != script,
@@ -256,6 +260,14 @@ async fn git_with_progress(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // Any git command may hit the remote: with partial clones
+    // (`--filter=blob:none`) even `checkout` lazily fetches blobs from the
+    // promisor remote. Since the global credential helper is disabled above,
+    // every invocation must carry the askpass helper, not only fetch/clone.
+    let askpass = match askpass {
+        Some(p) => Some(p.to_path_buf()),
+        None => Some(askpass_path(&ctx.askpass_dir)).filter(|p| p.exists()),
+    };
     if let (Some(askpass), Some(token)) = (askpass, ctx.token.as_deref()) {
         cmd.env("GIT_ASKPASS", askpass)
             .env("SYMPHONY_GIT_TOKEN", token);
