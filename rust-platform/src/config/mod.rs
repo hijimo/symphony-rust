@@ -1,4 +1,5 @@
 pub mod platform;
+pub mod repos;
 pub mod service_config;
 pub mod validator;
 pub mod watcher;

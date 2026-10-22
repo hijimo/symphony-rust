@@ -5,8 +5,9 @@ use crate::models::alert::{
 };
 use crate::models::concurrency::ConcurrencySnapshot;
 use crate::models::{
-    NewProject, Project, ProjectMember, ProjectUpdate, ServiceLifecycleUpdate, ServiceStatusUpdate,
-    SyncMember, SyncResult, TokenBlacklistEntry, User, UserConfig,
+    NewAuditLog, NewProject, NewProjectRepo, Project, ProjectMember, ProjectRepo,
+    ProjectRepoCandidate, ProjectRepoReference, ProjectUpdate, ServiceLifecycleUpdate,
+    ServiceStatusUpdate, SyncMember, SyncResult, TokenBlacklistEntry, User, UserConfig,
 };
 use crate::proxy::{ProxySecret, ProxySecretMutation};
 use async_trait::async_trait;
@@ -261,4 +262,57 @@ pub trait NetworkProxyRepository: Send + Sync {
         current_version: &str,
     ) -> Result<i64>;
     async fn current_network_proxy_version(&self) -> Result<String>;
+}
+
+#[async_trait]
+pub trait ProjectRepoRepository: Send + Sync {
+    /// List the related repositories of a project, ordered by id.
+    async fn list_project_repos(&self, project_id: i64) -> Result<Vec<ProjectRepo>>;
+
+    /// Replace all related repositories of a project and write the audit logs,
+    /// in one transaction.
+    async fn replace_project_repos(
+        &self,
+        project_id: i64,
+        rows: Vec<NewProjectRepo>,
+        audit_logs: Vec<NewAuditLog>,
+    ) -> Result<Vec<ProjectRepo>>;
+
+    /// Update a row's status (`active` / `invalid`) and reason.
+    async fn set_project_repo_status(
+        &self,
+        id: i64,
+        status: &str,
+        status_reason: Option<&str>,
+    ) -> Result<()>;
+
+    /// Downgrade a `write` row to `read` and clear its write grant.
+    async fn downgrade_project_repo_to_read(&self, id: i64) -> Result<()>;
+
+    /// Rows (in other projects) whose `linked_project_id` is `project_id`.
+    async fn list_references_to_project(
+        &self,
+        project_id: i64,
+    ) -> Result<Vec<ProjectRepoReference>>;
+
+    /// Mark rows saved by `user_id` that belong to or link to `project_id` as invalid.
+    /// Returns the invalidated rows (before the update).
+    async fn invalidate_project_repos_saved_by(
+        &self,
+        project_id: i64,
+        user_id: i64,
+        reason: &str,
+    ) -> Result<Vec<ProjectRepo>>;
+
+    /// Projects where `user_id` is an owner (id + name only).
+    async fn list_owned_projects(&self, user_id: i64) -> Result<Vec<ProjectRepoCandidate>>;
+
+    async fn insert_audit_log(&self, log: &NewAuditLog) -> Result<()>;
+
+    /// Ids of projects that have at least one related repository row.
+    async fn list_projects_with_repos(&self) -> Result<Vec<i64>>;
+
+    /// Insert-or-update one internal system config value (e.g. scanner
+    /// watermarks). Unlike `update_system_configs`, missing keys are created.
+    async fn upsert_system_config(&self, key: &str, value: &str) -> Result<()>;
 }

@@ -5,3 +5,6 @@ pub mod git_platform;
 pub mod github_client;
 pub mod gitlab_client;
 pub mod mr_create;
+pub mod multi_repo_mrs;
+pub mod orphan_mr_scanner;
+pub mod project_repos;

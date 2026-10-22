@@ -1252,6 +1252,13 @@ impl IssueStateRefresher for TrackerStateRefresher {
             .iter()
             .any(|s| s.eq_ignore_ascii_case(state))
     }
+
+    async fn set_issue_state(&self, issue_id: &str, state: &str) -> Result<(), String> {
+        self.tracker
+            .set_workflow_state(issue_id, state)
+            .await
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// Fallback when no tracker is configured — issue is always considered active.

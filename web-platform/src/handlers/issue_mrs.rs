@@ -10,6 +10,7 @@ use crate::handlers::network_proxy::load_effective_proxy_config;
 use crate::middleware::project_access::require_project_member;
 use crate::models::issue::MergeRequestSummary;
 use crate::models::ResponseData;
+use crate::repository::ProjectRepoRepository;
 use crate::repository::ProjectRepository;
 use crate::services::git_platform::create_platform_client_with_proxy;
 use crate::AppState;
@@ -70,6 +71,15 @@ pub async fn get_issue_mrs(
         .get_issue_merge_requests(&platform_token, &project_path, iid)
         .await
         .map_err(map_platform_error)?;
+    // Multi-repo projects: keep cross-project MRs only when they carry the
+    // `Symphony-Issue:` trailer for this issue (design §7.1).
+    let multi_repo = !state.repo.list_project_repos(project_id).await?.is_empty();
+    let platform_mrs = crate::services::multi_repo_mrs::filter_related(
+        platform_mrs,
+        &project_path,
+        iid,
+        multi_repo,
+    );
 
     let mr_summaries: Vec<MergeRequestSummary> = platform_mrs
         .into_iter()
@@ -79,6 +89,7 @@ pub async fn get_issue_mrs(
             state: mr.state,
             author: mr.author,
             web_url: mr.web_url,
+            project_path: mr.target_project_path,
         })
         .collect();
 

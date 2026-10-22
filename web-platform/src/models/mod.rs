@@ -5,6 +5,7 @@ pub mod kanban;
 pub mod merge_request;
 pub mod overview;
 pub mod project;
+pub mod project_repo;
 mod response;
 mod user;
 
@@ -15,5 +16,6 @@ pub use kanban::*;
 pub use merge_request::*;
 pub use overview::*;
 pub use project::*;
+pub use project_repo::*;
 pub use response::*;
 pub use user::*;

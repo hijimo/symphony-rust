@@ -10,6 +10,7 @@ use crate::middleware::project_access::{require_project_member, require_project_
 use crate::models::{ResponseData, UpdateWorkflowRequest, WorkflowResponse};
 use crate::repository::ProjectRepository;
 use crate::services::codex_command::resolve_codex_command;
+use crate::services::project_repos::resolve_active_repos;
 use crate::templates::{self, WorkflowTemplateContext};
 use crate::AppState;
 
@@ -36,6 +37,7 @@ pub async fn get_workflow(
             "gitea" => Platform::Gitea,
             _ => Platform::GitLab,
         };
+        let repos = resolve_active_repos(&state.repo, &project).await?;
         let ctx = WorkflowTemplateContext {
             platform,
             project_slug: format!("{}/{}", project.namespace, project.repo_name),
@@ -52,6 +54,7 @@ pub async fn get_workflow(
             codex_sandbox: project.codex_sandbox,
             testing_enabled: project.testing_enabled,
             testing_max_turns: Some(project.testing_max_turns),
+            repos,
         };
         templates::render_template(&ctx)
     };
@@ -113,6 +116,7 @@ pub async fn update_workflow(
             "gitea" => Platform::Gitea,
             _ => Platform::GitLab,
         };
+        let repos = resolve_active_repos(&state.repo, &project).await?;
         let ctx = WorkflowTemplateContext {
             platform,
             project_slug: format!("{}/{}", project.namespace, project.repo_name),
@@ -129,6 +133,7 @@ pub async fn update_workflow(
             codex_sandbox: project.codex_sandbox,
             testing_enabled: project.testing_enabled,
             testing_max_turns: Some(project.testing_max_turns),
+            repos,
         };
         templates::render_template(&ctx)
     };
@@ -166,6 +171,7 @@ pub async fn reset_workflow(
         "github" => Platform::GitHub,
         _ => Platform::GitLab,
     };
+    let repos = resolve_active_repos(&state.repo, &project).await?;
     let ctx = WorkflowTemplateContext {
         platform,
         project_slug: format!("{}/{}", project.namespace, project.repo_name),
@@ -182,6 +188,7 @@ pub async fn reset_workflow(
         codex_sandbox: project.codex_sandbox,
         testing_enabled: project.testing_enabled,
         testing_max_turns: Some(project.testing_max_turns),
+        repos,
     };
     let content = templates::render_template(&ctx);
 

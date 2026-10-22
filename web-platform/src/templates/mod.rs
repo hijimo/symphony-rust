@@ -1,4 +1,5 @@
 use crate::git_url::Platform;
+use crate::models::ResolvedRepo;
 
 const GITHUB_TEMPLATE: &str = include_str!("workflow_github.md");
 const GITLAB_TEMPLATE: &str = include_str!("workflow_gitlab.md");
@@ -22,6 +23,9 @@ pub struct WorkflowTemplateContext {
     pub codex_sandbox: Option<String>,
     pub testing_enabled: bool,
     pub testing_max_turns: Option<i64>,
+    /// Related (secondary) repositories. Empty = single-repo project; the rendered
+    /// output is then byte-identical to the pre-multi-repo templates.
+    pub repos: Vec<ResolvedRepo>,
 }
 
 /// Get the raw template content for a given platform.
@@ -64,6 +68,7 @@ pub fn render_template_string(template: &str, ctx: &WorkflowTemplateContext) -> 
         Platform::Gitea => ctx.platform_host.clone(),
     };
 
+    let repos_section = build_repos_section(ctx);
     let hooks_section = build_hooks_section(&ctx.hooks_after_create, &ctx.hooks_before_remove);
     let codex_section = build_codex_section(
         &ctx.codex_command,
@@ -88,13 +93,61 @@ pub fn render_template_string(template: &str, ctx: &WorkflowTemplateContext) -> 
             &ctx.max_concurrent_agents.to_string(),
         )
         .replace("{{default_branch}}", &ctx.default_branch)
+        .replace("{{repos_section}}", &repos_section)
         .replace("{{hooks_section}}", &hooks_section)
         .replace("{{codex_section}}", &codex_section)
         .replace("{{testing_max_turns}}", &testing_max_turns)
         .replace("{{testing_workflow_labels}}", &testing_workflow_labels)
         .replace("{{testing_status_map}}", &testing_status_map)
         .replace("{{testing_gate_section}}", &testing_gate_section)
-        .replace("{{testing_fail_minor_section}}", &testing_fail_minor_section)
+        .replace(
+            "{{testing_fail_minor_section}}",
+            &testing_fail_minor_section,
+        )
+}
+
+/// Alias of the implicit primary repository entry.
+pub const PRIMARY_REPO_ALIAS: &str = "primary";
+
+/// YAML string literal (JSON double-quoted strings are valid YAML).
+fn yaml_str(value: &str) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+/// Build the `workspace.repos` block (design 4.1). Empty when the project has no
+/// related repositories, so single-repo output is unchanged.
+///
+/// Clone URLs are intentionally not rendered: rust-platform derives them from
+/// `GITLAB_HOST` + `slug`.
+fn build_repos_section(ctx: &WorkflowTemplateContext) -> String {
+    if ctx.repos.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("  repos:\n");
+    s.push_str(&format!("    - alias: {}\n", PRIMARY_REPO_ALIAS));
+    s.push_str(&format!("      slug: {}\n", yaml_str(&ctx.project_slug)));
+    s.push_str("      role: primary\n");
+    s.push_str(&format!(
+        "      default_branch: {}\n",
+        yaml_str(&ctx.default_branch)
+    ));
+    s.push_str("      mode: write\n");
+    for repo in &ctx.repos {
+        s.push_str(&format!("    - alias: {}\n", yaml_str(&repo.alias)));
+        s.push_str(&format!("      slug: {}\n", yaml_str(&repo.slug)));
+        s.push_str("      role: secondary\n");
+        s.push_str(&format!(
+            "      default_branch: {}\n",
+            yaml_str(&repo.default_branch)
+        ));
+        s.push_str(&format!("      mode: {}\n", repo.mode));
+        s.push_str(&format!("      checkout: {}\n", repo.checkout));
+        if !repo.merge_after.is_empty() {
+            let deps: Vec<String> = repo.merge_after.iter().map(|a| yaml_str(a)).collect();
+            s.push_str(&format!("      merge_after: [{}]\n", deps.join(", ")));
+        }
+    }
+    s
 }
 
 fn build_hooks_section(after_create: &Option<String>, before_remove: &Option<String>) -> String {
@@ -168,15 +221,21 @@ fn build_testing_gate_section(testing_enabled: bool, platform: &Platform) -> Str
     }
 
     let transition_cmd = match platform {
-        Platform::GitLab => r#"      ```bash
+        Platform::GitLab => {
+            r#"      ```bash
       glab issue update <iid> --label "Testing" --unlabel "In Progress"
-      ```"#,
-        Platform::GitHub => r#"      ```bash
+      ```"#
+        }
+        Platform::GitHub => {
+            r#"      ```bash
       gh issue edit <number> --add-label "Testing" --remove-label "In Progress"
-      ```"#,
-        Platform::Gitea => r#"      ```bash
+      ```"#
+        }
+        Platform::Gitea => {
+            r#"      ```bash
       transition_label <number> "In Progress" "Testing"
-      ```"#,
+      ```"#
+        }
     };
 
     format!(
@@ -207,15 +266,21 @@ fn build_testing_fail_minor_section(testing_enabled: bool, platform: &Platform) 
     }
 
     let transition_cmd = match platform {
-        Platform::GitLab => r#"   ```bash
+        Platform::GitLab => {
+            r#"   ```bash
    glab issue update <iid> --label "Testing" --unlabel "In Progress"
-   ```"#,
-        Platform::GitHub => r#"   ```bash
+   ```"#
+        }
+        Platform::GitHub => {
+            r#"   ```bash
    gh issue edit <number> --add-label "Testing" --remove-label "In Progress"
-   ```"#,
-        Platform::Gitea => r#"   ```bash
+   ```"#
+        }
+        Platform::Gitea => {
+            r#"   ```bash
    transition_label <number> "In Progress" "Testing"
-   ```"#,
+   ```"#
+        }
     };
 
     format!(
@@ -260,6 +325,7 @@ mod tests {
             codex_sandbox: None,
             testing_enabled: false,
             testing_max_turns: None,
+            repos: vec![],
         };
         let rendered = render_template(&ctx);
         assert!(rendered.contains("kind: github"));
@@ -289,6 +355,7 @@ mod tests {
             codex_sandbox: None,
             testing_enabled: true,
             testing_max_turns: None,
+            repos: vec![],
         };
         let rendered = render_template(&ctx);
         assert!(rendered.contains("Testing Gate"));
@@ -320,6 +387,7 @@ mod tests {
             codex_sandbox: Some("workspace-write".to_string()),
             testing_enabled: false,
             testing_max_turns: None,
+            repos: vec![],
         };
         let rendered = render_template(&ctx);
         assert!(rendered.contains("kind: gitlab"));
@@ -348,6 +416,7 @@ mod tests {
             codex_sandbox: None,
             testing_enabled: true,
             testing_max_turns: Some(12),
+            repos: vec![],
         };
         let rendered = render_test_template(&ctx);
         assert!(rendered.contains("kind: github"));
@@ -374,6 +443,7 @@ mod tests {
             codex_sandbox: None,
             testing_enabled: true,
             testing_max_turns: Some(10),
+            repos: vec![],
         };
         let rendered = render_test_template(&ctx);
         assert!(rendered.contains("kind: gitlab"));
@@ -395,4 +465,104 @@ mod tests {
         assert!(template.contains("gitlab"));
         assert!(!template.is_empty());
     }
+}
+
+/// Snapshots of single-repo renders captured before multi-repo support was added.
+/// Single-repo output must stay byte-identical (design §2 goal 5).
+#[cfg(test)]
+mod single_repo_snapshots {
+    use super::*;
+
+    fn snapshot(name: &str) -> &'static str {
+        match name {
+            "gitlab_basic" => include_str!("snapshots/gitlab_basic.md"),
+            "gitlab_full" => include_str!("snapshots/gitlab_full.md"),
+            "github_basic" => include_str!("snapshots/github_basic.md"),
+            "gitea_basic" => include_str!("snapshots/gitea_basic.md"),
+            other => panic!("unknown snapshot {other}"),
+        }
+    }
+
+    #[test]
+    fn multi_repo_render_emits_repos_block_after_root() {
+        for (_, mut ctx) in super::snapshot_contexts() {
+            ctx.repos = vec![ResolvedRepo {
+                alias: "backend".to_string(),
+                slug: "JstAi/jxy".to_string(),
+                default_branch: "pre".to_string(),
+                mode: "read".to_string(),
+                checkout: "partial".to_string(),
+                merge_after: vec!["primary".to_string()],
+            }];
+            let rendered = render_template(&ctx);
+            let expected = "workspace:\n  root: \"/srv/symphony-workspaces/7\"\n  repos:\n    - alias: primary\n      slug: \"group/sub/project\"\n      role: primary\n      default_branch: \"dev\"\n      mode: write\n    - alias: \"backend\"\n      slug: \"JstAi/jxy\"\n      role: secondary\n      default_branch: \"pre\"\n      mode: read\n      checkout: partial\n      merge_after: [\"primary\"]\n";
+            assert!(rendered.contains(expected), "{rendered}");
+            assert!(!rendered.contains("{{repos_section}}"));
+            // Test-engineer templates never carry the repos block.
+            assert!(!render_test_template(&ctx).contains("  repos:"));
+        }
+    }
+
+    /// The WORKFLOW.md text now contains liquid `{% if is_multi_repo %}`
+    /// blocks, so the *web-layer* render is compared against snapshots that
+    /// include them. That the agent-visible prompt (after liquid rendering
+    /// with `is_multi_repo = false`) is byte-identical to the pre-multi-repo
+    /// prompt is asserted in rust-platform `tests/multi_repo_templates.rs`.
+    /// Regenerate with `UPDATE_SNAPSHOTS=1 cargo test -p web-platform`.
+    #[test]
+    fn single_repo_render_is_byte_identical_to_snapshot() {
+        for (name, ctx) in super::snapshot_contexts() {
+            let rendered = render_template(&ctx);
+            if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
+                let path = format!(
+                    "{}/src/templates/snapshots/{name}.md",
+                    env!("CARGO_MANIFEST_DIR")
+                );
+                std::fs::write(path, &rendered).unwrap();
+                continue;
+            }
+            assert!(
+                rendered == snapshot(name),
+                "single-repo render for {name} differs from snapshot"
+            );
+            // No repos configured: the front matter carries no repos block.
+            assert!(!rendered.contains("  repos:"), "{name}");
+        }
+    }
+}
+
+#[cfg(test)]
+fn snapshot_contexts() -> Vec<(&'static str, WorkflowTemplateContext)> {
+    let base = |platform: Platform, host: &str| WorkflowTemplateContext {
+        platform,
+        project_slug: "group/sub/project".to_string(),
+        platform_host: host.to_string(),
+        workspace_root: "/srv/symphony-workspaces/7".to_string(),
+        max_concurrent_agents: 3,
+        default_branch: "dev".to_string(),
+        hooks_after_create: None,
+        hooks_before_remove: None,
+        codex_command: Some("codex app-server -c 'model_provider=\"kiro\"'".to_string()),
+        codex_approval_policy: None,
+        codex_sandbox: None,
+        testing_enabled: false,
+        testing_max_turns: None,
+        repos: vec![],
+    };
+    let mut gitlab_full = base(Platform::GitLab, "http://gitlab.example.com:8081");
+    gitlab_full.hooks_after_create = Some("git clone http://example/x.git .\nnpm ci".to_string());
+    gitlab_full.hooks_before_remove = Some("echo bye".to_string());
+    gitlab_full.codex_approval_policy = Some("never".to_string());
+    gitlab_full.codex_sandbox = Some("danger-full-access".to_string());
+    gitlab_full.testing_enabled = true;
+    gitlab_full.testing_max_turns = Some(9);
+    vec![
+        ("gitlab_basic", base(Platform::GitLab, "https://gitlab.com")),
+        ("gitlab_full", gitlab_full),
+        ("github_basic", base(Platform::GitHub, "https://github.com")),
+        (
+            "gitea_basic",
+            base(Platform::Gitea, "https://gitea.example.com"),
+        ),
+    ]
 }

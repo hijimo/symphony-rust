@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use serde_yaml::Value as YamlValue;
 use thiserror::Error;
 
+use super::repos::{parse_repos, RepoSpec};
 use super::workflow_loader::WorkflowDefinition;
 
 /// Tracker kind enumeration.
@@ -243,6 +244,8 @@ pub struct ServiceConfig {
     // -- workspace --
     pub workspace_root: PathBuf,
     pub workspace_gc: WorkspaceGcConfig,
+    /// Multi-repo workspace entries; empty = legacy single-repo mode.
+    pub workspace_repos: Vec<RepoSpec>,
 
     // -- hooks --
     pub hooks: HooksConfig,
@@ -285,6 +288,7 @@ impl Default for ServiceConfig {
             poll_interval_ms: 30_000,
             workspace_root: std::env::temp_dir().join("symphony_workspaces"),
             workspace_gc: WorkspaceGcConfig::default(),
+            workspace_repos: Vec::new(),
             hooks: HooksConfig::default(),
             max_concurrent_agents: 10,
             max_turns: 20,
@@ -375,6 +379,11 @@ impl ServiceConfig {
         // -- hooks section --
         let hooks_section = get_section(config, "hooks");
         let hooks = parse_hooks(&hooks_section);
+        let workspace_repos = parse_repos(
+            &workspace,
+            &tracker_project_slug,
+            hooks.after_create.as_deref(),
+        )?;
 
         // -- agent section --
         let agent = get_section(config, "agent");
@@ -420,6 +429,7 @@ impl ServiceConfig {
             poll_interval_ms,
             workspace_root,
             workspace_gc,
+            workspace_repos,
             hooks,
             max_concurrent_agents,
             max_turns,

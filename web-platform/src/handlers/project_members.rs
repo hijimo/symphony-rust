@@ -11,8 +11,11 @@ use crate::middleware::project_access::{require_project_member, require_project_
 use crate::models::{
     AddMemberRequest, ProjectMember, ResponseData, SyncMember, SyncResult, UpdateMemberRoleRequest,
 };
-use crate::repository::{ProjectMemberRepository, ProjectRepository, UserRepository};
+use crate::repository::{
+    ProjectMemberRepository, ProjectRepoRepository, ProjectRepository, UserRepository,
+};
 use crate::services::git_platform::create_platform_client_with_proxy;
+use crate::services::project_repos::AUDIT_OBJECT_PROJECT_REPO;
 use crate::AppState;
 
 /// GET /api/projects/:id/members - List project members.
@@ -110,6 +113,17 @@ pub async fn update_member_role(
         .update_member_role(project_id, target_user_id, &req.role)
         .await?;
 
+    if current_role == "owner" && req.role != "owner" {
+        invalidate_repos_saved_by(
+            &state,
+            &claims,
+            project_id,
+            target_user_id,
+            "保存人已不再是 owner",
+        )
+        .await?;
+    }
+
     // Return updated member list entry
     let members = state.repo.list_members(project_id).await?;
     let member = members
@@ -157,6 +171,15 @@ pub async fn remove_member(
     }
 
     state.repo.remove_member(project_id, target_user_id).await?;
+
+    invalidate_repos_saved_by(
+        &state,
+        &claims,
+        project_id,
+        target_user_id,
+        "保存人已被移出项目",
+    )
+    .await?;
 
     Ok(Json(ResponseData::success(())))
 }
@@ -212,4 +235,43 @@ pub async fn sync_members(
         .await?;
 
     Ok(Json(ResponseData::success(result)))
+}
+
+/// Multi-repo: when `user_id` loses ownership of `project_id` (removed or downgraded),
+/// mark the related-repo rows they saved — in this project, and in other projects
+/// linking to this project — as `invalid`, and audit each change.
+async fn invalidate_repos_saved_by(
+    state: &AppState,
+    claims: &Claims,
+    project_id: i64,
+    user_id: i64,
+    reason: &str,
+) -> Result<(), WebPlatformError> {
+    let project_name = state
+        .repo
+        .get_project(project_id)
+        .await?
+        .map(|p| p.name)
+        .unwrap_or_else(|| project_id.to_string());
+    let reason = format!("{}（项目 {}）", reason, project_name);
+    let affected = state
+        .repo
+        .invalidate_project_repos_saved_by(project_id, user_id, &reason)
+        .await?;
+    let actor = claims.sub.parse::<i64>().ok();
+    for row in affected {
+        let _ = state
+            .repo
+            .insert_audit_log(&crate::models::NewAuditLog {
+                actor_user_id: actor,
+                project_id: Some(row.project_id),
+                object_type: AUDIT_OBJECT_PROJECT_REPO.to_string(),
+                object_id: Some(row.alias.clone()),
+                action: "invalidate".to_string(),
+                before_json: serde_json::to_string(&row).ok(),
+                after_json: Some(serde_json::json!({ "status_reason": reason }).to_string()),
+            })
+            .await;
+    }
+    Ok(())
 }
