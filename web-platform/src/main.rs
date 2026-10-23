@@ -230,6 +230,11 @@ async fn main() {
         info!("Serving frontend static files from {}", path.display());
     }
 
+    // Multi-repo: alert on related MRs left open after their issue closed.
+    tokio::spawn(web_platform::services::orphan_mr_scanner::run(
+        state.clone(),
+    ));
+
     let app = create_router_with_static_dir(state, static_dir)
         .layer(cors)
         .layer(TraceLayer::new_for_http())

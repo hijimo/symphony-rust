@@ -62,6 +62,10 @@ pub struct MergeRequestSummary {
     pub state: String,
     pub author: PlatformUser,
     pub web_url: String,
+    /// `namespace/repo` the MR belongs to (multi-repo: may differ from the
+    /// issue's project). Omitted from JSON when absent for compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
 }
 
 // ==================== Platform User ====================

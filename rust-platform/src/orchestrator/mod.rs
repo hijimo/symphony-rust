@@ -1134,7 +1134,7 @@ impl Orchestrator {
         }
 
         // 4. Cancel all active workers (triggers after_run hook in each worker)
-        for (_, entry) in self.state.running.iter_mut() {
+        for entry in self.state.running.values_mut() {
             if entry.cancel_sent_at.is_none() {
                 entry.cancel_token.cancel();
                 entry.cancel_sent_at = Some(Instant::now());
@@ -1251,6 +1251,13 @@ impl IssueStateRefresher for TrackerStateRefresher {
         self.active_states
             .iter()
             .any(|s| s.eq_ignore_ascii_case(state))
+    }
+
+    async fn set_issue_state(&self, issue_id: &str, state: &str) -> Result<(), String> {
+        self.tracker
+            .set_workflow_state(issue_id, state)
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 

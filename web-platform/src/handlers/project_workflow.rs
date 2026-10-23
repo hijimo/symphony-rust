@@ -9,6 +9,8 @@ use crate::git_url::Platform;
 use crate::middleware::project_access::{require_project_member, require_project_owner};
 use crate::models::{ResponseData, UpdateWorkflowRequest, WorkflowResponse};
 use crate::repository::ProjectRepository;
+use crate::services::codex_command::resolve_codex_command;
+use crate::services::project_repos::resolve_active_repos;
 use crate::templates::{self, WorkflowTemplateContext};
 use crate::AppState;
 
@@ -35,6 +37,7 @@ pub async fn get_workflow(
             "gitea" => Platform::Gitea,
             _ => Platform::GitLab,
         };
+        let repos = resolve_active_repos(&state.repo, &project).await?;
         let ctx = WorkflowTemplateContext {
             platform,
             project_slug: format!("{}/{}", project.namespace, project.repo_name),
@@ -46,11 +49,12 @@ pub async fn get_workflow(
             default_branch: project.default_branch,
             hooks_after_create: project.hooks_after_create,
             hooks_before_remove: project.hooks_before_remove,
-            codex_command: project.codex_command,
+            codex_command: resolve_codex_command(&state.repo, project.codex_command).await,
             codex_approval_policy: project.codex_approval_policy,
             codex_sandbox: project.codex_sandbox,
             testing_enabled: project.testing_enabled,
             testing_max_turns: Some(project.testing_max_turns),
+            repos,
         };
         templates::render_template(&ctx)
     };
@@ -112,6 +116,7 @@ pub async fn update_workflow(
             "gitea" => Platform::Gitea,
             _ => Platform::GitLab,
         };
+        let repos = resolve_active_repos(&state.repo, &project).await?;
         let ctx = WorkflowTemplateContext {
             platform,
             project_slug: format!("{}/{}", project.namespace, project.repo_name),
@@ -123,11 +128,12 @@ pub async fn update_workflow(
             default_branch: project.default_branch,
             hooks_after_create: project.hooks_after_create,
             hooks_before_remove: project.hooks_before_remove,
-            codex_command: project.codex_command,
+            codex_command: resolve_codex_command(&state.repo, project.codex_command).await,
             codex_approval_policy: project.codex_approval_policy,
             codex_sandbox: project.codex_sandbox,
             testing_enabled: project.testing_enabled,
             testing_max_turns: Some(project.testing_max_turns),
+            repos,
         };
         templates::render_template(&ctx)
     };
@@ -165,6 +171,7 @@ pub async fn reset_workflow(
         "github" => Platform::GitHub,
         _ => Platform::GitLab,
     };
+    let repos = resolve_active_repos(&state.repo, &project).await?;
     let ctx = WorkflowTemplateContext {
         platform,
         project_slug: format!("{}/{}", project.namespace, project.repo_name),
@@ -176,11 +183,12 @@ pub async fn reset_workflow(
         default_branch: project.default_branch,
         hooks_after_create: project.hooks_after_create,
         hooks_before_remove: project.hooks_before_remove,
-        codex_command: project.codex_command,
+        codex_command: resolve_codex_command(&state.repo, project.codex_command).await,
         codex_approval_policy: project.codex_approval_policy,
         codex_sandbox: project.codex_sandbox,
         testing_enabled: project.testing_enabled,
         testing_max_turns: Some(project.testing_max_turns),
+        repos,
     };
     let content = templates::render_template(&ctx);
 

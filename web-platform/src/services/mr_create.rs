@@ -296,13 +296,7 @@ fn normalize_request(
         ));
     }
 
-    let description = req.description.and_then(|value| {
-        if value.trim().is_empty() {
-            None
-        } else {
-            Some(value)
-        }
-    });
+    let description = req.description.filter(|value| !value.trim().is_empty());
 
     let purpose_type = req
         .purpose_type

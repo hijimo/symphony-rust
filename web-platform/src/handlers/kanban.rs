@@ -22,8 +22,7 @@ use crate::services::git_platform::{
 };
 use crate::AppState;
 
-const IN_PROGRESS_ISSUE_LABELS: &[&str] =
-    &["symphony-claimed", "In Progress", "Merging", "Rework"];
+const IN_PROGRESS_ISSUE_LABELS: &[&str] = &["symphony-claimed", "In Progress", "Merging", "Rework"];
 
 fn in_progress_issue_labels() -> &'static [&'static str] {
     IN_PROGRESS_ISSUE_LABELS

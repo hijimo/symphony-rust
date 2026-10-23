@@ -6,6 +6,8 @@
 //! SPEC reference: Section 9
 
 pub mod gc;
+pub mod repo_api;
+pub mod repos;
 pub mod terminal_marker;
 
 use std::path::{Path, PathBuf};
@@ -42,6 +44,23 @@ pub struct WorkspaceRunLease {
     _lock_guard: Arc<std::fs::File>,
 }
 
+/// Inputs of [`WorkspaceManager::prepare_multi_repo_workspace`].
+pub struct MultiRepoPrepare<'a> {
+    pub issue_id: &'a str,
+    pub issue_identifier: &'a str,
+    pub run_id: &'a str,
+    pub service_instance_id: &'a str,
+    pub checkout: &'a repos::RepoCheckoutContext,
+    pub specs: &'a [crate::config::repos::RepoSpec],
+    pub on_progress: &'a (dyn Fn() + Send + Sync),
+}
+
+/// Outcome of multi-repo synchronization for one attempt.
+#[derive(Debug, Clone)]
+pub struct MultiRepoState {
+    pub repos: std::collections::BTreeMap<String, repos::RepoState>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct WorkspaceMetadata {
     pub(crate) schema_version: u32,
@@ -56,8 +75,19 @@ pub(crate) struct WorkspaceMetadata {
     pub(crate) init_status: String,
     pub(crate) after_create_fingerprint: Option<String>,
     pub(crate) initialized_by_run_id: String,
-    pub(crate) expected_git_root: String,
+    /// `"."` for single-repo (schema 1); `None` for multi-repo (schema 2).
+    #[serde(default)]
+    pub(crate) expected_git_root: Option<String>,
     pub(crate) last_error: Option<WorkspaceMetadataError>,
+    /// Multi-repo state (schema 2 only).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub(crate) repos: std::collections::BTreeMap<String, repos::RepoState>,
+    /// Last Rework label event already turned into a branch switch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rework_handled_event_id: Option<u64>,
+    /// Rework switch in progress, bound to its label event (design §5.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rework_pending: Option<repos::ReworkPending>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +160,9 @@ pub enum WorkspaceError {
 
     #[error("workspace metadata error: {reason}")]
     MetadataInvalid { reason: String },
+
+    #[error("repository checkout failed: {reason}")]
+    RepoCheckout { reason: String },
 }
 
 /// Sanitize an issue identifier into a safe workspace directory name (SPEC Section 4.2).
@@ -299,8 +332,11 @@ impl WorkspaceManager {
                 init_status: "initializing".to_string(),
                 after_create_fingerprint: None,
                 initialized_by_run_id: run_id.to_string(),
-                expected_git_root: ".".to_string(),
+                expected_git_root: Some(".".to_string()),
                 last_error: None,
+                repos: Default::default(),
+                rework_handled_event_id: None,
+                rework_pending: None,
             },
         )
         .await?;
@@ -319,12 +355,15 @@ impl WorkspaceManager {
                     init_status: "failed".to_string(),
                     after_create_fingerprint: None,
                     initialized_by_run_id: run_id.to_string(),
-                    expected_git_root: ".".to_string(),
+                    expected_git_root: Some(".".to_string()),
                     last_error: Some(WorkspaceMetadataError {
                         code: "after_create_failed".to_string(),
                         message: e.to_string(),
                         at: Utc::now(),
                     }),
+                    repos: Default::default(),
+                    rework_handled_event_id: None,
+                    rework_pending: None,
                 };
                 let _ = write_workspace_metadata(&metadata_path, failed_metadata).await;
                 quarantine_workspace(&self.root, &workspace_path, &issue_id_path_key, run_id)
@@ -347,8 +386,11 @@ impl WorkspaceManager {
                 init_status: "ready".to_string(),
                 after_create_fingerprint: None,
                 initialized_by_run_id: run_id.to_string(),
-                expected_git_root: ".".to_string(),
+                expected_git_root: Some(".".to_string()),
                 last_error: None,
+                repos: Default::default(),
+                rework_handled_event_id: None,
+                rework_pending: None,
             },
         )
         .await?;
@@ -381,6 +423,295 @@ impl WorkspaceManager {
             lock_sidecar_path,
             _lock_guard: lock_guard,
         })
+    }
+
+    /// Multi-repo variant of [`prepare_issue_workspace`] (design §5).
+    ///
+    /// Repositories are checked out *before* `after_create`, the marker uses
+    /// schema 2, and an interrupted initialization (marker `initializing`
+    /// whose run no longer holds the lock — we hold it now) is re-entered
+    /// automatically instead of requiring manual recovery.
+    pub async fn prepare_multi_repo_workspace(
+        &self,
+        req: MultiRepoPrepare<'_>,
+    ) -> Result<(WorkspaceRunLease, MultiRepoState), WorkspaceError> {
+        let MultiRepoPrepare {
+            issue_id,
+            issue_identifier,
+            run_id,
+            service_instance_id,
+            checkout,
+            specs,
+            on_progress,
+        } = req;
+        let issue_id_path_key = Self::issue_id_path_key(issue_id);
+        let identifier_key = sanitize_workspace_key(issue_identifier)?;
+        let workspace_key = format!("{issue_id_path_key}-{identifier_key}");
+        let workspace_path = self.root.join(&workspace_key);
+        let metadata_path = workspace_path.join(".symphony-workspace.json");
+        let locks_dir = self.root.join(".symphony").join("locks").join("issues");
+        tokio::fs::create_dir_all(&locks_dir)
+            .await
+            .map_err(|e| WorkspaceError::Io { source: e })?;
+        let lock_path = locks_dir.join(format!("{issue_id_path_key}.lock"));
+        let lock_sidecar_path = locks_dir.join(format!("{issue_id_path_key}.json"));
+        // Holding this lock proves no other run is active for the issue, so an
+        // `initializing` marker left behind can only come from a dead run.
+        let lock_guard = acquire_stable_lock_file(&lock_path).await?;
+
+        let created_now = if workspace_path.is_dir() {
+            false
+        } else {
+            tokio::fs::create_dir_all(&workspace_path)
+                .await
+                .map_err(|e| WorkspaceError::CreateFailed { source: e })?;
+            true
+        };
+        self.validate_path_containment(&workspace_path)?;
+
+        let existing = if metadata_path.exists() {
+            let metadata = read_workspace_metadata(&metadata_path).await?;
+            validate_workspace_metadata(&metadata, issue_id, &issue_id_path_key, &workspace_key)?;
+            if metadata.schema_version == 1 {
+                // A v1 workspace (agent-cloned at the root) keeps running in
+                // single-repo layout; it is never migrated (design §8).
+                return Err(WorkspaceError::ManualRecoveryRequired {
+                    reason: "workspace_v1_not_migrated".to_string(),
+                });
+            }
+            Some(metadata)
+        } else {
+            if !created_now && !is_dir_empty(&workspace_path).await? {
+                return Err(WorkspaceError::ManualRecoveryRequired {
+                    reason: "workspace_unknown_requires_manual".to_string(),
+                });
+            }
+            None
+        };
+
+        let started_at = existing
+            .as_ref()
+            .map(|m| m.init_started_at)
+            .unwrap_or_else(Utc::now);
+        let mut metadata = existing.clone().unwrap_or(WorkspaceMetadata {
+            schema_version: 2,
+            issue_id: issue_id.to_string(),
+            issue_id_path_key: issue_id_path_key.clone(),
+            workspace_key: workspace_key.clone(),
+            issue_identifier: issue_identifier.to_string(),
+            init_started_at: started_at,
+            initialized_at: None,
+            last_used_at: Some(started_at),
+            init_status: "initializing".to_string(),
+            after_create_fingerprint: None,
+            initialized_by_run_id: run_id.to_string(),
+            expected_git_root: None,
+            last_error: None,
+            repos: Default::default(),
+            rework_handled_event_id: None,
+            rework_pending: None,
+        });
+        let was_ready = metadata.init_status == "ready";
+        if !was_ready {
+            // Fresh or re-entered initialization (crash during a previous run).
+            metadata.init_status = "initializing".to_string();
+            metadata.initialized_by_run_id = run_id.to_string();
+            metadata.last_error = None;
+            write_workspace_metadata(&metadata_path, metadata.clone()).await?;
+        }
+
+        let syncer = repos::RepoCheckout {
+            ctx: checkout,
+            workspace: &workspace_path,
+            repos: specs,
+        };
+        if !was_ready {
+            syncer.clear_tmp().await?;
+        }
+        match syncer.sync(&metadata.repos, on_progress).await {
+            Ok(states) => metadata.repos = states,
+            Err((states, e)) => {
+                metadata.repos = states;
+                metadata.last_error = Some(WorkspaceMetadataError {
+                    code: "repo_checkout_failed".to_string(),
+                    message: e.to_string(),
+                    at: Utc::now(),
+                });
+                let _ = write_workspace_metadata(&metadata_path, metadata).await;
+                return Err(e);
+            }
+        }
+        write_workspace_metadata(&metadata_path, metadata.clone()).await?;
+
+        if !was_ready {
+            // after_create re-runs only if it never completed (fingerprint unset).
+            if let Some(ref script) = self.hooks.after_create {
+                if metadata.after_create_fingerprint.is_none() {
+                    if let Err(e) = self.run_hook("after_create", script, &workspace_path).await {
+                        metadata.init_status = "failed".to_string();
+                        metadata.last_error = Some(WorkspaceMetadataError {
+                            code: "after_create_failed".to_string(),
+                            message: e.to_string(),
+                            at: Utc::now(),
+                        });
+                        let _ = write_workspace_metadata(&metadata_path, metadata).await;
+                        for repo_dir in specs.iter().map(|s| workspace_path.join(&s.alias)) {
+                            repos::make_tree_writable(&repo_dir).await;
+                        }
+                        quarantine_workspace(
+                            &self.root,
+                            &workspace_path,
+                            &issue_id_path_key,
+                            run_id,
+                        )
+                        .await?;
+                        return Err(e);
+                    }
+                    metadata.after_create_fingerprint = Some(script_fingerprint(script));
+                }
+            }
+            metadata.init_status = "ready".to_string();
+            metadata.initialized_at = Some(Utc::now());
+        }
+        metadata.last_used_at = Some(Utc::now());
+        write_workspace_metadata(&metadata_path, metadata.clone()).await?;
+
+        write_lock_sidecar(
+            &lock_sidecar_path,
+            LockSidecar {
+                schema_version: 1,
+                issue_id: issue_id.to_string(),
+                issue_id_path_key: issue_id_path_key.clone(),
+                workspace_key: workspace_key.clone(),
+                run_id: run_id.to_string(),
+                service_instance_id: service_instance_id.to_string(),
+                workspace_path: workspace_path.display().to_string(),
+                created_at: Utc::now(),
+                updated_seq: 1,
+            },
+        )
+        .await?;
+
+        Ok((
+            WorkspaceRunLease {
+                workspace: Workspace {
+                    path: workspace_path,
+                    workspace_key,
+                    created_now: !was_ready,
+                },
+                issue_id_path_key,
+                metadata_path,
+                lock_path,
+                lock_sidecar_path,
+                _lock_guard: lock_guard,
+            },
+            MultiRepoState {
+                repos: metadata.repos,
+            },
+        ))
+    }
+
+    /// True when the issue already has a single-repo (schema 1) workspace.
+    ///
+    /// Design §8: enabling `workspace.repos` mid-flight never migrates an
+    /// existing workspace; such issues keep running in single-repo layout
+    /// until they finish, only new workspaces use the multi-repo layout.
+    pub async fn has_legacy_workspace(&self, issue_id: &str, issue_identifier: &str) -> bool {
+        let Ok(path) = self.metadata_path_for_issue(issue_id, issue_identifier) else {
+            return false;
+        };
+        match read_workspace_metadata(&path).await {
+            Ok(m) => m.schema_version == 1,
+            Err(_) => false,
+        }
+    }
+
+    /// Handle a Rework transition for a multi-repo workspace (design §5.1).
+    ///
+    /// `event_id` is the id of the latest `add Rework` label event. The switch
+    /// happens once per event id; retries with the same id are no-ops, and a
+    /// half-done switch resumes with the suffix recorded in `rework_pending`.
+    pub async fn apply_rework(
+        &self,
+        lease: &WorkspaceRunLease,
+        checkout: &repos::RepoCheckoutContext,
+        specs: &[crate::config::repos::RepoSpec],
+        event_id: u64,
+        api: &dyn repo_api::RepoApi,
+    ) -> Result<MultiRepoState, WorkspaceError> {
+        let mut metadata = read_workspace_metadata(&lease.metadata_path).await?;
+        if metadata.rework_handled_event_id == Some(event_id) {
+            return Ok(MultiRepoState {
+                repos: metadata.repos,
+            });
+        }
+        let syncer = repos::RepoCheckout {
+            ctx: checkout,
+            workspace: &lease.workspace.path,
+            repos: specs,
+        };
+        let suffix = match &metadata.rework_pending {
+            Some(p) if p.event_id == event_id => p.suffix,
+            _ => {
+                let next = syncer.highest_suffix(&metadata.repos).await.max(1) + 1;
+                metadata.rework_pending = Some(repos::ReworkPending {
+                    event_id,
+                    suffix: next,
+                });
+                write_workspace_metadata(&lease.metadata_path, metadata.clone()).await?;
+                next
+            }
+        };
+
+        // ① close open MRs on the current work branch of every writable repo.
+        for spec in specs.iter().filter(|s| s.writable()) {
+            let Some(branch) = metadata
+                .repos
+                .get(&spec.alias)
+                .and_then(|s| s.branch.clone())
+            else {
+                continue;
+            };
+            if branch.ends_with(&format!("-r{suffix}")) {
+                continue; // already on the target branch (resumed switch)
+            }
+            let mrs = api
+                .open_mrs_for_branch(&spec.slug, &branch)
+                .await
+                .map_err(|reason| WorkspaceError::RepoCheckout { reason })?;
+            for iid in mrs {
+                api.close_mr(&spec.slug, iid)
+                    .await
+                    .map_err(|reason| WorkspaceError::RepoCheckout { reason })?;
+            }
+        }
+        // ② new branches from origin/<default_branch>; ③ persist and mark handled.
+        syncer.switch_branches(&mut metadata.repos, suffix).await?;
+        metadata.rework_handled_event_id = Some(event_id);
+        metadata.rework_pending = None;
+        write_workspace_metadata(&lease.metadata_path, metadata.clone()).await?;
+        Ok(MultiRepoState {
+            repos: metadata.repos,
+        })
+    }
+
+    /// Post-run read-only integrity check (design §5.3 item 1).
+    pub async fn readonly_violations(
+        &self,
+        lease: &WorkspaceRunLease,
+        checkout: &repos::RepoCheckoutContext,
+        specs: &[crate::config::repos::RepoSpec],
+    ) -> Vec<String> {
+        let Ok(metadata) = read_workspace_metadata(&lease.metadata_path).await else {
+            return vec!["workspace marker unreadable".to_string()];
+        };
+        repos::RepoCheckout {
+            ctx: checkout,
+            workspace: &lease.workspace.path,
+            repos: specs,
+        }
+        .readonly_violations(&metadata.repos)
+        .await
     }
 
     /// Update hooks configuration (for hot-reload support).
@@ -743,6 +1074,16 @@ fn hex_digit(nibble: u8) -> char {
     }
 }
 
+/// Stable, non-cryptographic fingerprint of a hook script (FNV-1a 64).
+fn script_fingerprint(script: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in script.as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("fnv1a64:{hash:016x}")
+}
+
 async fn acquire_stable_lock_file(path: &Path) -> Result<Arc<std::fs::File>, WorkspaceError> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -861,7 +1202,7 @@ fn validate_workspace_metadata(
     issue_id_path_key: &str,
     workspace_key: &str,
 ) -> Result<(), WorkspaceError> {
-    if metadata.schema_version != 1 {
+    if !matches!(metadata.schema_version, 1 | 2) {
         return Err(WorkspaceError::MetadataInvalid {
             reason: format!("unsupported schema {}", metadata.schema_version),
         });
@@ -944,6 +1285,7 @@ async fn quarantine_workspace(
     tokio::fs::create_dir_all(&quarantine_dir)
         .await
         .map_err(|e| WorkspaceError::Io { source: e })?;
+    repos::make_tree_writable(workspace_path).await;
     let mut target = quarantine_dir.join(run_id);
     let mut suffix = 0usize;
     while target.exists() {
@@ -1104,5 +1446,39 @@ mod tests {
         assert!(result.is_err());
         // The workspace directory should have been cleaned up
         assert!(!tmp.path().join("FAIL-1").is_dir());
+    }
+
+    #[test]
+    fn metadata_v1_without_new_fields_still_parses_and_v2_roundtrips() {
+        let v1 = r##"{"schema_version":1,"issue_id":"1","issue_id_path_key":"i-31","workspace_key":"i-31-_1",
+            "issue_identifier":"#1","init_started_at":"2026-10-20T00:00:00Z","initialized_at":null,
+            "init_status":"ready","after_create_fingerprint":null,"initialized_by_run_id":"r",
+            "expected_git_root":".","last_error":null}"##;
+        let m: WorkspaceMetadata = serde_json::from_str(v1).unwrap();
+        assert_eq!(m.expected_git_root.as_deref(), Some("."));
+        assert!(m.repos.is_empty());
+        // v1 serialization does not grow new keys (rollback safety).
+        let out = serde_json::to_string(&m).unwrap();
+        assert!(!out.contains("repos") && !out.contains("rework"));
+        assert!(validate_workspace_metadata(&m, "1", "i-31", "i-31-_1").is_ok());
+
+        let mut v2 = m.clone();
+        v2.schema_version = 2;
+        v2.expected_git_root = None;
+        v2.rework_handled_event_id = Some(7);
+        let json = serde_json::to_string(&v2).unwrap();
+        let back: WorkspaceMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.rework_handled_event_id, Some(7));
+        assert!(validate_workspace_metadata(&back, "1", "i-31", "i-31-_1").is_ok());
+
+        let mut v3 = m;
+        v3.schema_version = 3;
+        assert!(validate_workspace_metadata(&v3, "1", "i-31", "i-31-_1").is_err());
+    }
+
+    #[test]
+    fn script_fingerprint_is_stable() {
+        assert_eq!(script_fingerprint("npm ci"), script_fingerprint("npm ci"));
+        assert_ne!(script_fingerprint("npm ci"), script_fingerprint("npm i"));
     }
 }

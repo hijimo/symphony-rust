@@ -63,12 +63,48 @@ pub fn parse_git_url(url: &str) -> Result<ParsedGitUrl, GitUrlError> {
     // Try HTTPS format: https://host/path
     let https_re = Regex::new(r"^https?://([^/]+)/(.+)$").unwrap();
     if let Some(caps) = https_re.captures(url) {
-        let host = caps.get(1).unwrap().as_str().to_string();
+        let authority = caps.get(1).unwrap().as_str();
+        // Strip `user:pass@` / `user@` userinfo (e.g. `oauth2:<token>@`).
+        let host = strip_userinfo(authority).to_string();
+        if host.is_empty() {
+            return Err(GitUrlError::InvalidFormat(url.to_string()));
+        }
         let path = caps.get(2).unwrap().as_str();
         return parse_path_components(&host, path);
     }
 
     Err(GitUrlError::InvalidFormat(url.to_string()))
+}
+
+/// Remove the userinfo part (`user[:password]@`) from a URL authority.
+fn strip_userinfo(authority: &str) -> &str {
+    match authority.rfind('@') {
+        Some(idx) => &authority[idx + 1..],
+        None => authority,
+    }
+}
+
+/// Canonical, lowercase `host/namespace/repo_name` key of a Git URL.
+pub fn repo_identity_key(url: &str) -> Option<String> {
+    parse_git_url(url).ok().map(|p| {
+        format!(
+            "{}/{}/{}",
+            p.host.to_lowercase(),
+            p.namespace.to_lowercase(),
+            p.repo_name.to_lowercase()
+        )
+    })
+}
+
+/// Whether two Git URLs point to the same repository.
+///
+/// Compares lowercase `host + namespace + repo_name`; scheme, userinfo,
+/// `.git` suffix and SSH/HTTP form are ignored. Unparseable URLs never match.
+pub fn same_repo(a: &str, b: &str) -> bool {
+    match (repo_identity_key(a), repo_identity_key(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
 }
 
 fn parse_path_components(host: &str, path: &str) -> Result<ParsedGitUrl, GitUrlError> {
@@ -256,5 +292,67 @@ mod tests {
         assert_eq!(result.repo_name, "project");
         // Normalized URL always uses https
         assert_eq!(result.normalized_url, "https://gitlab.com/group/project");
+    }
+
+    #[test]
+    fn test_http_url_with_token_userinfo() {
+        let result = parse_git_url(
+            "http://oauth2:glpat-xxx@gitlab.jushuitan-inc.com:8081/zimei10525/jst-ai-studio.git",
+        )
+        .unwrap();
+        assert_eq!(result.platform, Platform::GitLab);
+        assert_eq!(result.host, "gitlab.jushuitan-inc.com:8081");
+        assert_eq!(result.namespace, "zimei10525");
+        assert_eq!(result.repo_name, "jst-ai-studio");
+        assert_eq!(
+            result.normalized_url,
+            "https://gitlab.jushuitan-inc.com:8081/zimei10525/jst-ai-studio"
+        );
+    }
+
+    #[test]
+    fn test_https_url_with_user_only_userinfo() {
+        let result = parse_git_url("https://deploy@github.com/owner/repo.git").unwrap();
+        assert_eq!(result.platform, Platform::GitHub);
+        assert_eq!(result.host, "github.com");
+        assert_eq!(result.namespace, "owner");
+        assert_eq!(result.repo_name, "repo");
+    }
+
+    #[test]
+    fn test_userinfo_without_host_is_invalid() {
+        assert!(matches!(
+            parse_git_url("https://user@/owner/repo"),
+            Err(GitUrlError::InvalidFormat(_))
+        ));
+    }
+
+    #[test]
+    fn test_ssh_still_works_with_userinfo_logic() {
+        let result = parse_git_url("git@gitlab.example.com:group/sub/project.git").unwrap();
+        assert_eq!(result.host, "gitlab.example.com");
+        assert_eq!(result.namespace, "group/sub");
+        assert_eq!(result.repo_name, "project");
+    }
+
+    #[test]
+    fn test_same_repo() {
+        assert!(same_repo(
+            "http://oauth2:glpat-xxx@gitlab.jushuitan-inc.com:8081/zimei10525/jst-ai-studio.git",
+            "https://gitlab.jushuitan-inc.com:8081/zimei10525/jst-ai-studio"
+        ));
+        assert!(same_repo(
+            "git@GitHub.com:Owner/Repo.git",
+            "https://github.com/owner/repo/"
+        ));
+        assert!(!same_repo(
+            "https://gitlab.com/group/a",
+            "https://gitlab.com/group/b"
+        ));
+        assert!(!same_repo(
+            "https://gitlab.com:8081/group/a",
+            "https://gitlab.com/group/a"
+        ));
+        assert!(!same_repo("not-a-url", "not-a-url"));
     }
 }

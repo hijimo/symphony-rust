@@ -132,9 +132,7 @@ async fn test_fetch_candidate_issues_filters_prs() {
         .and(path("/repos/testorg/testrepo/issues"))
         .and(query_param("labels", "Todo"))
         .and(query_param("state", "open"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!([real_issue, issue_with_pr])),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([real_issue, issue_with_pr])))
         .mount(&mock_server)
         .await;
 
@@ -148,7 +146,10 @@ async fn test_fetch_candidate_issues_filters_prs() {
 
     let config = test_platform_config(&mock_server.uri());
     let adapter = GiteaAdapter::new_with_token(config, "test-gitea-token").unwrap();
-    let issues = adapter.fetch_candidate_issues(FetchOptions::default()).await.unwrap();
+    let issues = adapter
+        .fetch_candidate_issues(FetchOptions::default())
+        .await
+        .unwrap();
 
     assert_eq!(issues.len(), 1);
     assert_eq!(issues[0].title, "Real issue");
@@ -180,7 +181,10 @@ async fn test_fetch_candidate_issues_deduplicates() {
 
     let config = test_platform_config(&mock_server.uri());
     let adapter = GiteaAdapter::new_with_token(config, "test-gitea-token").unwrap();
-    let issues = adapter.fetch_candidate_issues(FetchOptions::default()).await.unwrap();
+    let issues = adapter
+        .fetch_candidate_issues(FetchOptions::default())
+        .await
+        .unwrap();
 
     assert_eq!(issues.len(), 1);
 }
@@ -224,7 +228,10 @@ async fn test_fetch_candidate_issues_pagination() {
 
     let config = test_platform_config(&mock_server.uri());
     let adapter = GiteaAdapter::new_with_token(config, "test-gitea-token").unwrap();
-    let issues = adapter.fetch_candidate_issues(FetchOptions::default()).await.unwrap();
+    let issues = adapter
+        .fetch_candidate_issues(FetchOptions::default())
+        .await
+        .unwrap();
 
     assert_eq!(issues.len(), 60);
 }
@@ -305,7 +312,9 @@ async fn test_add_labels_resolves_ids() {
     Mock::given(method("POST"))
         .and(path("/repos/testorg/testrepo/issues/1/labels"))
         .and(body_json(json!({"labels": [11]})))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"id": 11, "name": "In Progress"}])))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!([{"id": 11, "name": "In Progress"}])),
+        )
         .expect(1)
         .mount(&mock_server)
         .await;
@@ -420,14 +429,12 @@ async fn test_create_comment() {
 
     Mock::given(method("POST"))
         .and(path("/repos/testorg/testrepo/issues/1/comments"))
-        .respond_with(
-            ResponseTemplate::new(201).set_body_json(json!({
-                "id": 999,
-                "body": "Hello",
-                "user": {"login": "bot"},
-                "created_at": "2024-01-15T10:00:00Z"
-            })),
-        )
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 999,
+            "body": "Hello",
+            "user": {"login": "bot"},
+            "created_at": "2024-01-15T10:00:00Z"
+        })))
         .expect(1)
         .mount(&mock_server)
         .await;
@@ -552,5 +559,8 @@ async fn test_pagination_uses_limit_not_per_page() {
 
     let config = test_platform_config(&mock_server.uri());
     let adapter = GiteaAdapter::new_with_token(config, "test-gitea-token").unwrap();
-    adapter.fetch_candidate_issues(FetchOptions::default()).await.unwrap();
+    adapter
+        .fetch_candidate_issues(FetchOptions::default())
+        .await
+        .unwrap();
 }

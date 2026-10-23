@@ -14,6 +14,10 @@ pub enum WebPlatformError {
     #[error("Access denied")]
     Forbidden,
 
+    /// 403 with a user-facing reason.
+    #[error("{0}")]
+    ForbiddenWithReason(String),
+
     #[error("{0}")]
     NotFound(String),
 
@@ -72,6 +76,9 @@ impl IntoResponse for WebPlatformError {
                 (StatusCode::UNAUTHORIZED, "AUTH_003", self.to_string(), 2)
             }
             WebPlatformError::Forbidden => (StatusCode::FORBIDDEN, "AUTH_002", self.to_string(), 2),
+            WebPlatformError::ForbiddenWithReason(msg) => {
+                (StatusCode::FORBIDDEN, "AUTH_002", msg.clone(), 2)
+            }
             WebPlatformError::NotFound(msg) => (StatusCode::NOT_FOUND, "BIZ_002", msg.clone(), 2),
             WebPlatformError::BadRequest(msg) => {
                 (StatusCode::BAD_REQUEST, "BIZ_001", msg.clone(), 1)

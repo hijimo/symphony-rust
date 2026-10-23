@@ -331,7 +331,12 @@ pub async fn start_service(
 
     // Spawn test instance if testing is enabled
     let (testing_status, testing_pid) = if project.testing_enabled {
-        let test_instance_id = format!("test-{}-{}-{}", project.id, service_generation, Uuid::new_v4());
+        let test_instance_id = format!(
+            "test-{}-{}-{}",
+            project.id,
+            service_generation,
+            Uuid::new_v4()
+        );
         match spawn::spawn_test_symphony(
             &project,
             &state.repo,
@@ -496,13 +501,13 @@ pub async fn stop_service(
 
     // Stop test instance if running
     if let Some(test_state) = state.process_manager.get_test_state(project_id) {
-        if test_state.pid > 0 {
-            if pid_verify::verify_pid(test_state.pid, test_state.started_at.timestamp()) {
-                pid_verify::send_sigterm(test_state.pid);
-                if !pid_verify::wait_for_exit(test_state.pid, STOP_TIMEOUT).await {
-                    pid_verify::send_sigkill(test_state.pid);
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
+        if test_state.pid > 0
+            && pid_verify::verify_pid(test_state.pid, test_state.started_at.timestamp())
+        {
+            pid_verify::send_sigterm(test_state.pid);
+            if !pid_verify::wait_for_exit(test_state.pid, STOP_TIMEOUT).await {
+                pid_verify::send_sigkill(test_state.pid);
+                tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
         state.process_manager.remove_test_state(project_id);
@@ -677,7 +682,9 @@ pub async fn restart_service(
     // Handle test instance restart
     // First stop existing test instance
     if let Some(test_state) = state.process_manager.get_test_state(project_id) {
-        if test_state.pid > 0 && pid_verify::verify_pid(test_state.pid, test_state.started_at.timestamp()) {
+        if test_state.pid > 0
+            && pid_verify::verify_pid(test_state.pid, test_state.started_at.timestamp())
+        {
             pid_verify::send_sigterm(test_state.pid);
             if !pid_verify::wait_for_exit(test_state.pid, STOP_TIMEOUT).await {
                 pid_verify::send_sigkill(test_state.pid);
@@ -689,7 +696,12 @@ pub async fn restart_service(
 
     // Spawn test instance if testing is enabled
     let (testing_status, testing_pid) = if project.testing_enabled {
-        let test_instance_id = format!("test-{}-{}-{}", project.id, service_generation, Uuid::new_v4());
+        let test_instance_id = format!(
+            "test-{}-{}-{}",
+            project.id,
+            service_generation,
+            Uuid::new_v4()
+        );
         match spawn::spawn_test_symphony(
             &project,
             &state.repo,
@@ -804,7 +816,11 @@ pub async fn get_service_status(
         let ts = if let Some(test_state) = state.process_manager.get_test_state(project_id) {
             (
                 Some(format!("{:?}", test_state.status).to_lowercase()),
-                if test_state.pid > 0 { Some(test_state.pid) } else { None },
+                if test_state.pid > 0 {
+                    Some(test_state.pid)
+                } else {
+                    None
+                },
             )
         } else {
             (

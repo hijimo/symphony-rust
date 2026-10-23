@@ -378,7 +378,7 @@ fn split_title(content: &str) -> (Option<String>, String) {
         let title: String = caps[1].trim().chars().take(200).collect();
         if !title.is_empty() {
             let body = trimmed[first_line_end..]
-                .trim_start_matches(|c: char| c == '\r' || c == '\n')
+                .trim_start_matches(['\r', '\n'])
                 .to_string();
             return (Some(title), body);
         }

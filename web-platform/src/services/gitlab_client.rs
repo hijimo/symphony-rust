@@ -58,9 +58,16 @@ impl GitLabClient {
 
         {
             let mut pairs = url.query_pairs_mut();
+            // Closed-issue scans (orphan MR scanner) must see recently
+            // *closed* issues, not recently created ones.
+            let order_by = if options.state.as_deref() == Some("closed") {
+                "updated_at"
+            } else {
+                "created_at"
+            };
             pairs
                 .append_pair("per_page", &options.limit.to_string())
-                .append_pair("order_by", "created_at")
+                .append_pair("order_by", order_by)
                 .append_pair("sort", "desc")
                 .append_pair("state", options.state.as_deref().unwrap_or("opened"));
 
@@ -809,6 +816,25 @@ struct GitLabMergeRequest {
     web_url: String,
     head_pipeline: Option<GitLabPipeline>,
     diff_stats: Option<GitLabDiffStats>,
+    /// Project the MR belongs to (differs from the issue project for
+    /// cross-project related MRs, multi-repo design §7.1).
+    #[serde(default)]
+    project_id: Option<u64>,
+    #[serde(default)]
+    references: Option<GitLabReferences>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GitLabReferences {
+    #[serde(default)]
+    full: Option<String>,
+}
+
+/// `group/sub/repo` from a full MR reference like `group/sub/repo!12`.
+fn project_path_from_reference(full: &str) -> Option<&str> {
+    full.rsplit_once('!')
+        .map(|(path, _)| path)
+        .filter(|p| !p.is_empty())
 }
 
 #[derive(Debug, Deserialize)]
@@ -874,6 +900,16 @@ impl GitLabUser {
 
 impl GitLabMergeRequest {
     fn into_platform_mr_for_project(self, project_path: &str) -> PlatformMergeRequest {
+        // Related MRs may live in another project: prefer the MR's own
+        // reference over the issue project's path.
+        let own_path = self
+            .references
+            .as_ref()
+            .and_then(|r| r.full.as_deref())
+            .and_then(project_path_from_reference)
+            .map(str::to_string)
+            .unwrap_or_else(|| project_path.to_string());
+        let _ = self.project_id;
         let ci_status = self.head_pipeline.as_ref().and_then(|p| p.status.clone());
         let ci_web_url = self.head_pipeline.as_ref().and_then(|p| p.web_url.clone());
 
@@ -899,8 +935,8 @@ impl GitLabMergeRequest {
             description: self.description,
             state: self.state,
             author: self.author.into_platform_user(),
-            source_project_path: Some(project_path.to_string()),
-            target_project_path: Some(project_path.to_string()),
+            source_project_path: Some(own_path.clone()),
+            target_project_path: Some(own_path),
             source_branch: self.source_branch,
             target_branch: self.target_branch,
             ci_status,
@@ -1031,12 +1067,28 @@ mod tests {
             web_url: "https://gitlab.example.com/acme/app/-/merge_requests/17".to_string(),
             head_pipeline: None,
             diff_stats: None,
+            project_id: None,
+            references: None,
         };
 
         let platform_mr = mr.into_platform_mr_for_project("acme/app");
 
         assert_eq!(platform_mr.source_project_path.as_deref(), Some("acme/app"));
         assert_eq!(platform_mr.target_project_path.as_deref(), Some("acme/app"));
+    }
+
+    #[test]
+    fn related_mr_from_other_project_keeps_its_own_path() {
+        let json = r#"{"id":9,"iid":123,"title":"backend","description":"Symphony-Issue: zimei10525/jst-ai-studio#32",
+            "state":"opened","author":{"username":"a"},"source_branch":"symphony/jst-ai-studio-32","target_branch":"pre",
+            "created_at":"t","updated_at":"t","web_url":"u","project_id":969,
+            "references":{"short":"!123","full":"JstAi/jxy!123"}}"#;
+        let mr: GitLabMergeRequest = serde_json::from_str(json).unwrap();
+        let p = mr.into_platform_mr_for_project("zimei10525/jst-ai-studio");
+        assert_eq!(p.target_project_path.as_deref(), Some("JstAi/jxy"));
+        assert_eq!(p.source_project_path.as_deref(), Some("JstAi/jxy"));
+        assert_eq!(project_path_from_reference("a/b/c!7"), Some("a/b/c"));
+        assert_eq!(project_path_from_reference("!7"), None);
     }
 
     #[test]

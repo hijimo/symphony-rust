@@ -12,14 +12,15 @@ use crate::models::alert::{
 };
 use crate::models::concurrency::ConcurrencySnapshot;
 use crate::models::{
-    NewProject, Project, ProjectMember, ProjectUpdate, ServiceStatusUpdate, SyncMember, SyncResult,
-    TokenBlacklistEntry, User, UserConfig,
+    NewAuditLog, NewProject, NewProjectRepo, Project, ProjectMember, ProjectRepo,
+    ProjectRepoCandidate, ProjectRepoReference, ProjectUpdate, ServiceStatusUpdate, SyncMember,
+    SyncResult, TokenBlacklistEntry, User, UserConfig,
 };
 use crate::proxy::{ProxySecret, ProxySecretMutation, VERSION_KEY};
 use crate::repository::{
     AlertRepository, ConcurrencyEventInput, ConcurrencyRepository, NetworkProxyRepository,
-    ProjectListFilter, ProjectMemberRepository, ProjectRepository, SystemConfigRepository,
-    TokenBlacklistRepository, UserConfigRepository, UserRepository,
+    ProjectListFilter, ProjectMemberRepository, ProjectRepoRepository, ProjectRepository,
+    SystemConfigRepository, TokenBlacklistRepository, UserConfigRepository, UserRepository,
 };
 
 #[derive(Clone)]
@@ -1992,6 +1993,306 @@ impl NetworkProxyRepository for SqliteRepository {
     }
 }
 
+// ==================== Project Repos (multi-repo workspace) ====================
+
+const PROJECT_REPO_COLUMNS: &str = "id, project_id, alias, linked_project_id, namespace, repo_name, default_branch, mode, checkout, merge_after, status, status_reason, write_granted_by, write_granted_at, created_by, created_at";
+
+fn row_to_project_repo(row: &rusqlite::Row) -> rusqlite::Result<ProjectRepo> {
+    let merge_after_json: String = row.get(9)?;
+    Ok(ProjectRepo {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        alias: row.get(2)?,
+        linked_project_id: row.get(3)?,
+        namespace: row.get(4)?,
+        repo_name: row.get(5)?,
+        default_branch: row.get(6)?,
+        mode: row.get(7)?,
+        checkout: row.get(8)?,
+        merge_after: serde_json::from_str(&merge_after_json).unwrap_or_default(),
+        status: row.get(10)?,
+        status_reason: row.get(11)?,
+        write_granted_by: row.get(12)?,
+        write_granted_at: row.get(13)?,
+        created_by: row.get(14)?,
+        created_at: row.get(15)?,
+    })
+}
+
+fn query_project_repos(conn: &rusqlite::Connection, project_id: i64) -> Result<Vec<ProjectRepo>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM project_repos WHERE project_id = ?1 ORDER BY id ASC",
+        PROJECT_REPO_COLUMNS
+    ))?;
+    let rows = stmt
+        .query_map([project_id], row_to_project_repo)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+fn insert_audit_log_conn(conn: &rusqlite::Connection, log: &NewAuditLog) -> Result<()> {
+    conn.execute(
+        "INSERT INTO audit_logs (actor_user_id, project_id, object_type, object_id, action, before_json, after_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            log.actor_user_id,
+            log.project_id,
+            log.object_type,
+            log.object_id,
+            log.action,
+            log.before_json,
+            log.after_json
+        ],
+    )?;
+    Ok(())
+}
+
+#[async_trait]
+impl ProjectRepoRepository for SqliteRepository {
+    async fn list_project_repos(&self, project_id: i64) -> Result<Vec<ProjectRepo>> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get()?;
+            query_project_repos(&conn, project_id)
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn replace_project_repos(
+        &self,
+        project_id: i64,
+        rows: Vec<NewProjectRepo>,
+        audit_logs: Vec<NewAuditLog>,
+    ) -> Result<Vec<ProjectRepo>> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = pool.get()?;
+            let tx = conn.transaction()?;
+            tx.execute("DELETE FROM project_repos WHERE project_id = ?1", [project_id])?;
+            for row in &rows {
+                let merge_after = serde_json::to_string(&row.merge_after)
+                    .map_err(|e| WebPlatformError::Internal(e.to_string()))?;
+                tx.execute(
+                    "INSERT INTO project_repos (project_id, alias, linked_project_id, namespace, repo_name,
+                        default_branch, mode, checkout, merge_after, status, status_reason,
+                        write_granted_by, write_granted_at, created_by, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                        COALESCE(?15, datetime('now')))",
+                    rusqlite::params![
+                        project_id,
+                        row.alias,
+                        row.linked_project_id,
+                        row.namespace,
+                        row.repo_name,
+                        row.default_branch,
+                        row.mode,
+                        row.checkout,
+                        merge_after,
+                        row.status,
+                        row.status_reason,
+                        row.write_granted_by,
+                        row.write_granted_at,
+                        row.created_by,
+                        row.created_at,
+                    ],
+                )
+                .map_err(|e| match e {
+                    rusqlite::Error::SqliteFailure(ref err, _)
+                        if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+                    {
+                        WebPlatformError::BadRequest(format!(
+                            "关联仓库 '{}' 违反约束：{}",
+                            row.alias, e
+                        ))
+                    }
+                    _ => WebPlatformError::Database(e),
+                })?;
+            }
+            for log in &audit_logs {
+                insert_audit_log_conn(&tx, log)?;
+            }
+            let result = query_project_repos(&tx, project_id)?;
+            tx.commit()?;
+            Ok(result)
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn set_project_repo_status(
+        &self,
+        id: i64,
+        status: &str,
+        status_reason: Option<&str>,
+    ) -> Result<()> {
+        let pool = self.pool.clone();
+        let status = status.to_string();
+        let status_reason = status_reason.map(|s| s.to_string());
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get()?;
+            let rows = conn.execute(
+                "UPDATE project_repos SET status = ?1, status_reason = ?2 WHERE id = ?3",
+                rusqlite::params![status, status_reason, id],
+            )?;
+            if rows == 0 {
+                return Err(WebPlatformError::NotFound(
+                    "Project repo not found".to_string(),
+                ));
+            }
+            Ok(())
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn downgrade_project_repo_to_read(&self, id: i64) -> Result<()> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get()?;
+            conn.execute(
+                "UPDATE project_repos SET mode = 'read', write_granted_by = NULL, write_granted_at = NULL WHERE id = ?1",
+                [id],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn list_references_to_project(
+        &self,
+        project_id: i64,
+    ) -> Result<Vec<ProjectRepoReference>> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get()?;
+            let mut stmt = conn.prepare(
+                "SELECT pr.project_id, p.name, pr.alias
+                 FROM project_repos pr
+                 JOIN projects p ON p.id = pr.project_id
+                 WHERE pr.linked_project_id = ?1
+                 ORDER BY pr.project_id ASC, pr.id ASC",
+            )?;
+            let rows = stmt
+                .query_map([project_id], |row| {
+                    Ok(ProjectRepoReference {
+                        project_id: row.get(0)?,
+                        project_name: row.get(1)?,
+                        alias: row.get(2)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn invalidate_project_repos_saved_by(
+        &self,
+        project_id: i64,
+        user_id: i64,
+        reason: &str,
+    ) -> Result<Vec<ProjectRepo>> {
+        let pool = self.pool.clone();
+        let reason = reason.to_string();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = pool.get()?;
+            let tx = conn.transaction()?;
+            let affected = {
+                let mut stmt = tx.prepare(&format!(
+                    "SELECT {} FROM project_repos
+                     WHERE created_by = ?1 AND status = 'active'
+                       AND (project_id = ?2 OR linked_project_id = ?2)
+                     ORDER BY id ASC",
+                    PROJECT_REPO_COLUMNS
+                ))?;
+                let rows = stmt
+                    .query_map(rusqlite::params![user_id, project_id], row_to_project_repo)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            for row in &affected {
+                tx.execute(
+                    "UPDATE project_repos SET status = 'invalid', status_reason = ?1 WHERE id = ?2",
+                    rusqlite::params![reason, row.id],
+                )?;
+            }
+            tx.commit()?;
+            Ok(affected)
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn list_owned_projects(&self, user_id: i64) -> Result<Vec<ProjectRepoCandidate>> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get()?;
+            let mut stmt = conn.prepare(
+                "SELECT p.id, p.name FROM projects p
+                 JOIN project_members pm ON pm.project_id = p.id
+                 WHERE pm.user_id = ?1 AND pm.role = 'owner'
+                 ORDER BY p.name ASC, p.id ASC",
+            )?;
+            let rows = stmt
+                .query_map([user_id], |row| {
+                    Ok(ProjectRepoCandidate {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn list_projects_with_repos(&self) -> Result<Vec<i64>> {
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get()?;
+            let mut stmt =
+                conn.prepare("SELECT DISTINCT project_id FROM project_repos ORDER BY project_id")?;
+            let rows = stmt
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<i64>>>()?;
+            Ok(rows)
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn upsert_system_config(&self, key: &str, value: &str) -> Result<()> {
+        let pool = self.pool.clone();
+        let (key, value) = (key.to_string(), value.to_string());
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get()?;
+            conn.execute(
+                "INSERT INTO system_configs (key, value, description) VALUES (?1, ?2, 'internal')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+                rusqlite::params![key, value],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn insert_audit_log(&self, log: &NewAuditLog) -> Result<()> {
+        let pool = self.pool.clone();
+        let log = log.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get()?;
+            insert_audit_log_conn(&conn, &log)
+        })
+        .await
+        .unwrap()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2212,9 +2513,16 @@ mod tests {
             .create_user("cfguser", "hash", None, "user")
             .await
             .unwrap();
-        repo.upsert_config(user.id, Some("glpat-xxx"), Some("https://gitlab.com"), None, None, None)
-            .await
-            .unwrap();
+        repo.upsert_config(
+            user.id,
+            Some("glpat-xxx"),
+            Some("https://gitlab.com"),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         let config = repo.get_config(user.id).await.unwrap().unwrap();
         assert_eq!(config.gitlab_token, Some("glpat-xxx".to_string()));
         assert_eq!(config.gitlab_host, Some("https://gitlab.com".to_string()));

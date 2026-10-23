@@ -13,7 +13,9 @@ use crate::models::{
     CreateProjectRequest, NewProject, PaginationData, Project, ProjectListQuery, ProjectUpdate,
     ResponseData, UpdateProjectRequest,
 };
-use crate::repository::{ProjectListFilter, ProjectMemberRepository, ProjectRepository};
+use crate::repository::{
+    ProjectListFilter, ProjectMemberRepository, ProjectRepoRepository, ProjectRepository,
+};
 use crate::AppState;
 
 /// Response type for a single project (with computed fields).
@@ -294,6 +296,19 @@ pub async fn update_project(
         }
     }
 
+    // Multi-repo: an after_create clone into the workspace root would collide
+    // with the Symphony-managed `<workspace>/<alias>/` checkouts.
+    if req
+        .hooks_after_create
+        .as_deref()
+        .is_some_and(crate::handlers::project_repos::clones_into_workspace_root)
+        && !state.repo.list_project_repos(id).await?.is_empty()
+    {
+        return Err(WebPlatformError::BadRequest(
+            "该项目已配置关联仓库，after_create hook 不能再 clone 到工作区根目录".to_string(),
+        ));
+    }
+
     let updates = ProjectUpdate {
         name: req.name,
         description: req.description,
@@ -344,6 +359,20 @@ pub async fn delete_project(
             "Cannot delete project while service is running. Please stop the service first."
                 .to_string(),
         ));
+    }
+
+    // Referenced by other projects as a related repository: refuse (FK RESTRICT is a fallback).
+    let references = state.repo.list_references_to_project(id).await?;
+    if !references.is_empty() {
+        let detail = references
+            .iter()
+            .map(|r| format!("被 {} 关联为 {}", r.project_name, r.alias))
+            .collect::<Vec<_>>()
+            .join("；");
+        return Err(WebPlatformError::Conflict(format!(
+            "无法删除项目：{}。请先在对应项目中移除关联",
+            detail
+        )));
     }
 
     state.repo.delete_project(id).await?;

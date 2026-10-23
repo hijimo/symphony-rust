@@ -303,7 +303,7 @@ pub struct TokenUsage {
 
 /// Update payload from a Codex event stream.
 /// Unified struct used by both the codex_client (producer) and orchestrator (consumer).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CodexEventUpdate {
     /// Event type string (e.g. "turn.completed", "notification").
     pub event_type: Option<String>,

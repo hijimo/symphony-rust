@@ -110,6 +110,26 @@ describe('ProjectSettingsPage', () => {
     });
   });
 
+  it('related repos tab renders the editor', async () => {
+    server.use(
+      http.get('*/api/projects/:id/repos', () =>
+        HttpResponse.json({ success: true, retCode: 'SUCCESS', retMsg: 'ok', data: [] }),
+      ),
+      http.get('*/api/projects/:id/repos/candidates', () =>
+        HttpResponse.json({ success: true, retCode: 'SUCCESS', retMsg: 'ok', data: [] }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderProjectSettings();
+
+    await waitFor(() => {
+      expect(screen.getByText('项目设置 - My GitLab Project')).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('tab', { name: '关联仓库' }));
+    expect(await screen.findByText('暂无关联仓库')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '添加关联仓库' })).toBeInTheDocument();
+  });
+
   it('shows error when project not found', async () => {
     server.use(
       http.get('*/api/projects/:id', () => {
