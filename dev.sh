@@ -104,7 +104,7 @@ echo -e "${GREEN}Backend running (PID: $BACKEND_PID)${NC}"
 # 启动前端
 echo -e "${YELLOW}Starting frontend...${NC}"
 cd "$PROJECT_ROOT/web-frontend"
-npm run dev -- --port 5177 &
+npm run dev -- --host 0.0.0.0 --port 5177 &
 FRONTEND_PID=$!
 cd "$PROJECT_ROOT"
 sleep 2
