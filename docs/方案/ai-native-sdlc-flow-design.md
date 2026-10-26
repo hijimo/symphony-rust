@@ -1,11 +1,13 @@
 # AI 原生 SDLC 完整流程方案（文档闸门）
 
 > **范围**：本方案定义 intent / spec / plan 三份文档的流程、闸门、文档状态、文档模板，以及与现有实现流程的衔接。
->
-> **平台范围**：第一期支持 GitLab、GitHub、Gitea。Linear tracker 用原生状态而不是 label，第一期不支持文档闸门，Linear 项目一律按 `track:fast` 处理。
 > 网页编辑能力复用公共编辑器组件，见 [ai-doc-workbench-design.md](./ai-doc-workbench-design.md)，本文不重复。
 >
+> **平台范围**：第一期支持 GitLab、GitHub、Gitea。Linear tracker 用原生状态而不是 label，第一期不支持文档闸门，Linear 项目一律按 `track:fast` 处理。
+>
 > **状态**：设计草案，未实现。第 11 节为决策记录，全部决策已确定。
+>
+> **审阅**：对抗审阅见 `docs/quality/ai-native-sdlc-design-review-2026-10-26.md`，本文已按其结论修订。
 >
 > **依据**：
 > - The AI-native SDLC playbook（Anthropic，https://claude.com/resources/articles/the-ai-native-sdlc-playbook ），知识库页 `tianbook-llm-wiki/wiki/content/ai-native-sdlc-playbook.md`。
@@ -57,12 +59,21 @@ Symphony 目前覆盖 Playbook 的 **Build 后半段到 Merge**：Issue 进入 T
 规则：
 
 - **AI 起草，人审阅**。Spec 和 Plan 在进入状态时由 web-platform 的 AgentSessionService 自动生成草稿，人第一次介入就是审阅。
-- **打回走原路**。审阅人“要求修改”并写意见，Issue 回到对应起草状态，意见作为下一轮 agent 输入，只重做这一份文档。
+- **打回走原路**。审阅人“要求修改”并写意见，Issue 回到对应起草状态。AI 在**当前文档**上按意见修改，不从模板重写，审阅人在工作台里做过的修改会保留；修改结果以 diff 呈现，可逐块接受或回退。
 - **快速通道**。按路径 label 跳过部分闸门，见第 11 节决策 3（默认 `track:plan`）。
+- **入口（已确定）**：文档流程**只从 Symphony 界面进入**：
+  - “新建需求”：创建 Issue 并开始 intent，路径为 `track:full`；
+  - Issue 卡片上的“开始文档流程”：选择路径，默认选中 `track:plan`。
+  - 在 GitLab / GitHub / Gitea 上直接创建、没有路径 label 的 Issue，停在“计划”列的“待启动”，不自动起草。
+  - 原因：web-platform 不轮询 Issue，编排器不处理 `doc:*`；从界面进入可以避免两个服务争抢同一个 Issue，也不会给每个随手创建的 Issue 消耗 token。
 
 ## 3. 文档存放
 
-- 路径：`.symphony/changes/<iid>/intent.md`、`spec.md`、`plan.md`，放在主仓库（多仓库项目也放主仓库）。
+- 路径（已确定，不可配置）：`docs/changes/<iid>/intent.md`、`spec.md`、`plan.md`，放在主仓库（多仓库项目也放主仓库）。`track:plan` 的 Issue 只有 `plan.md`。
+- 不用 `.symphony/`：现有代码和 teamwork 方案把 `.symphony/` 当作不提交的运行时目录（锁、tmp、quarantine、handback，且写入 `.git/info/exclude`），文档放在里面会提交不上去。
+- 项目级文档模板放在 `docs/changes/_templates/{intent,spec,plan}.md`（第 5.2 节）。`_templates` 不是数字，不会与 Issue 号冲突。
+- 不放在该目录的内容：审批状态和会话记录（数据库）、运行时临时文件（仍在 `.symphony/`，不提交）。
+- 创建文档前检查 `docs/changes/<iid>/` 是否已存在且不属于本 Issue，存在时报错，不覆盖。
 - 文档分支：每个 Issue 一个 `symphony/docs-<iid>` 分支和一个文档 MR。工作台和起草 agent 都在该分支上工作。
 - 合入主干的时机：一个文档 MR，G3 通过后合入（第 11 节决策 1，流程见第 10 节）。
 
@@ -76,18 +87,24 @@ Symphony 目前覆盖 Playbook 的 **Build 后半段到 Merge**：Issue 进入 T
 | 实现阶段的流程状态（Todo 之后） | 实现进度，编排器靠它调度 | Issue label（沿用现有机制） | 编排器、agent（现有约定） |
 | 文档状态 | 每份文档的生命周期与批准记录 | Symphony 数据库 | 工作台、闸门操作 |
 
-两个阶段的交接点是“文档 MR 合并成功”：web-platform 把 `doc:plan-review` 换成 `Todo`，之后由编排器接管。文档阶段的 label 被人手动修改时，web-platform 按数据库改回，并在 Issue 上留言说明。
+两个阶段的交接点是“文档 MR 合并成功”：web-platform 把 `doc:plan-review` 换成项目 WORKFLOW 配置中 Todo 状态对应的 label（不写死字符串），之后由编排器接管。
+
+**人工修改 label（已确定）**：web-platform 不监听、也不自动改回 label。人手动修改文档阶段的 label 视为人工覆盖：
+
+- web-platform 下次读取（打开看板或工作台）发现 label 与文档状态不一致时，在卡片上提示“label 与文档状态不一致”，由人处理。
+- 人把文档阶段的 Issue 直接改成 `Todo`，视为跳过文档阶段，按 `track:fast` 处理；编排器照常领取。这条绕过路径第一期不拦截。
 
 **已确定**：审批状态只放数据库，文件里不写。原因是批准动作如果改文件，SHA 随之变化，“批准绑定 SHA”无法成立。
 
 ### 4.2 单份文档状态机
 
 ```text
-draft ──提交审阅──► in_review ──批准──► approved
+draft ──提交审阅──► in_review ──批准──► approved ──本文档被修改──► in_review
   ▲                   │                    │
-  │               要求修改                  │ 上游文档被重新批准 / 本文档被修改
+  │               要求修改                  │ 上游文档被重新批准
   └── changes_requested ◄┘                  ▼
                                           stale ──重新审阅──► in_review
+approved ──文档 MR 合并──► merged（见下文 merged 阶段）
 in_review ──拒绝──► rejected（终态；只有 intent 可被拒绝，拒绝即关闭 Issue）
 approved ──被新版本替代──► superseded（保留历史）
 ```
@@ -141,7 +158,8 @@ spec = in_review                      → Spec Review
 spec = approved 且 plan 不存在        → Plan（触发自动起草）
 plan ∈ {draft, changes_requested}     → Plan
 plan = in_review                      → Plan Review
-plan = approved                       → Todo
+plan = approved 且文档 MR 未合并      → Plan Review（子状态“已批准，待合并”）
+三份文档均为 merged                    → Todo
 ```
 
 文档阶段的 label 只由 web-platform 根据文档状态写入；编排器不调度 `doc:*`，只在 label 变为 Todo 后接管（4.1、4.7）。
@@ -175,6 +193,8 @@ plan = approved                       → Todo
 - 起草会话非交互运行，失败按指数退避重试，连续失败 3 次在卡片上标“起草失败”，提供“重试”和“改为人工撰写”。
 - 卡死检测沿用 `stall_timeout_ms` 思路：会话长时间无事件即终止并计一次失败。
 - 起草会话计入 web-platform 并发管理器，单独设文档会话配额，并统计 token 用量。
+- 非交互起草期间，需要审批的命令一律自动拒绝，只读命令自动允许；同一会话同一时间只运行一轮（工作台方案 4.2）。
+- 认证沿用编排器的 `CODEX_HOME`，不需要重新登录（工作台方案 4.2）。
 
 ## 5. 文档模板
 
@@ -187,8 +207,8 @@ plan = approved                       → Todo
 | 骨架 | 新建文档时的初始内容 | intent：Problem / Proposed outcome / Affected users and systems / Constraints / Open questions（Playbook 原文模板） |
 | 写作指引 | 每节写什么，以注释放在骨架中 | `<!-- 用提出者自己的话，不要正式语言 -->` |
 | 生成 prompt | AI 起草或改写时使用 | spec 使用 Playbook 原文 prompt：“Read the attached intent.md … Describe clearly any areas of concern …” |
-| 提交校验 | 提交审阅前的确定性检查 | 必填章节非空；spec 的 Concerns 每条有负责人和结论；plan 有固定格式的 `## Files` 小节（每行一个路径；多仓库项目带仓库目录前缀，如 `frontend/...`、`backend/...`）和测试；`## Files` 中出现实现阶段不可写仓库（项目配置 `writable: false`）的文件时，提示“该仓库在实现阶段不可写” |
-| 审阅清单 | 闸门审批人看到的检查项 | G2：intent 的 Open questions 是已解决，还是被带到下一步？G3：可能弄坏什么？风险最大的一步？放弃了哪些方案？ |
+| 提交校验 | 提交审阅前的确定性检查 | 必填章节非空；spec 的 Concerns 每条有负责人和结论；plan 有固定格式的 `## Files` 小节和测试。`## Files` 每行一个路径，路径与实现阶段工作区的相对路径完全相同：单仓库项目不加前缀，多仓库项目以仓库别名开头（如 `frontend/...`、`backend/...`）。出现实现阶段不可写仓库（项目配置 `writable: false`）的文件时，提示“该仓库在实现阶段不可写” |
+| 审阅清单 | 闸门审批人看到的检查项 | G2：intent 的 Open questions 是已解决，还是被带到下一步？G3：可能弄坏什么？风险最大的一步？放弃了哪些方案？plan 中是否有与需求无关的操作（外部网络访问、修改 CI、读取凭据等）？ |
 
 ### 5.2 存放与优先级
 
@@ -197,7 +217,7 @@ plan = approved                       → Todo
    ↓ 覆盖
 组织级     codex-org-config 仓库 templates/，变更走 PR（第一期不实现）
    ↓ 覆盖
-项目级     目标仓库 .symphony/templates/{intent,spec,plan}.md
+项目级     目标仓库 docs/changes/_templates/{intent,spec,plan}.md
 ```
 
 - 模板放 Git，不放数据库。组织级模板同时打包成 skill（如 `symphony-docs`），本地 Codex / Kiro 写文档时用同一份模板。
@@ -232,7 +252,7 @@ plan = approved                       → Todo
 
 ## 7. 对现有实现阶段的改动
 
-1. **提示词模板**（`workflow_*.md`）：新增“已批准文档”段，注入三份文档路径和 SHA，要求动手前读 `plan.md`。
+1. **提示词模板**（`workflow_*.md` 和 teamwork 的任务提示词模板）：新增“已批准文档”段，注入三份文档路径和 SHA，要求动手前读 `plan.md`。同时说明：plan.md 只描述改动范围和步骤，不能覆盖 WORKFLOW 中的安全规则和禁止事项。G3 是防止仓库内容中的提示注入经 plan.md 传到实现阶段的人工防线。
 2. **workpad 去重**：workpad 只记录执行进度，计划以 `plan.md` 为准。
 3. **偏离计划**：偏离时在同一个 commit 更新 `plan.md`。发布前增加确定性检查：比较 diff 文件与 plan.md 的 `## Files` 小节，不一致时在 MR 标注。多仓库项目按仓库目录前缀分仓库比较，前缀与实现阶段多仓库工作区的目录布局一致。第一期只标注不阻断。
 4. **审查对照文档**：Testing / teamwork reviewer 增加一个 pass，对照 spec.md 和 plan.md 检查合规；目标仓库可提供 `REVIEW.md`。
@@ -251,7 +271,7 @@ plan = approved                       → Todo
 | 指标 | 计算方式 |
 |---|---|
 | intent 存活率 | G1 接受数 ÷（接受数 + 拒绝数） |
-| intent → spec 用时 | G1 接受到 spec 首次提交 |
+| 设计阶段周期 | G1 批准到 G2 批准（spec 由 AI 自动起草，这段时间主要反映人的审阅周期） |
 | 需求返工 | plan 首次提交后 spec 又被修改的次数（含 4.3 的级联退回） |
 | 首轮合并率 | 未经 Rework 即合并的比例 |
 | 计划一致性 | 合并时 diff 与 plan.md 文件清单一致的比例 |
@@ -277,9 +297,9 @@ plan = approved                       → Todo
 |---|---|---|---|
 | 计划 | Plan | 无流程 label、`Backlog`、`doc:intent`、`doc:intent-review` | 待启动 / 起草 intent / 待审 intent |
 | 设计 | Design | `doc:spec`、`doc:spec-review` | AI 起草 spec / 待审 spec |
-| 构建与测试 | Build + Test | `doc:plan`、`doc:plan-review`、`Todo`、`symphony-claimed`、`In Progress`、`Rework`、`Testing` | AI 起草 plan / 待审 plan / 排队 / 实现中 / 返工 / 测试中 |
+| 构建与测试 | Build + Test | `doc:plan`、`doc:plan-review`、`Todo`、`symphony-claimed`、`In Progress`、`Rework`、`Testing` | AI 起草 plan / 待审 plan / 已批准待合并 / 排队 / 实现中 / 返工 / 测试中 |
 | 部署 | Deploy | `Human Review`、`Merging`，以及关联的代码 MR | 待审 MR / 合并中 |
-| 运维 | Maintain | 最近 N 天 `Done` 的 Issue（默认 7 天，可配置）；P3 起增加“待分诊信号” | 已上线 / 待分诊 |
+| 运维 | Maintain | 最近 N 天关闭、且不是被拒绝的 Issue（默认 7 天，可配置）；P3 起增加“待分诊信号” | 已上线 / 待分诊 |
 
 说明：
 
@@ -317,6 +337,8 @@ plan = approved                       → Todo
 
 **事实说明**：“已配置的 Token”不是独立的机器人账号。`web-platform/src/process_manager/spawn.rs` 启动编排器时读取的是项目创建者（`project.created_by`）的个人 Token，所以文档 MR 在平台上的作者就是项目创建者。
 
+**风险**：所有文档操作都依赖这个 Token。创建者 Token 失效、权限变更或人员离职时，整个项目的文档流程中断。Token 校验失败时，在项目设置和卡片上提示“项目 Token 不可用”。
+
 **人和 AI 的区分**（已确定，只区分这两类）：每个文档 commit 加 trailer。
 
 ```text
@@ -337,12 +359,12 @@ Symphony-Actor: human     # 人在工作台修改
 
 **第 1 步：起草 intent（计划列）**
 
-1. 提出者在 Symphony 点“新建需求”，用一句话描述。快速生成入口按 intent 模板生成 `intent.md` 草稿。
+1. 提出者在 Symphony 点“新建需求”（文档流程只从界面进入，见第 2 节），用一句话描述。快速生成入口按 intent 模板生成 `intent.md` 草稿。
 2. Symphony：
    - 创建 Issue，打上 `track:full`、`doc:intent`，Issue 正文只放摘要和文档链接；
-   - 从主干切出 `symphony/docs-123`，写入 `.symphony/changes/123/intent.md`；
+   - 从主干切出 `symphony/docs-123`，写入 `docs/changes/123/intent.md`；
    - 用系统账号提交、推送，开文档 MR（Draft）。
-3. 提出者在工作台和 AI 完善 intent。AI 读代码、追问，提出者回答后 AI 修改。每次保存都是文档分支上的一个 commit。
+3. 提出者在工作台和 AI 完善 intent。AI 读代码、追问，提出者回答后 AI 修改。自动保存只写工作区文件；点“保存”或 AI 一轮结束时才在文档分支上 commit 并 push。
 4. 提出者点“提交审阅”，模板校验通过后 intent 进入 `in_review`，label 改为 `doc:intent-review`。
 
 **第 2 步：G1 审 intent**
@@ -353,7 +375,7 @@ Symphony-Actor: human     # 人在工作台修改
 
 **第 3 步：起草 spec，G2 审 spec（设计列）**
 
-8. G1 批准后，AgentSessionService 立即在文档工作区启动非交互 Codex 会话：加载组织 skills，只能写 `.symphony/changes/123/`，读取已批准的 intent 和代码，按模板写出 `spec.md` 并标出关注点；完成后自动提交审阅，label 改为 `doc:spec-review`。
+8. G1 批准后，AgentSessionService 立即在文档工作区启动非交互 Codex 会话：加载组织 skills，只能写 `docs/changes/123/`，读取已批准的 intent 和代码，按模板写出 `spec.md` 并标出关注点；完成后自动提交审阅，label 改为 `doc:spec-review`。
 9. 审阅人在工作台审 spec，可让 AI 修改；关注点逐条处理完，“批准”才可点。批准后 label 改为 `doc:plan`。
 10. 级联：审 spec 时如果回头改了 intent，intent 批准作废，Issue 退回 `doc:intent-review`；intent 重新批准后，spec 变为 stale，需要重审（第 4.3 节）。
 
@@ -374,7 +396,7 @@ c. 不 rebase：直接检查能否合并
 d. 等待主干要求的 CI 通过
 e. 用 G3 批准人的个人 Token 合并文档 MR（第一期允许作者自己合并，见 10.1）
    合并方式：merge commit，不用 squash
-f. 合并成功后：三份文档进入 merged 阶段（4.2）；label 改为 Todo；在 Issue 上记录“文档已合入主干 @ <merge commit SHA>”
+f. 合并成功后：三份文档进入 merged 阶段（4.2）；label 改为项目 WORKFLOW 中 Todo 对应的 label；在 Issue 上记录“文档已合入主干 @ <merge commit SHA>”
 ```
 
 合并规则：
@@ -395,11 +417,15 @@ f. 合并成功后：三份文档进入 merged 阶段（4.2）；label 改为 To
 17. 审查结果：
     - 批准 → `Merging` → 现有 land 流程 → `Done`；
     - 代码问题 → `Rework`，与现在一致；
-- 需求或计划问题 → 由人在 Symphony 主动点“退回文档阶段”，选择退回 `doc:spec-review` 或 `doc:plan-review`。Symphony 停止实现阶段的 agent（Issue 离开活跃状态），从主干切出 `symphony/docs-123-r2`，复制当前文档，开第二个文档 MR；revision 记为 r2，merged 之前的规则（4.2、4.3）重新生效。重新通过 G3 后同样合入主干，实现分支 merge 新主干后继续。
+    - 需求或计划问题 → 由人在 Symphony 主动点“退回文档阶段”，选择退回 `doc:spec-review` 或 `doc:plan-review`。Symphony 依次：
+      1. 停止实现阶段的 agent（Issue 离开活跃状态）；
+      2. 代码 MR 保持打开，转为 Draft，回到实现阶段后继续使用；
+      3. 从主干切出 `symphony/docs-123-r2`，以**实现分支上的最新文档**为准复制过去（包含实现期对 plan.md 的修订），开第二个文档 MR；revision 记为 r2，merged 之前的规则（4.2、4.3）重新生效；
+      4. 重新通过 G3、r2 合入主干后，实现分支 merge 新主干再继续。`docs/changes/<iid>/` 下的冲突一律以主干（r2 已批准版本）为准。
 
 **第 8 步：运维列**
 
-18. `Done` 后在“运维”列显示 7 天。P3 接入外部信号后，告警写出新的 intent，从第 1 步重新开始。
+18. Issue 关闭后（非拒绝）在“运维”列显示 7 天。P3 接入外部信号后，告警写出新的 intent，从第 1 步重新开始。
 
 ### 10.3 不同路径的文档 MR
 
@@ -421,14 +447,18 @@ f. 合并成功后：三份文档进入 merged 阶段（4.2）；label 改为 To
 | 1. 文档合入主干时机 | B：一个文档 MR，G3 通过后合入 |
 | 2. 闸门审批人 | 第一版任何项目成员都能批准，记录具名批准人（第 6 节） |
 | 看板分列 | 按计划、设计、构建与测试、部署、运维分列，只做展示映射，不影响 label（第 9 节） |
-| 3. 路径分级 | `track:full` / `track:plan` / `track:fast`，默认 `plan`；工作台写 intent 创建的 Issue 走 `full`；`fast` 只开放给白名单 label；路径只能升级 |
-| 4. 状态表示 | 新增 6 个带前缀的 label：`doc:intent`、`doc:intent-review`、`doc:spec`、`doc:spec-review`、`doc:plan`、`doc:plan-review`；只由 Symphony 写入 |
+| 3. 路径分级 | `track:full` / `track:plan` / `track:fast`；在 Symphony 界面启动文档流程时默认选中 `plan`；“新建需求”创建的 Issue 走 `full`；`fast` 只开放给白名单 label；路径只能升级 |
+| 4. 状态表示 | 新增 6 个带前缀的 label：`doc:intent`、`doc:intent-review`、`doc:spec`、`doc:spec-review`、`doc:plan`、`doc:plan-review`；只由 Symphony 写入；人工修改不自动改回，只提示（4.1） |
 | 5. 入口 | 保留快速生成入口，输出改为 intent.md 草稿并进入工作台；Issue 正文只保留摘要和链接；`fast` 路径仍直接写 Issue 正文 |
 | 文档 MR 合并 | 系统账号（项目已配置 Token，即项目创建者的 Token）开 MR 和推送；G3 批准人用个人 Token 合并；第一期允许作者自己合并；不 rebase、用 merge commit；合并成功才进入 Todo（第 10 节） |
 | 人和 AI 的区分 | 只区分两类，用 commit trailer `Symphony-Actor: ai/human`（10.1） |
 | 批准后的修改 | 文档 MR 合并后进入 merged 阶段，不再比对 SHA、不级联；改需求或计划须人工退回并开 r2 文档 MR（4.2） |
 | 批准绑定 | 以文件 blob SHA 为准，commit SHA 只作参考（4.2） |
 | 起草 agent 的运行方 | web-platform 的 AgentSessionService；编排器不调度 `doc:*`（4.7） |
+| 文档流程入口 | 只从 Symphony 界面进入（“新建需求”或“开始文档流程”）；平台上直接创建的 Issue 不自动起草（第 2 节） |
+| 人工修改 label | 不监听、不自动改回，只提示不一致；手动改为 Todo 视为 `track:fast`（4.1） |
+| 文档目录 | 固定 `docs/changes/<iid>/`，不可配置；项目级模板在 `docs/changes/_templates/`（第 3 节） |
+| Codex 认证 | 第一期沿用编排器的 `CODEX_HOME`，不建独立目录（工作台方案 4.2） |
 | 第一期分支保护 | 已确认：目标仓库文档 MR 不要求平台审批，或核心工程师有绕过权限，保证作者可自合并 |
 | 平台范围 | 第一期 GitLab / GitHub / Gitea；Linear 不支持文档闸门 |
 | frontmatter | 只在创建时写一次；计算 blob SHA 前去掉 frontmatter |
@@ -439,7 +469,7 @@ f. 合并成功后：三份文档进入 merged 阶段（4.2）；label 改为 To
 | 工作台：AI 写入审批 | 白名单内自动批准，不逐次确认，本轮结束后看 diff（工作台方案 4.2） |
 | 工作台：会话划分 | 同一阶段共用会话，跨阶段新开会话，以已批准文档交接（工作台方案 4.2） |
 | 工作台：编辑权 | 不做编辑权分配；AI 运行期间本轮修改的文件只读（工作台方案 4.4） |
-| 工作台：从仓库 | 多仓库项目的从仓库只读完整检出到 `repos/<alias>/`，供 AI 写 spec / plan 时读取；实现阶段的可写性仍由项目多仓库配置决定（工作台方案 4.1） |
+| 工作台：从仓库 | 多仓库项目的从仓库只读完整检出到 `<alias>/`（布局与实现阶段工作区一致），供 AI 写 spec / plan 时读取；实现阶段的可写性仍由项目多仓库配置决定（工作台方案 4.1） |
 | 组织规则仓库 | `codex-org-config` 第一期不实现，只记录需求（[codex-org-config-requirements.md](./codex-org-config-requirements.md)），建议 P2 |
 | incident 模板 | 放到 P3：作为事故来源的 intent 模板变体（在 intent 骨架上增加“异常与证据”，换用分诊审阅清单），随外部信号接入一起做；第一期只有 intent、spec、plan 三类模板 |
 
@@ -481,7 +511,7 @@ f. 合并成功后：三份文档进入 merged 阶段（4.2）；label 改为 To
 
 **以后能否改**：能。B → A 只是把“G3 合并”拆成三次合并，数据模型不变。
 
-**补充问题**：主干如果有分支保护、要求 MR 审批，文档 MR 由谁批准合并？可以由 G3 的批准人顺带批准，也可以给文档目录单独配置 code owner。
+**补充问题**：主干如果有分支保护、要求 MR 审批，文档 MR 由谁批准合并？可以由 G3 的批准人顺带批准，也可以给文档目录单独配置 code owner。（已解决，见第 10.1 节）
 
 #### 决策 2：闸门由谁批准
 
@@ -538,7 +568,7 @@ f. 合并成功后：三份文档进入 merged 阶段（4.2）；label 改为 To
 | 默认 `plan`（推荐） | 每件工作至少有一份被人接受的计划，“没有被接受的计划就不实现”这条最关键的规则始终成立；成本适中 | 新功能需要手动选 `full` |
 | 默认 `fast` | 和现在完全一样，零阻力 | 新流程只在主动选择时生效，很难推广 |
 
-**推荐默认 `plan`**，同时建议：
+**推荐默认 `plan`**（已修订：“默认”指在 Symphony 界面启动文档流程时默认选中 `plan`，平台上直接创建的 Issue 不自动进入文档流程，见第 2 节和审阅 A3），同时建议：
 
 - 从工作台写 intent 创建的 Issue，自动走 `full`。
 - `fast` 需要显式打 label，并且只允许 `hotfix`、`docs-only` 等现有 label 或配置的白名单使用。这与现有模板里 Testing Gate 跳过测试的 label 判断方式一致。
@@ -567,7 +597,7 @@ f. 合并成功后：三份文档进入 merged 阶段（4.2）；label 改为 To
 **推荐 A**：
 
 - label 名称加统一前缀（如 `doc:intent-review`），和现有状态 label 区分开，在平台上筛选也方便。
-- 按 4.5 节的规则，label 只由 Symphony 根据文档状态写入。人手动改 label 不会生效，Symphony 会按文档状态改回来，并在 Issue 上留言说明。这样 label 只是“显示”，不会和数据库状态冲突。
+- 按 4.5 节的规则，label 只由 Symphony 根据文档状态写入。人手动改 label 不会生效，Symphony 会按文档状态改回来，并在 Issue 上留言说明。这样 label 只是“显示”，不会和数据库状态冲突。（已修订：最终不自动改回，只提示不一致，见第 4.1 节和审阅 A3。）
 - 同步调整：看板按第 9 节分列；告警规则（如任务超时）区分“等人审批”和“agent 运行中”，等人审批的状态不触发超时告警。
 
 **以后能否改**：可以改名，但已有 Issue 的 label 需要迁移，所以 label 名称最好第一次就定好。
@@ -609,7 +639,7 @@ f. 合并成功后：三份文档进入 merged 阶段（4.2）；label 改为 To
 
 | 阶段 | 内容 |
 |---|---|
-| P1 | 文档闸门、文档状态与级联、三类模板、6 个文档 label、实现阶段读取 plan.md、看板按阶段分列 |
+| P1 | 文档闸门、文档状态与级联、三类模板、6 个文档 label、实现阶段读取 plan.md、看板按阶段分列。**前置条件**：工作台方案 M1–M3 完成；M4 可与 P1 并行 |
 | P2 | 对照 spec / plan 的审查、计划偏离检测、度量、闸门角色与审批人配置（不含提交人自批限制）、组织规则仓库 codex-org-config（建议） |
 | P3 | 外部信号 → intent（含事故来源的 intent 模板变体）、运维列待分诊信号、组织配置 eval |
 

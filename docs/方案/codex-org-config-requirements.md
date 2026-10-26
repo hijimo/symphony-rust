@@ -37,10 +37,10 @@ codex-org-config/
 | 编号 | 需求 |
 |---|---|
 | R1 | 规则变更走 PR，合并后才对 Symphony 生效 |
-| R2 | Symphony 把仓库同步到服务端目录，作为启动 Codex app-server 时的 `CODEX_HOME`；不读运行账号自己的 `~/.codex` |
+| R2 | Symphony 把仓库同步到服务端目录，作为启动 Codex app-server 时的 `CODEX_HOME`；不读运行账号自己的 `~/.codex`。该目录中的 `auth.json` 用符号链接指向部署机原有凭据，不复制 |
 | R3 | 同步方式支持定期拉取或按版本（tag / commit）固定，项目可选择跟随最新或锁定版本 |
 | R4 | 每个 AI 会话和每份生成的文档记录当时的组织配置 commit SHA（`org_config_sha`），可追溯文档在哪套规则下生成 |
-| R5 | 组织级模板参与模板优先级：内置默认 → 组织级 → 项目级（`.symphony/templates/`） |
+| R5 | 组织级模板参与模板优先级：内置默认 → 组织级 → 项目级（`docs/changes/_templates/`） |
 | R6 | 项目可追加自己的 skills，优先级高于组织级 |
 | R7 | 同一套 skills 可安装到本地 `~/.codex/skills/`，让本地 Codex / Kiro 与网页端使用相同规则和模板 |
 | R8 | 项目设置页显示当前生效的组织配置版本和来源 |
@@ -61,9 +61,9 @@ codex-org-config/
 
 | 方面 | 第一期做法 |
 |---|---|
-| 文档模板 | 只用两层：Symphony 内置默认模板 → 项目级 `.symphony/templates/` |
+| 文档模板 | 只用两层：Symphony 内置默认模板 → 项目级 `docs/changes/_templates/` |
 | 规则 | 只用目标仓库自带的 `AGENTS.md` 和仓库内 skills |
-| `CODEX_HOME` | 仍使用平台管理的独立目录（只放最小 `config.toml`），不读运行账号的 `~/.codex`，避免个人配置混入 |
+| `CODEX_HOME` | 直接使用编排器当前使用的同一个 `CODEX_HOME`，沿用部署机已有的 Codex 登录（`auth.json`），不建独立目录 |
 | `org_config_sha` | 字段保留，第一期为空 |
 | 已知限制 | Spec 起草时不会应用组织级安全、合规、UX 政策，这类问题要到 Human Review 才可能被发现 |
 

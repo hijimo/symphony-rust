@@ -1,9 +1,11 @@
 # AI 文档工作台：公共编辑器组件方案（路线 B）
 
 > **范围**：本方案只覆盖**公共编辑器组件**，即网页上的“目录、文件、编辑、预览、AI 对话”工作台。
-> intent / spec / plan 的闸门、审批、状态机和触发规则属于**完整流程方案**，后续另定。本文只给流程预留接入点。
+> intent / spec / plan 的闸门、审批、状态机和触发规则见完整流程方案 [ai-native-sdlc-flow-design.md](./ai-native-sdlc-flow-design.md)。本文只定义组件和流程接入点。
 >
 > **状态**：设计草案，未实现。
+>
+> **审阅**：对抗审阅见 `docs/quality/ai-native-sdlc-design-review-2026-10-26.md`，本文已按其结论修订。
 >
 > **依据**：当前代码结构；`deploy/docker/Dockerfile` 中的 `CODEX_VERSION=0.159.0`；`rust-platform/src/agent/codex_client.rs` 已实现的协议方法；本机 `codex-cli 0.158.0` 生成的 app-server schema。部署机 0.159.0 的协议尚未核对。
 
@@ -30,7 +32,7 @@
 | `projectId` | 项目 ID |
 | `workspaceKey` | 工作区标识，例如 issue iid |
 | `branch` | 工作区分支 |
-| `writablePaths` | 可写路径白名单，例如 `.symphony/changes/123/**` |
+| `writablePaths` | 可写路径白名单，例如 `docs/changes/123/**` |
 | `readonlyPaths` | 只读范围，默认整个主仓库 |
 | `initialFiles` | 默认打开的文件 |
 | `promptPresets` | 快捷指令，例如“生成 spec”，由流程方案提供 |
@@ -52,8 +54,8 @@
 │ 文件目录   │ [intent.md][spec.md][router.rs]  │ AI 对话          │
 │           │ ┌────────────┬─────────────┐ │               │
 │ ▸ src/    │ │ 源码编辑    │ 实时预览     │ │ 消息流 / 过程卡片 │
-│ ▸ docs/   │ │ (Monaco)   │ (Markdown/  │ │ 追问 / 审批卡片   │
-│ ▾ .symphony│ │            │  Mermaid)   │ │               │
+│ ▾ docs/   │ │ (Monaco)   │ (Markdown/  │ │ 追问 / 审批卡片   │
+│  ▾ changes│ │            │  Mermaid)   │ │               │
 │   spec.md ●│ └────────────┴─────────────┘ │ @文件 引用      │
 │           │ [AI 改动：接受 / 回退 / 查看 diff] │ [输入框]        │
 ├───────────┴──────────────────────────────┴───────────────┤
@@ -106,16 +108,25 @@
 
 #### 工作区结构
 
+工作区目录布局与实现阶段的工作区**完全一致**（`docs/方案/multi-repo-workspace-design.md`），这样 AI 在文档阶段看到的路径，就是实现阶段 agent 看到的路径。
+
 ```text
 /workspaces/editor/
-├── mirrors/<project>.git            # 每个项目一份 bare mirror，保留完整历史
-└── <project>/<workspaceKey>/        # git worktree，完整检出
+├── mirrors/<project>/<alias>.git    # 每个仓库一份 bare mirror，保留完整历史
+└── <project>/<workspaceKey>/
+
+单仓库项目：主仓库直接检出在工作区根目录
     ├── <主仓库全部被跟踪的文件>
-    └── repos/<alias>/               # 多仓库项目：从仓库只读检出（已确定）
+    └── docs/changes/<iid>/          # 唯一可写目录
+
+多仓库项目：工作区根目录本身不是仓库
+    ├── <primary-alias>/             # 主仓库，可写目录为 <primary-alias>/docs/changes/<iid>/
+    └── <alias>/                     # 从仓库，只读
 ```
 
-- **完整代码**：worktree 检出指定提交下所有被 Git 跟踪的文件，不使用 `sparse-checkout`。多仓库项目的文档放主仓库。
-- **从仓库**（已确定）：多仓库项目的每个从仓库，同样以“bare mirror + worktree”完整检出到 `repos/<alias>/`，完整代码和完整历史。`repos/**` 不在 `writablePaths` 内，AI 写入被自动拒绝，提交只包含主仓库文档目录。`<alias>` 与项目多仓库配置（`docs/方案/multi-repo-workspace-design.md`）一致。主仓库内需要把 `repos/` 视为工作区外的目录：不进入主仓库的 `git status`，目录树中单独分组显示。
+- **完整代码**：每个仓库都检出指定提交下所有被 Git 跟踪的文件，不使用 `sparse-checkout`。文档放主仓库。
+- **从仓库**（已确定）：多仓库项目的每个从仓库，同样以“bare mirror + worktree”完整检出到 `<alias>/`，完整代码和完整历史。从仓库不在 `writablePaths` 内，AI 写入被自动拒绝，提交只包含主仓库文档目录。`<alias>` 取自项目多仓库配置。
+- **可写路径**：单仓库项目为 `docs/changes/<iid>/**`；多仓库项目为 `<primary-alias>/docs/changes/<iid>/**`。下文写 `docs/changes/<iid>/` 时，多仓库项目都指主仓库下的这个目录。
 - **完整历史**：mirror 默认保留全部历史，不加 `--depth`，Codex 可正常使用 `git log`、`git blame`、`git show`。
 - **大仓库可选项**：项目配置可给 mirror 开启 `--filter=blob:none`。仍能看到全部文件，只是读旧版本内容时现场下载。默认关闭。
 - **共享对象库**：多个 worktree 共用 mirror 的对象，不重复存历史。
@@ -143,7 +154,7 @@
 | 写文件 | 校验 `baseVersion`，只允许白名单路径，不一致返回 409 |
 | 搜索 | 文件名模糊匹配；内容用 `rg`，限制结果数和超时 |
 | diff | 工作区相对分支基点的 diff |
-| commit / push | 只包含白名单内文件 |
+| commit / push | 只包含白名单内文件；触发时机见第 7 节“提交策略”（自动保存不 commit） |
 | 文件监听 | `notify` 监听工作区，合并（约 200ms 一批）后推送；AI 修改和外部更新走同一通道 |
 
 文件能力不直接使用 app-server 的 `fs/*`（本机 0.158.0 schema 中有 `fs/readFile`、`fs/readDirectory`、`fs/watch`、`fs/changed`、`fuzzyFileSearch`）。原因：浏览文件不应依赖 Codex 进程，权限控制也应由平台自己掌握。app-server 只负责 AI 部分。
@@ -172,6 +183,9 @@
 
 两种模式使用同一个工作区和同一个阶段会话。非交互模式的失败重试、卡死检测和配额见 `ai-native-sdlc-flow-design.md` 第 4.7 节。
 
+- **同一会话同一时间只运行一轮**：非交互起草期间，工作台显示“AI 正在起草”，输入框禁用；起草结束后恢复。交互模式下一轮未结束时，新消息排队，本轮结束后发送（`turn/steer` 追加说明除外）。
+- **非交互模式的命令审批**：没有人在线应答，只读命令自动允许，其他命令一律自动拒绝，并告诉 AI 原因。
+
 #### 需要接入的协议能力
 
 以下方法来自本机 0.158.0 的 schema，实施时须用部署版本（当前 0.159.0）执行 `codex app-server generate-json-schema` 重新核对。
@@ -193,7 +207,7 @@
   - sandbox 设为工作区可写；
   - 不在 `writablePaths` 内的 fileChange 审批，后端自动拒绝，并告诉 AI 原因；
   - 白名单内的改动**自动批准**，不逐次询问用户（已确定）；用户在本轮结束后通过 diff 逐块接受或回退；
-  - 命令执行：只读命令（如 `rg`、`cat`、`ls`、`git log`）自动允许，其他命令按 `agentPolicy` 处理；
+  - 命令执行：只读命令（如 `rg`、`cat`、`ls`、`git log`）自动允许；其他命令在交互模式下由用户确认，在非交互模式下自动拒绝；
   - 每轮结束后用 `git status` 兜底，拒绝范围外的残留改动。
 - **待实测**：“workspace-write 不限制读”是对 Codex sandbox 行为的理解，须在部署版本上实测，结果纳入 M3 验收。
 
@@ -211,8 +225,10 @@
 | 组织级 | 平台维护的 `CODEX_HOME` | 团队共享的全局 `AGENTS.md`、skills、`config.toml`（模型、审批默认值、MCP 配置） |
 
 - **来源**：组织级配置放在单独的 Git 仓库（如 `codex-org-config`），变更走 PR，平台定期或按版本同步到服务端。
-- **第一期不实现组织级配置**：需求见 [codex-org-config-requirements.md](./codex-org-config-requirements.md)。第一期 `CODEX_HOME` 仍指向平台管理的独立目录（只放最小 `config.toml`），规则只来自仓库级 `AGENTS.md` 和 skills，`org_config_sha` 为空。
-- **启动**：启动 app-server 时设置 `CODEX_HOME=<平台目录>`，不读运行账号自己的 `~/.codex`。
+- **第一期不实现组织级配置**：需求见 [codex-org-config-requirements.md](./codex-org-config-requirements.md)。规则只来自仓库级 `AGENTS.md` 和 skills，`org_config_sha` 为空。
+- **认证（已确定）**：Codex 的登录凭据（`auth.json`）存放在 `CODEX_HOME` 下。第一期工作台和起草 agent **直接使用编排器当前使用的同一个 `CODEX_HOME`**，不建独立目录，因此沿用部署机已有的登录状态，不需要重新登录。部署机运行账号是服务账号，一般没有个人配置，影响可接受。
+- **以后**（codex-org-config 实施时）：改为平台独立目录，`auth.json` 用符号链接指向原凭据，保证只有一份凭据。不复制 `auth.json`：账号登录会定期刷新令牌，两份副本各自刷新可能导致其中一份失效（推断，未实测）。
+- **启动**：启动 app-server 时显式设置 `CODEX_HOME`，值与编排器一致。
 - **按项目覆盖**：项目可追加自己的 skills 目录，优先级高于组织级。
 - **可追溯**：每个会话记录组织配置 commit SHA 和主干 SHA，可查到文档是在哪套规则、哪个代码版本下生成的。
 - **凭据**：模型和 MCP 凭据由部署环境注入，不放入配置仓库，也不传给工作区内执行的命令。
@@ -220,8 +236,9 @@
 #### 安全
 
 - 子进程环境不带 GitHub/GitLab 平台 token。
-- 命令执行默认需要审批；只读命令（如 `rg`、`cat`、`ls`）可配置为自动允许。
+- 命令执行规则见上文“读写边界”。
 - 仓库内容一律视为数据，不当作指令。
+- 认证凭据（`auth.json`）不进入任何 Git 仓库，也不暴露给工作区内执行的命令。
 
 ### 4.3 通信协议
 
@@ -265,11 +282,11 @@
 
 | 问题 | 结论 |
 |---|---|
-| 1. 调用时机 | Intent、Spec、Plan 三个阶段及其审阅使用工作台；`writablePaths` 为 `.symphony/changes/<iid>/**`；`promptPresets` 来自文档模板的生成 prompt（流程方案第 5 节） |
-| 2. 提交策略 | 每次保存即在文档分支 commit / push；一个 Issue 一个文档 MR；流程插槽放“提交审阅、批准、要求修改、拒绝、退回文档阶段”（流程方案第 6、10 节） |
+| 1. 调用时机 | Intent、Spec、Plan 三个阶段及其审阅使用工作台；`writablePaths` 为 `docs/changes/<iid>/**`；`promptPresets` 来自文档模板的生成 prompt（流程方案第 5 节） |
+| 2. 提交策略 | 自动保存只写工作区文件；用户点“保存”、AI 一轮结束、提交审阅、批准前，才在文档分支 commit 并 push。一个 Issue 一个文档 MR；流程插槽放“开始文档流程、提交审阅、批准、要求修改、拒绝、退回文档阶段”（流程方案第 6、10 节） |
 | 3. 分支命名 | `symphony/docs-<iid>`，退回重开时 `symphony/docs-<iid>-r<n>`；一个 Issue 一个工作区 |
 | 4. 审批策略 | 白名单内 AI 写入自动批准，不逐次确认（本文 4.2） |
 | 5. 会话传递 | 同一阶段共用会话，跨阶段新开会话，只以已批准文档交接（本文 4.2） |
 | 6. 编辑者分配 | 不做编辑权分配；只保留“AI 运行期间本轮修改的文件只读”（本文 4.4） |
-| 7. 从仓库 | 只读完整检出到 `repos/<alias>/`（本文 4.1） |
+| 7. 从仓库 | 只读完整检出到 `<alias>/`，工作区布局与实现阶段一致（本文 4.1） |
 | 8. 主干更新 | 文档分支不 rebase；合并前需要同步时把主干 merge 进文档分支（流程方案第 10.2 节第 5 步） |
