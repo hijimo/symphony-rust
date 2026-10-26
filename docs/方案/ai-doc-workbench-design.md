@@ -211,6 +211,7 @@
 | 组织级 | 平台维护的 `CODEX_HOME` | 团队共享的全局 `AGENTS.md`、skills、`config.toml`（模型、审批默认值、MCP 配置） |
 
 - **来源**：组织级配置放在单独的 Git 仓库（如 `codex-org-config`），变更走 PR，平台定期或按版本同步到服务端。
+- **第一期不实现组织级配置**：需求见 [codex-org-config-requirements.md](./codex-org-config-requirements.md)。第一期 `CODEX_HOME` 仍指向平台管理的独立目录（只放最小 `config.toml`），规则只来自仓库级 `AGENTS.md` 和 skills，`org_config_sha` 为空。
 - **启动**：启动 app-server 时设置 `CODEX_HOME=<平台目录>`，不读运行账号自己的 `~/.codex`。
 - **按项目覆盖**：项目可追加自己的 skills 目录，优先级高于组织级。
 - **可追溯**：每个会话记录组织配置 commit SHA 和主干 SHA，可查到文档是在哪套规则、哪个代码版本下生成的。
@@ -255,7 +256,7 @@
 |---|---|---|
 | M1 只读工作台 | 工作区创建、目录树、多标签、搜索、Markdown 预览 | 网页可浏览任意文件和目录；预览正确渲染表格、代码和 Mermaid；工作区内 `git log` 有完整历史；带子模块或 LFS 的测试仓库检出完整；主干落后时有提示 |
 | M2 人工编辑 | 白名单可写、版本冲突、文件监听、commit/push | 两个标签页并发修改能检测冲突；提交后远端可见 commit |
-| M3 AI 会话 | app-server 接入、流式对话、过程卡片、实时 diff、审批、追问、停止和追加说明、平台 `CODEX_HOME` | AI 改文档过程实时可见；实测 Codex 能读工作区任意文件、写入限制在白名单；越界写入被拒绝；整轮和按块回退可用；组织规则和 skills 生效；会话记录含组织配置 SHA 和主干 SHA |
+| M3 AI 会话 | app-server 接入、流式对话、过程卡片、实时 diff、审批、追问、停止和追加说明、平台 `CODEX_HOME` | AI 改文档过程实时可见；实测 Codex 能读工作区任意文件、写入限制在白名单；越界写入被拒绝；整轮和按块回退可用；仓库级 `AGENTS.md` 和 skills 生效、不读运行账号的 `~/.codex`；会话记录含主干 SHA（组织配置 SHA 待 codex-org-config 实施后补充） |
 | M4 体验打磨 | `@` 引用、选区改写、点击路径跳转、会话恢复 | 刷新页面后对话和未完成状态可恢复 |
 
 ## 7. 与完整流程方案的衔接（已全部确定）

@@ -195,12 +195,13 @@ plan = approved                       → Todo
 ```text
 内置默认   web-platform 内置，基于 Playbook 原文模板
    ↓ 覆盖
-组织级     codex-org-config 仓库 templates/，变更走 PR
+组织级     codex-org-config 仓库 templates/，变更走 PR（第一期不实现）
    ↓ 覆盖
 项目级     目标仓库 .symphony/templates/{intent,spec,plan}.md
 ```
 
 - 模板放 Git，不放数据库。组织级模板同时打包成 skill（如 `symphony-docs`），本地 Codex / Kiro 写文档时用同一份模板。
+- **第一期**只有两层：内置默认 → 项目级。组织级见 [codex-org-config-requirements.md](./codex-org-config-requirements.md)。
 - 与 `web-platform/src/templates/`（WORKFLOW 提示词模板）是两回事，只借用“内置 + 覆盖”的思路。
 
 ### 5.3 版本
@@ -241,8 +242,8 @@ plan = approved                       → Todo
 
 **规则与知识**（承接工作台方案的平台 `CODEX_HOME`）：
 
-- 品牌、安全、合规、UX 政策写成组织 skills，放在 `codex-org-config`，Spec agent 必须加载。
-- 每份 spec 记录生成 prompt、组织配置 SHA、主干 SHA。
+- 品牌、安全、合规、UX 政策写成组织 skills，放在 `codex-org-config`，Spec agent 必须加载。**第一期不实现**（需求见 [codex-org-config-requirements.md](./codex-org-config-requirements.md)）：Spec 起草只加载目标仓库自带的 `AGENTS.md` 和 skills，组织政策要到 Human Review 才可能被发现。
+- 每份 spec 记录生成 prompt、组织配置 SHA（第一期为空）、主干 SHA。
 - P3：`codex-org-config` 的 CI 用 20–50 个真实任务跑 eval。
 
 **度量**（来自闸门事件和 Git 时间戳）：
@@ -439,6 +440,7 @@ f. 合并成功后：三份文档进入 merged 阶段（4.2）；label 改为 To
 | 工作台：会话划分 | 同一阶段共用会话，跨阶段新开会话，以已批准文档交接（工作台方案 4.2） |
 | 工作台：编辑权 | 不做编辑权分配；AI 运行期间本轮修改的文件只读（工作台方案 4.4） |
 | 工作台：从仓库 | 多仓库项目的从仓库只读完整检出到 `repos/<alias>/`，供 AI 写 spec / plan 时读取；实现阶段的可写性仍由项目多仓库配置决定（工作台方案 4.1） |
+| 组织规则仓库 | `codex-org-config` 第一期不实现，只记录需求（[codex-org-config-requirements.md](./codex-org-config-requirements.md)），建议 P2 |
 | incident 模板 | 放到 P3：作为事故来源的 intent 模板变体（在 intent 骨架上增加“异常与证据”，换用分诊审阅清单），随外部信号接入一起做；第一期只有 intent、spec、plan 三类模板 |
 
 ### 仍需确认
@@ -608,7 +610,7 @@ f. 合并成功后：三份文档进入 merged 阶段（4.2）；label 改为 To
 | 阶段 | 内容 |
 |---|---|
 | P1 | 文档闸门、文档状态与级联、三类模板、6 个文档 label、实现阶段读取 plan.md、看板按阶段分列 |
-| P2 | 对照 spec / plan 的审查、计划偏离检测、度量、闸门角色与审批人配置（不含提交人自批限制） |
+| P2 | 对照 spec / plan 的审查、计划偏离检测、度量、闸门角色与审批人配置（不含提交人自批限制）、组织规则仓库 codex-org-config（建议） |
 | P3 | 外部信号 → intent（含事故来源的 intent 模板变体）、运维列待分诊信号、组织配置 eval |
 
 生产发布由目标项目 CI/CD 负责，不纳入 Symphony。
