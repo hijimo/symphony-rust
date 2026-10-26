@@ -33,7 +33,7 @@ impl SqliteRepository {
         Self { pool }
     }
 
-    pub(crate) fn pool(&self) -> DbPool {
+    pub fn pool(&self) -> DbPool {
         self.pool.clone()
     }
 }

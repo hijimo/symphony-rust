@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = { version = "0.8", features = ["macros"] }
+axum = { version = "0.8", features = ["macros", "ws"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 serde = { version = "1", features = ["derive"] }
@@ -39,6 +39,8 @@ urlencoding = "2"
 bytes = "1"
 hmac = "0.13.0"
 sha2 = "0.11.0"
+notify = "6"
+serde_yaml = "0.9"
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -46,3 +48,4 @@ tempfile = "3"
 reqwest = { version = "0.12", features = ["json"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+tokio-tungstenite = "0.28"

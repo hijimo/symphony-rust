@@ -14,6 +14,7 @@ pub mod process_manager;
 pub mod proxy;
 pub mod repository;
 pub mod router;
+pub mod sdlc;
 pub mod services;
 pub mod shutdown;
 pub mod templates;
@@ -173,6 +174,8 @@ pub struct AppState {
     pub alert_manager: Option<AlertManager>,
     /// Per-platform-host concurrency limiter for overview fan-out.
     pub platform_host_semaphores: Arc<PlatformHostSemaphores>,
+    /// AI-native SDLC document flow and workbench.
+    pub sdlc: crate::sdlc::SdlcState,
 }
 
 /// Per-platform-host semaphore registry for limiting concurrent API calls to the same host.

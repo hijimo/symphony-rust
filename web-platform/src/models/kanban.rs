@@ -218,14 +218,22 @@ pub struct CreateIssueRequest {
     pub description: Option<String>,
     pub labels: Vec<String>,
     pub assignee: Option<String>,
+    /// When false the default `Todo` label is not added (document flow).
+    pub add_default_todo: bool,
 }
 
 pub const DEFAULT_ISSUE_LABEL: &str = "Todo";
 
 impl CreateIssueRequest {
+    /// Same request without the default `Todo` label.
+    pub fn without_default_todo(mut self) -> Self {
+        self.add_default_todo = false;
+        self
+    }
+
     pub fn labels_with_default_todo(&self) -> Vec<String> {
         let mut labels = self.labels.clone();
-        if !labels.iter().any(|label| label == DEFAULT_ISSUE_LABEL) {
+        if self.add_default_todo && !labels.iter().any(|label| label == DEFAULT_ISSUE_LABEL) {
             labels.push(DEFAULT_ISSUE_LABEL.to_string());
         }
         labels
@@ -242,6 +250,7 @@ mod tests {
             description: None,
             labels: labels.into_iter().map(str::to_string).collect(),
             assignee: None,
+            add_default_todo: true,
         }
     }
 

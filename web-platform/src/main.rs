@@ -182,7 +182,38 @@ async fn main() {
         alert_eval_interval
     );
 
+    let sdlc_agents = web_platform::sdlc::agent::AgentManager::new(
+        web_platform::sdlc::agent::AgentConfig {
+            command: env::var("SYMPHONY_DOC_AGENT_COMMAND")
+                .unwrap_or_else(|_| "codex app-server".to_string()),
+            ..Default::default()
+        },
+        env::var("SYMPHONY_DOC_AGENT_MAX_SESSIONS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4),
+    );
+    if let Ok(configs) =
+        web_platform::repository::SystemConfigRepository::list_system_configs(&repo).await
+    {
+        if let Some(item) = configs
+            .into_iter()
+            .find(|i| i.key == web_platform::process_manager::spawn::CODEX_ENV_PASSTHROUGH_KEY)
+        {
+            sdlc_agents.set_env_passthrough(
+                web_platform::process_manager::spawn::parse_env_passthrough(&item.value),
+            );
+        }
+    }
+    let sdlc = web_platform::sdlc::SdlcState::new(
+        repo.pool(),
+        &config.workspace_root,
+        sdlc_agents,
+        std::sync::Arc::new(web_platform::sdlc::platform::DefaultPlatformFactory),
+    );
+
     let state = AppState {
+        sdlc,
         repo,
         jwt_secret: config.jwt_secret,
         encryption_key,

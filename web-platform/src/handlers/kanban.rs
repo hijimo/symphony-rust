@@ -780,3 +780,163 @@ mod tests {
         assert!(!issue_has_in_progress_label(&issue));
     }
 }
+
+// ==================== Stage columns (AI-native SDLC §9) ====================
+
+#[derive(Debug, serde::Deserialize)]
+pub struct StageKanbanQuery {
+    pub search: Option<String>,
+    pub author: Option<String>,
+    /// Days of closed issues shown in 运维 (default 7, max 30).
+    pub maintain_days: Option<i64>,
+}
+
+/// Build stage columns from open + recently closed issues and open MRs.
+/// Display mapping only (labels are not modified).
+pub(crate) async fn build_stage_columns(
+    state: &AppState,
+    project_id: i64,
+    client: &dyn GitPlatformClient,
+    token: &str,
+    project_path: &str,
+    query: &StageKanbanQuery,
+) -> Result<serde_json::Value, WebPlatformError> {
+    use crate::sdlc::kanban::{place_closed, place_open, track_of, StageColumn};
+
+    let base = ListIssuesOptions {
+        author: query.author.clone(),
+        search: query.search.clone(),
+        limit: 100,
+        state: Some("opened".to_string()),
+        ..Default::default()
+    };
+    let (open, _) = client
+        .list_issues(token, project_path, &base)
+        .await
+        .map_err(map_platform_error)?;
+    let days = query.maintain_days.unwrap_or(7).clamp(1, 30);
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
+    let (closed, _) = client
+        .list_issues(
+            token,
+            project_path,
+            &ListIssuesOptions {
+                state: Some("closed".to_string()),
+                limit: 50,
+                ..base.clone()
+            },
+        )
+        .await
+        .map_err(map_platform_error)?;
+
+    let flows = state.sdlc.store.list_flows(project_id).await?;
+    let mut flow_info = std::collections::HashMap::new();
+    for f in flows {
+        let docs = state.sdlc.store.list_documents(f.id).await?;
+        let statuses = docs.iter().map(|d| (d.doc_type, d.status)).collect();
+        let st = crate::sdlc::state::derive_flow_state(f.track, &statuses);
+        flow_info.insert(
+            f.issue_iid as u64,
+            serde_json::json!({
+                "state": st,
+                "track": f.track,
+                "docsMrUrl": f.docs_mr_url,
+                "mergeError": f.merge_error,
+                "rejected": st == crate::sdlc::model::FlowState::Rejected,
+                "documents": docs.iter().map(|d| serde_json::json!({
+                    "docType": d.doc_type, "status": d.status, "draftState": d.draft_state
+                })).collect::<Vec<_>>(),
+            }),
+        );
+    }
+
+    let prs = fetch_prs_internal(client, token, project_path).await?;
+    let mut columns: Vec<serde_json::Value> = StageColumn::ALL
+        .iter()
+        .map(|c| serde_json::json!({"key": c, "title": c.title(), "hint": c.hint(), "issues": [], "mergeRequests": []}))
+        .collect();
+    let idx = |c: StageColumn| StageColumn::ALL.iter().position(|x| *x == c).unwrap();
+
+    let card = |i: &PlatformIssue, p: crate::sdlc::kanban::Placement| {
+        serde_json::json!({
+            "iid": i.iid, "title": i.title, "state": i.state, "labels": i.labels,
+            "author": i.author, "assignees": i.assignees, "createdAt": i.created_at,
+            "updatedAt": i.updated_at, "webUrl": i.web_url,
+            "placement": p, "track": track_of(&i.labels),
+            "flow": flow_info.get(&i.iid),
+        })
+    };
+    for i in &open {
+        let p = place_open(&i.labels);
+        let c = idx(p.column);
+        columns[c]["issues"]
+            .as_array_mut()
+            .unwrap()
+            .push(card(i, p));
+    }
+    for i in &closed {
+        if flow_info
+            .get(&i.iid)
+            .and_then(|f| f["rejected"].as_bool())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let recent = i
+            .closed_at
+            .as_deref()
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .map(|t| t.with_timezone(&chrono::Utc) >= cutoff)
+            .unwrap_or(false);
+        if recent {
+            columns[idx(StageColumn::Maintain)]["issues"]
+                .as_array_mut()
+                .unwrap()
+                .push(card(i, place_closed()));
+        }
+    }
+    // Code MRs → 部署; docs MRs are shown as links on issue cards.
+    let deploy = idx(StageColumn::Deploy);
+    for mr in prs.merge_requests {
+        if mr.source_branch.starts_with("symphony/docs-") {
+            continue;
+        }
+        columns[deploy]["mergeRequests"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::to_value(mr).unwrap_or_default());
+    }
+    for c in columns.iter_mut() {
+        let n = c["issues"].as_array().map(|a| a.len()).unwrap_or(0);
+        c["totalCount"] = serde_json::json!(n);
+    }
+    Ok(serde_json::json!({"columns": columns, "prError": prs.error}))
+}
+
+/// GET /api/projects/:id/kanban/stages
+pub async fn get_kanban_stages(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(project_id): Path<i64>,
+    Query(query): Query<StageKanbanQuery>,
+) -> Result<Json<ResponseData<serde_json::Value>>, WebPlatformError> {
+    let user_id: i64 = claims
+        .sub
+        .parse()
+        .map_err(|_| WebPlatformError::Internal("invalid user id in token".to_string()))?;
+    if let Err(retry_after) = state.phase3_rate_limiter.check("kanban", user_id, 30) {
+        return Err(WebPlatformError::RateLimited(retry_after));
+    }
+    let ctx = resolve_project_context(&state, &claims, user_id, project_id).await?;
+    let mut data = build_stage_columns(
+        &state,
+        project_id,
+        ctx.client.as_ref(),
+        &ctx.platform_token,
+        &ctx.project_path,
+        &query,
+    )
+    .await?;
+    data["platform"] = serde_json::json!(ctx.platform);
+    Ok(Json(ResponseData::success(data)))
+}
