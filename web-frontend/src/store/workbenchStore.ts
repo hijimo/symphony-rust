@@ -70,6 +70,8 @@ interface WorkbenchState {
   notices: { id: number; level: string; message: string }[];
   /** Paths changed by the last AI turn (tree dot markers). */
   aiTouched: Record<string, boolean>;
+  /** Pending "jump to line" request for the editor. */
+  revealLine: { path: string; line: number } | null;
 
   init: (projectId: number, iid: number) => Promise<void>;
   dispose: () => void;
@@ -102,6 +104,10 @@ export interface SelectionRef {
 
 let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+/** Bumped by init/dispose; stale connects and reconnects are dropped (verify B I3). */
+let sessionGen = 0;
+/** In-flight save per path, so explicit saves wait for autosaves (verify B I7). */
+const inflight: Record<string, Promise<void>> = {};
 let autosaveTimers: Record<string, ReturnType<typeof setTimeout>> = {};
 let noticeSeq = 0;
 let entrySeq = 0;
@@ -202,9 +208,11 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   connected: false,
   notices: [],
   aiTouched: {},
+  revealLine: null,
 
   init: async (projectId, iid) => {
     get().dispose();
+    const gen = ++sessionGen;
     set({
       projectId,
       iid,
@@ -233,7 +241,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
       // Open the current stage document.
       const doc = flow.documents.find((d) => d.docType === get().stage) ?? flow.documents[flow.documents.length - 1];
       if (doc) await get().openFile(`${flow.writableDir}/${doc.docType}.md`);
-      connect(projectId, iid);
+      if (gen === sessionGen) connect(projectId, iid, gen);
     } catch (e) {
       set({ error: (e as Error).message });
     } finally {
@@ -242,10 +250,14 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   },
 
   dispose: () => {
+    sessionGen++;
     if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = null;
+    // Flush pending autosaves instead of dropping them (verify B I1).
+    const pending = Object.keys(autosaveTimers);
     Object.values(autosaveTimers).forEach(clearTimeout);
     autosaveTimers = {};
+    pending.forEach((p) => void get().save(p, false));
     if (socket) {
       socket.onclose = null;
       socket.close();
@@ -258,7 +270,9 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     const stage = currentStage(flow);
     set((s) => ({
       flow,
-      stage: s.flow ? s.stage : stage,
+      // Follow the flow when its state changes (e.g. G1 → spec review),
+      // keep the user's manual choice otherwise (verify B I2).
+      stage: !s.flow || s.flow.state !== flow.state ? stage : s.stage,
       stages: {
         ...s.stages,
         ...(flow.runningStage ? { [flow.runningStage]: { ...s.stages[flow.runningStage], running: true } } : {}),
@@ -344,32 +358,42 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   },
 
   save: async (path, commit) => {
-    const { projectId, iid } = get();
-    const buf = get().buffers[path];
-    if (!buf || !buf.writable) return;
-    if (!buf.dirty && !commit) return;
-    if (autosaveTimers[path]) clearTimeout(autosaveTimers[path]);
-    try {
-      const r = await api.writeFile(projectId, iid, { path, content: buf.content, baseVersion: buf.baseVersion, commit });
-      set((s) => ({
-        buffers: {
-          ...s.buffers,
-          [path]: { ...s.buffers[path], baseVersion: r.version, dirty: s.buffers[path].content !== buf.content },
-        },
-      }));
-      if (commit) get().pushNotice('info', r.commitSha ? `已提交 ${r.commitSha.slice(0, 8)}` : '没有需要提交的改动');
-      await get().refreshFlow();
-    } catch (e) {
-      const msg = (e as Error).message;
-      if (msg.includes('已被修改')) {
-        try {
-          const f = await api.readFile(projectId, iid, path);
-          set((s) => ({ buffers: { ...s.buffers, [path]: { ...s.buffers[path], conflict: { content: f.content ?? '', version: f.version } } } }));
-        } catch {
-          /* ignore */
+    const run = async () => {
+      const { projectId, iid } = get();
+      const buf = get().buffers[path];
+      if (!buf || !buf.writable) return;
+      if (!buf.dirty && !commit) return;
+      if (autosaveTimers[path]) clearTimeout(autosaveTimers[path]);
+      delete autosaveTimers[path];
+      try {
+        const r = await api.writeFile(projectId, iid, { path, content: buf.content, baseVersion: buf.baseVersion, commit });
+        set((s) => {
+          const cur = s.buffers[path];
+          if (!cur) return {};
+          return { buffers: { ...s.buffers, [path]: { ...cur, baseVersion: r.version, dirty: cur.content !== buf.content } } };
+        });
+        if (commit) get().pushNotice('info', r.commitSha ? `已提交 ${r.commitSha.slice(0, 8)}` : '没有需要提交的改动');
+        await get().refreshFlow();
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (msg.includes('已被修改')) {
+          try {
+            const f = await api.readFile(projectId, iid, path);
+            set((s) => (s.buffers[path] ? { buffers: { ...s.buffers, [path]: { ...s.buffers[path], conflict: { content: f.content ?? '', version: f.version } } } } : {}));
+          } catch {
+            /* ignore */
+          }
         }
+        get().pushNotice('error', msg);
       }
-      get().pushNotice('error', msg);
+    };
+    const prev = inflight[path] ?? Promise.resolve();
+    const next = prev.then(run, run);
+    inflight[path] = next;
+    try {
+      await next;
+    } finally {
+      if (inflight[path] === next) delete inflight[path];
     }
   },
 
@@ -379,18 +403,16 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     if (!buf) return;
     try {
       const f = await api.readFile(projectId, iid, path);
+      const upd = (fn: (b: Buffer) => Buffer) =>
+        set((s) => (s.buffers[path] ? { buffers: { ...s.buffers, [path]: fn(s.buffers[path]) } } : {}));
       if (f.version === buf.baseVersion && !buf.conflict) {
-        if (buf.writable !== f.writable) {
-          set((s) => ({ buffers: { ...s.buffers, [path]: { ...s.buffers[path], writable: f.writable } } }));
-        }
+        if (buf.writable !== f.writable) upd((b) => ({ ...b, writable: f.writable }));
         return;
       }
-      if (buf.dirty) {
-        set((s) => ({ buffers: { ...s.buffers, [path]: { ...s.buffers[path], conflict: { content: f.content ?? '', version: f.version } } } }));
+      if (get().buffers[path]?.dirty) {
+        upd((b) => ({ ...b, conflict: { content: f.content ?? '', version: f.version } }));
       } else {
-        set((s) => ({
-          buffers: { ...s.buffers, [path]: { ...s.buffers[path], content: f.content ?? '', baseVersion: f.version, writable: f.writable, conflict: null } },
-        }));
+        upd((b) => ({ ...b, content: f.content ?? '', baseVersion: f.version, writable: f.writable, conflict: null }));
       }
     } catch {
       /* deleted / unreadable: keep buffer */
@@ -455,25 +477,34 @@ export function currentStage(flow: FlowView): DocType {
   }
 }
 
-function connect(projectId: number, iid: number) {
-  const { getState, setState } = useWorkbenchStore;
+function connect(projectId: number, iid: number, gen: number) {
+  const { setState } = useWorkbenchStore;
+  const alive = () => gen === sessionGen;
   api
     .wsTicket(projectId, iid)
     .then((ticket) => {
-      if (getState().projectId !== projectId || getState().iid !== iid) return;
+      if (!alive()) return;
+      if (socket) {
+        socket.onclose = null;
+        socket.close();
+      }
       const ws = new WebSocket(api.wsUrl(projectId, iid, ticket));
       socket = ws;
-      ws.onopen = () => setState({ connected: true });
-      ws.onclose = () => {
-        setState({ connected: false });
-        if (getState().projectId === projectId && getState().iid === iid) {
-          reconnectTimer = setTimeout(() => connect(projectId, iid), 3000);
-        }
+      ws.onopen = () => {
+        if (alive()) setState({ connected: true });
       };
-      ws.onmessage = (m) => handleMessage(JSON.parse(String(m.data)));
+      ws.onclose = () => {
+        if (socket === ws) socket = null;
+        if (!alive()) return;
+        setState({ connected: false });
+        reconnectTimer = setTimeout(() => connect(projectId, iid, gen), 3000);
+      };
+      ws.onmessage = (m) => {
+        if (alive() && socket === ws) handleMessage(JSON.parse(String(m.data)));
+      };
     })
     .catch(() => {
-      reconnectTimer = setTimeout(() => connect(projectId, iid), 5000);
+      if (alive()) reconnectTimer = setTimeout(() => connect(projectId, iid, gen), 5000);
     });
 }
 
@@ -492,7 +523,12 @@ export function handleMessage(msg: Record<string, unknown>) {
     setState((s) => ({ stages: { ...s.stages, [stage]: reduceAgentEvent(s.stages[stage], ev) } }));
     if (ev.type === 'turn_diff') {
       const files = (ev as { files?: string[] }).files ?? [];
-      setState(() => ({ aiTouched: Object.fromEntries(files.map((f) => [f, true])) as Record<string, boolean> }));
+      const touched: Record<string, boolean> = {};
+      for (const f of files) {
+        const parts = f.split('/');
+        for (let i = 1; i <= parts.length; i++) touched[parts.slice(0, i).join('/')] = true;
+      }
+      setState(() => ({ aiTouched: touched }));
       files.forEach((f) => void getState().reloadFromDisk(f));
     }
   } else if (type === 'agent_state') {

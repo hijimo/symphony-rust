@@ -52,6 +52,16 @@ function DocProgress({ card }: { card: StageIssueCard }) {
   );
 }
 
+/** "3 小时" style wait duration since `iso`; empty when unparseable. */
+export function waitedFor(iso: string, now = Date.now()): string {
+  const t = Date.parse(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z');
+  if (Number.isNaN(t)) return '';
+  const min = Math.max(0, Math.floor((now - t) / 60000));
+  if (min < 60) return `${min} 分钟`;
+  if (min < 60 * 24) return `${Math.floor(min / 60)} 小时`;
+  return `${Math.floor(min / 1440)} 天`;
+}
+
 function Card({ card, projectId, onStart }: { card: StageIssueCard; projectId: number; onStart: (c: StageIssueCard) => void }) {
   const navigate = useNavigate();
   const p = card.placement;
@@ -59,7 +69,11 @@ function Card({ card, projectId, onStart }: { card: StageIssueCard; projectId: n
     <Paper variant="outlined" sx={{ p: 1, borderRadius: '6px' }} data-testid={`stage-card-${card.iid}`}>
       <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', mb: 0.5, flexWrap: 'wrap' }}>
         <Chip size="small" label={p.subState} sx={{ height: 20, fontSize: 11 }} color={p.waitingHuman ? 'warning' : 'default'} />
-        {p.waitingHuman && <Typography sx={{ fontSize: 11, color: '#ac3500' }}>等待审批</Typography>}
+        {p.waitingHuman && (
+          <Typography sx={{ fontSize: 11, color: '#ac3500' }}>
+            等待审批{waitedFor(card.updatedAt) ? ` · ${waitedFor(card.updatedAt)}` : ''}
+          </Typography>
+        )}
         {card.flow?.documents.some((d) => d.draftState === 'running') && <Typography sx={{ fontSize: 11, color: '#0053db' }}>AI 运行中</Typography>}
         {card.track && <Chip size="small" variant="outlined" label={`track:${card.track}`} sx={{ height: 20, fontSize: 10 }} />}
         {p.anomaly && (

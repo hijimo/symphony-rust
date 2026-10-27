@@ -62,6 +62,10 @@ export default function FlowGatePanel() {
   const [revertTo, setRevertTo] = useState<DocType>('plan');
   const [implBranch, setImplBranch] = useState('');
 
+  // Validation results belong to one document state (verify B minor).
+  const docKey = `${stage}:${flow?.documents.find((d) => d.docType === stage)?.status ?? ''}`;
+  useEffect(() => setIssues(null), [docKey]);
+
   useEffect(() => {
     if (!projectId || !iid) return;
     api.listTemplates(projectId, iid).then(setTemplates).catch(() => setTemplates([]));

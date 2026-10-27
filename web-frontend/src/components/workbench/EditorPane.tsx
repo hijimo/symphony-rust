@@ -1,4 +1,4 @@
-import { lazy, Suspense, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -17,8 +17,11 @@ import type { OnMount } from '@monaco-editor/react';
 import { useWorkbenchStore, type SelectionRef } from '../../store/workbenchStore';
 import MarkdownPreview from './MarkdownPreview';
 
-const Editor = lazy(() => import('@monaco-editor/react').then((m) => ({ default: m.default })));
-const DiffEditor = lazy(() => import('@monaco-editor/react').then((m) => ({ default: m.DiffEditor })));
+const monacoReady = () => import('./monacoSetup');
+const Editor = lazy(() => monacoReady().then(() => import('@monaco-editor/react')).then((m) => ({ default: m.default })));
+const DiffEditor = lazy(() =>
+  monacoReady().then(() => import('@monaco-editor/react')).then((m) => ({ default: m.DiffEditor })),
+);
 
 type ViewMode = 'source' | 'split' | 'preview';
 
@@ -48,7 +51,7 @@ function PlainEditor({ value, readOnly, onChange }: { value: string; readOnly: b
 export const useMonaco = () => (import.meta.env.MODE !== 'test' && !(window as unknown as { __PLAIN_EDITOR__?: boolean }).__PLAIN_EDITOR__);
 
 export default function EditorPane({ onAskAi }: { onAskAi: (sel: SelectionRef) => void }) {
-  const { tabs, active, buffers, setActive, closeTab, edit, save, resolveConflict, stages, stage } = useWorkbenchStore();
+  const { tabs, active, buffers, setActive, closeTab, edit, save, resolveConflict, stages, stage, revealLine: reveal } = useWorkbenchStore();
   const [mode, setMode] = useState<ViewMode>('split');
   const [diffOpen, setDiffOpen] = useState(false);
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
@@ -77,6 +80,13 @@ export default function EditorPane({ onAskAi }: { onAskAi: (sel: SelectionRef) =
     editorRef.current?.focus();
   };
 
+  useEffect(() => {
+    if (reveal && reveal.path === active && editorRef.current) {
+      revealLine(reveal.line);
+      useWorkbenchStore.setState({ revealLine: null });
+    }
+  }, [reveal, active]);
+
   if (!buf || !active) {
     return (
       <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#737686' }}>
@@ -89,16 +99,24 @@ export default function EditorPane({ onAskAi }: { onAskAi: (sel: SelectionRef) =
   const editor = monaco ? (
     <Suspense fallback={<Typography sx={{ p: 2 }}>编辑器加载中…</Typography>}>
       <Editor
+        key={active}
         path={active}
+        defaultValue={buf.content}
         value={buf.content}
         language={languageOf(active)}
-        onChange={(v) => edit(active, v ?? '')}
+        onChange={(v) => {
+          // Guard (verify B B1): only accept edits from this path's own model.
+          const modelPath = editorRef.current?.getModel()?.uri.path.replace(/^\//, '');
+          if (modelPath !== undefined && modelPath !== active) return;
+          if ((v ?? '') === useWorkbenchStore.getState().buffers[active]?.content) return;
+          edit(active, v ?? '');
+        }}
         onMount={onMount}
         options={{ readOnly, minimap: { enabled: false }, wordWrap: isMd ? 'on' : 'off', fontSize: 13 }}
       />
     </Suspense>
   ) : (
-    <PlainEditor value={buf.content} readOnly={readOnly} onChange={(v) => edit(active, v)} />
+    <PlainEditor key={active} value={buf.content} readOnly={readOnly} onChange={(v) => edit(active, v)} />
   );
 
   return (

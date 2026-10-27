@@ -825,7 +825,7 @@ impl WorkspaceService {
         if staged.trim().is_empty() {
             return Ok(None);
         }
-        let msg = format!("{message}\n\nSymphony-Actor: {actor_trailer}\n");
+        let msg = commit_message(message, actor_trailer);
         self.git(&dir, &["commit", "-q", "-m", &msg], None).await?;
         self.push(spec).await?;
         let sha = self.git(&dir, &["rev-parse", "HEAD"], None).await?;
@@ -838,6 +838,28 @@ impl WorkspaceService {
         self.git(&dir, &["push", "origin", &refspec], spec.token.as_deref())
             .await
             .map(|_| ())
+    }
+
+    /// Head sha of the work branch on the remote mirror (after `fetch`).
+    pub async fn remote_head(
+        &self,
+        spec: &WorkspaceSpec,
+    ) -> Result<Option<String>, WebPlatformError> {
+        let mirror = self.mirror_dir(spec.project_id, spec.primary.alias.as_deref());
+        Ok(self
+            .git(
+                &mirror,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/remotes/origin/{}", spec.branch),
+                ],
+                None,
+            )
+            .await
+            .ok()
+            .map(|s| s.trim().to_string()))
     }
 
     pub async fn head_sha(&self, spec: &WorkspaceSpec) -> Result<String, WebPlatformError> {
@@ -863,13 +885,121 @@ impl WorkspaceService {
             .await
     }
 
+    /// Delete the work branch on the remote (rollback of a failed start).
+    pub async fn delete_remote_branch(&self, spec: &WorkspaceSpec) -> Result<(), WebPlatformError> {
+        let mirror = self.mirror_dir(spec.project_id, spec.primary.alias.as_deref());
+        if !mirror.join("HEAD").exists() {
+            return Ok(());
+        }
+        let refspec = format!(":refs/heads/{}", spec.branch);
+        self.git(
+            &mirror,
+            &["push", &spec.primary.clone_url, &refspec],
+            spec.token.as_deref(),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Move a workspace to a new key (all repositories, via `git worktree move`).
+    pub async fn rename_workspace(
+        &self,
+        spec: &WorkspaceSpec,
+        new_key: &str,
+    ) -> Result<(), WebPlatformError> {
+        let from = self.workspace_dir(spec.project_id, &spec.key);
+        let to = self.workspace_dir(spec.project_id, new_key);
+        if to.exists() {
+            return Err(WebPlatformError::Conflict("目标工作区已存在".into()));
+        }
+        let mut repos: Vec<(Option<&str>, PathBuf, PathBuf)> = Vec::new();
+        if spec.is_multi_repo() {
+            tokio::fs::create_dir_all(&to)
+                .await
+                .map_err(|e| WebPlatformError::Internal(e.to_string()))?;
+            repos.push((
+                spec.primary.alias.as_deref(),
+                from.join(spec.primary_rel()),
+                to.join(spec.primary_rel()),
+            ));
+            for r in &spec.secondaries {
+                if let Some(a) = r.alias.as_deref() {
+                    repos.push((Some(a), from.join(a), to.join(a)));
+                }
+            }
+        } else {
+            if let Some(parent) = to.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|e| WebPlatformError::Internal(e.to_string()))?;
+            }
+            repos.push((None, from.clone(), to.clone()));
+        }
+        for (alias, src, dst) in repos {
+            if !src.join(".git").exists() {
+                continue;
+            }
+            let mirror = self.mirror_dir(spec.project_id, alias);
+            self.git(
+                &mirror,
+                &[
+                    "worktree",
+                    "move",
+                    &src.to_string_lossy(),
+                    &dst.to_string_lossy(),
+                ],
+                None,
+            )
+            .await?;
+        }
+        let _ = tokio::fs::remove_dir_all(&from).await;
+        Ok(())
+    }
+
     pub async fn remove(&self, spec: &WorkspaceSpec) -> Result<(), WebPlatformError> {
         let ws = self.workspace_dir(spec.project_id, &spec.key);
         let _ = tokio::fs::remove_dir_all(&ws).await;
-        let mirror = self.mirror_dir(spec.project_id, spec.primary.alias.as_deref());
-        let _ = self.git(&mirror, &["worktree", "prune"], None).await;
+        let mut mirrors = vec![self.mirror_dir(spec.project_id, spec.primary.alias.as_deref())];
+        for r in &spec.secondaries {
+            mirrors.push(self.mirror_dir(spec.project_id, r.alias.as_deref()));
+        }
+        for m in mirrors {
+            let _ = self.git(&m, &["worktree", "prune"], None).await;
+        }
+        // The local work branch would block re-creating the worktree.
+        let pm = self.mirror_dir(spec.project_id, spec.primary.alias.as_deref());
+        let _ = self.git(&pm, &["branch", "-D", &spec.branch], None).await;
         Ok(())
     }
+}
+
+/// Commit message with trailers. `actor` is `"ai"`/`"human"` optionally
+/// followed by ` (<name>)`: `Symphony-Actor` only ever carries `ai` or
+/// `human` (design §10.1); the name goes into `Symphony-User`, stripped of
+/// control characters so it cannot inject extra trailers.
+pub fn commit_message(message: &str, actor: &str) -> String {
+    let (kind, name) = match actor.split_once(' ') {
+        Some((k, rest)) => (k, rest.trim().trim_start_matches('(').trim_end_matches(')')),
+        None => (actor, ""),
+    };
+    let kind = if kind == "ai" { "ai" } else { "human" };
+    // Single line, no `:` so the value can never read as another trailer.
+    let name: String = name
+        .chars()
+        .filter(|c| !c.is_control())
+        .map(|c| if c == ':' { '_' } else { c })
+        .take(100)
+        .collect();
+    let mut msg = format!("{message}\n\nSymphony-Actor: {kind}\n");
+    if !name.is_empty() {
+        let key = if kind == "ai" {
+            "Symphony-Agent"
+        } else {
+            "Symphony-User"
+        };
+        msg.push_str(&format!("{key}: {name}\n"));
+    }
+    msg
 }
 
 fn join_rel(base: &str, name: &str) -> String {
@@ -902,6 +1032,22 @@ mod tests {
         ));
         assert!(!WorkspaceService::is_writable(&w, "src/main.rs"));
         assert!(!WorkspaceService::is_writable(&[], "a"));
+    }
+
+    #[test]
+    fn commit_trailers() {
+        assert_eq!(
+            commit_message("m", "ai (codex)"),
+            "m\n\nSymphony-Actor: ai\nSymphony-Agent: codex\n"
+        );
+        assert_eq!(
+            commit_message("m", "human (Alice)"),
+            "m\n\nSymphony-Actor: human\nSymphony-User: Alice\n"
+        );
+        let evil = commit_message("m", "human (x\nSymphony-Actor: ai)");
+        assert_eq!(evil.matches("Symphony-Actor:").count(), 1);
+        assert!(evil.contains("Symphony-Actor: human"));
+        assert_eq!(commit_message("m", "weird"), "m\n\nSymphony-Actor: human\n");
     }
 
     #[test]

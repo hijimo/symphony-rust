@@ -40,6 +40,38 @@ pub fn restore_frontmatter(original_fm: &str, new: &str) -> String {
     format!("{original_fm}{}", strip_frontmatter(new))
 }
 
+/// Patterns that indicate credentials leaked into a document (verify A I-1).
+const SECRET_MARKERS: &[&str] = &[
+    "-----BEGIN ",
+    "\"refresh_token\"",
+    "\"access_token\"",
+    "\"id_token\"",
+    "\"OPENAI_API_KEY\"",
+    "glpat-",
+    "ghp_",
+    "github_pat_",
+    "gho_",
+    "xoxb-",
+    "AKIA",
+];
+
+/// Return the first secret-like marker found in `text`, if any. `extra`
+/// holds high-entropy values that must never appear (e.g. the contents of
+/// the codex credential file).
+pub fn find_secret(text: &str, extra: &[String]) -> Option<String> {
+    for m in SECRET_MARKERS {
+        if text.contains(m) {
+            return Some(m.trim_matches('"').to_string());
+        }
+    }
+    for v in extra {
+        if v.len() >= 16 && text.contains(v.as_str()) {
+            return Some("凭据内容".to_string());
+        }
+    }
+    None
+}
+
 /// Body hash used for approval binding: sha256 of the body without
 /// frontmatter, with line endings normalized and trailing whitespace trimmed,
 /// so local edits to frontmatter never void an approval (§4.4).
@@ -254,6 +286,16 @@ mod tests {
         // CRLF and trailing whitespace are normalized.
         assert_eq!(body_hash("# T\r\nbody\r\n\n"), body_hash("# T\nbody"));
         assert_eq!(strip_frontmatter("no fm"), "no fm");
+    }
+
+    #[test]
+    fn secret_detection() {
+        assert!(find_secret("token glpat-abc", &[]).is_some());
+        assert!(find_secret("{\"refresh_token\": \"x\"}", &[]).is_some());
+        assert!(find_secret("plain text", &[]).is_none());
+        let v = "0123456789abcdefSECRET".to_string();
+        assert!(find_secret(&format!("x {v} y"), std::slice::from_ref(&v)).is_some());
+        assert!(find_secret("short", &["short".to_string()]).is_none());
     }
 
     #[test]

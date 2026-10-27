@@ -26,6 +26,9 @@ pub struct SdlcState {
     pub platforms: Arc<dyn platform::PlatformFactory>,
     /// Per-flow lock serializing state transitions and git operations.
     pub flow_locks: Arc<dashmap::DashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
+    /// Draft generation per (flow, doc): bumped on every start / manual
+    /// takeover so stale retry loops stop (verify C #4).
+    pub draft_gen: Arc<dashmap::DashMap<(i64, model::DocType), u64>>,
     /// Per-flow change notifications for WebSocket subscribers.
     pub flow_events: Arc<dashmap::DashMap<i64, tokio::sync::broadcast::Sender<serde_json::Value>>>,
 }
@@ -43,6 +46,7 @@ impl SdlcState {
             agents,
             platforms,
             flow_locks: Arc::new(dashmap::DashMap::new()),
+            draft_gen: Arc::new(dashmap::DashMap::new()),
             flow_events: Arc::new(dashmap::DashMap::new()),
         }
     }
@@ -59,6 +63,20 @@ impl SdlcState {
             .entry(flow_id)
             .or_insert_with(|| tokio::sync::broadcast::channel(256).0)
             .clone()
+    }
+
+    /// Start a new draft generation; returns its number.
+    pub fn bump_draft(&self, flow_id: i64, doc: model::DocType) -> u64 {
+        let mut e = self.draft_gen.entry((flow_id, doc)).or_insert(0);
+        *e += 1;
+        *e
+    }
+
+    pub fn draft_current(&self, flow_id: i64, doc: model::DocType, gen: u64) -> bool {
+        self.draft_gen
+            .get(&(flow_id, doc))
+            .map(|g| *g == gen)
+            .unwrap_or(false)
     }
 
     pub fn notify(&self, flow_id: i64, event: serde_json::Value) {

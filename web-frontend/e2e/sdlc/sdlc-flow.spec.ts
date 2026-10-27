@@ -62,8 +62,10 @@ const slug = `${SDLC_E2E.ns}/${SDLC_E2E.repo}`;
 let projectId = '';
 
 test.describe.serial('AI-native SDLC document flow', () => {
-  test.beforeEach(async ({ page }) => {
-    // Monaco loads from a CDN; use the built-in plain editor so the run is offline-safe.
+  test.beforeEach(async ({ page }, info) => {
+    // Plain editor for flow tests; the [monaco] test uses the real
+    // (locally bundled) Monaco editor.
+    if (info.title.includes('[monaco]')) return;
     await page.addInitScript(() => {
       (window as unknown as { __PLAIN_EDITOR__?: boolean }).__PLAIN_EDITOR__ = true;
     });
@@ -200,12 +202,7 @@ test.describe.serial('AI-native SDLC document flow', () => {
 
   test('workbench AI chat streams a reply over WebSocket', async ({ page }) => {
     test.skip(!projectId, 'setup test did not create a project');
-    // KNOWN DEFECT (reported, not fixed here): under React StrictMode (vite dev)
-    // useWorkbenchStore.init runs twice; connect() of the first, disposed init
-    // still opens a socket after its ws-ticket resolves, so two sockets stay open
-    // and every agent event is rendered twice (user message + doubled deltas
-    // "收到，收到，我来看看我来看看…"). Assertions below stay strict.
-    test.info().annotations.push({ type: 'defect', description: 'workbench opens duplicate WebSocket; chat entries rendered twice' });
+    // Regression for the duplicate-WebSocket defect (StrictMode double init).
     await login(page);
     const openSockets = new Set<string>();
     page.on('websocket', (ws) => {
@@ -236,5 +233,52 @@ test.describe.serial('AI-native SDLC document flow', () => {
     await expect(chat.getByTestId('assistant-message')).toHaveCount(1);
     await expect(chat.getByTestId('assistant-message')).toHaveText('收到，我来看看这份文档。');
     await expect(chat.getByText('— 本轮完成 —')).toHaveCount(1);
+  });
+
+  test('[monaco] tab switching never overwrites a document; AI turn can be reverted', async ({ page }) => {
+    test.skip(!projectId, 'setup test did not create a project');
+    await login(page);
+    const puts: { path: string; content: string }[] = [];
+    const cdn: string[] = [];
+    page.on('request', (r) => {
+      if (r.method() === 'PUT' && r.url().includes('/file')) puts.push(JSON.parse(r.postData() ?? '{}'));
+      if (r.url().includes('cdn.jsdelivr.net')) cdn.push(r.url());
+    });
+    await page.goto(`/projects/${projectId}/changes/new`);
+    await page.getByRole('textbox', { name: '标题' }).fill('Monaco 标签');
+    await page.getByRole('button', { name: '创建并进入工作台' }).click();
+    await page.waitForURL(/\/changes\/(\d+)$/, { timeout: 120_000 });
+    const iid = Number(/\/changes\/(\d+)$/.exec(page.url())![1]);
+    const intentPath = `docs/changes/${iid}/intent.md`;
+    const token = await page.evaluate(() => localStorage.getItem('token'));
+    const readIntent = async () => {
+      const r = await page.request.get(
+        `/api/projects/${projectId}/changes/${iid}/file?path=${encodeURIComponent(intentPath)}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      return ((await r.json()).data?.content ?? '') as string;
+    };
+
+    await expect(page.locator('.monaco-editor').first()).toBeVisible({ timeout: 60_000 });
+    await page.getByTestId('tree-README.md').click();
+    await expect(page.getByRole('tab', { name: /README\.md/ })).toBeVisible();
+    await page.getByRole('tab', { name: /intent\.md/ }).click();
+    await page.getByRole('tab', { name: /README\.md/ }).click();
+    await page.getByRole('tab', { name: /intent\.md/ }).click();
+    await page.waitForTimeout(2500); // > autosave debounce
+    const bad = puts.filter((p) => p.path === intentPath && p.content.startsWith('# app'));
+    expect(bad, 'intent.md must never receive README content').toHaveLength(0);
+    expect(await readIntent()).toContain('## Problem');
+    expect(cdn, 'Monaco must not be loaded from a CDN').toHaveLength(0);
+
+    await expect(page.getByLabel('AI 已连接')).toBeVisible({ timeout: 30_000 });
+    await page.getByLabel('AI 输入').fill(`完善需求，写入 \`${intentPath}\``);
+    await page.getByRole('button', { name: '发送' }).click();
+    const review = page.getByTestId('turn-review');
+    await expect(review).toBeVisible({ timeout: 30_000 });
+    await expect(review).not.toContainText('共 0 处');
+    await expect.poll(readIntent, { timeout: 20_000 }).toContain('users cannot X');
+    await review.getByRole('button', { name: '整轮回退' }).click();
+    await expect.poll(async () => (await readIntent()).includes('users cannot X'), { timeout: 20_000 }).toBe(false);
   });
 });

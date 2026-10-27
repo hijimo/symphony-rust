@@ -3,7 +3,7 @@
 > **范围**：本方案定义 intent / spec / plan 三份文档的流程、闸门、文档状态、文档模板，以及与现有实现流程的衔接。
 > 网页编辑能力复用公共编辑器组件，见 [ai-doc-workbench-design.md](./ai-doc-workbench-design.md)，本文不重复。
 >
-> **平台范围**：第一期支持 GitLab、GitHub、Gitea。Linear tracker 用原生状态而不是 label，第一期不支持文档闸门，Linear 项目一律按 `track:fast` 处理。
+> **平台范围**：第一期支持 GitLab、GitHub（2026-10-27 修订：Gitea 移出第一期，web-platform 尚无 Gitea 平台客户端）。Gitea 与 Linear 项目一律按 `track:fast` 处理。
 >
 > **状态**：设计草案，未实现。第 11 节为决策记录，全部决策已确定。
 >
@@ -64,7 +64,7 @@ Symphony 目前覆盖 Playbook 的 **Build 后半段到 Merge**：Issue 进入 T
 - **入口（已确定）**：文档流程**只从 Symphony 界面进入**：
   - “新建需求”：创建 Issue 并开始 intent，路径为 `track:full`；
   - Issue 卡片上的“开始文档流程”：选择路径，默认选中 `track:plan`。
-  - 在 GitLab / GitHub / Gitea 上直接创建、没有路径 label 的 Issue，停在“计划”列的“待启动”，不自动起草。
+  - 在 GitLab / GitHub 上直接创建、没有路径 label 的 Issue，停在“计划”列的“待启动”，不自动起草。
   - 原因：web-platform 不轮询 Issue，编排器不处理 `doc:*`；从界面进入可以避免两个服务争抢同一个 Issue，也不会给每个随手创建的 Issue 消耗 token。
 
 ## 3. 文档存放
@@ -460,7 +460,7 @@ f. 合并成功后：三份文档进入 merged 阶段（4.2）；label 改为项
 | 文档目录 | 固定 `docs/changes/<iid>/`，不可配置；项目级模板在 `docs/changes/_templates/`（第 3 节） |
 | Codex 认证 | 第一期沿用编排器的 `CODEX_HOME`，不建独立目录（工作台方案 4.2） |
 | 第一期分支保护 | 已确认：目标仓库文档 MR 不要求平台审批，或核心工程师有绕过权限，保证作者可自合并 |
-| 平台范围 | 第一期 GitLab / GitHub / Gitea；Linear 不支持文档闸门 |
+| 平台范围 | 第一期 GitLab / GitHub；Gitea、Linear 不支持文档闸门（2026-10-27 修订，原为含 Gitea） |
 | frontmatter | 只在创建时写一次；计算 blob SHA 前去掉 frontmatter |
 | plan 文件清单 | plan 模板固定 `## Files` 小节，供偏离检测使用 |
 | 提交人自批限制（M1） | 第一期、第二期都不启用：提交审阅的人可以批准自己的文档。审计仍记录具名批准人 |

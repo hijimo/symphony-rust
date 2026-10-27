@@ -244,6 +244,10 @@ pub async fn read_file(
     Query(q): Query<PathQuery>,
 ) -> ApiResult {
     let (_, flow, spec, writable) = flow_spec(&state, &claims, project_id, iid).await?;
+    if let Some(rev) = q.rev.as_deref().filter(|r| !r.is_empty()) {
+        let content = state.sdlc.workspaces.read_at(&spec, &q.path, rev).await?;
+        return ok(json!({"path": q.path, "rev": rev, "content": content}));
+    }
     let mut f = state
         .sdlc
         .workspaces

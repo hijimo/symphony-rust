@@ -62,11 +62,11 @@ describe('StageBoard', () => {
     renderBoard(stageKanban());
     const c1 = screen.getByTestId('stage-card-1');
     expect(within(c1).getByText('待启动')).toBeInTheDocument();
-    expect(within(c1).queryByText('等待审批')).not.toBeInTheDocument();
+    expect(within(c1).queryByText(/^等待审批/)).not.toBeInTheDocument();
 
     const c2 = screen.getByTestId('stage-card-2');
     expect(within(c2).getByText('待审 intent')).toBeInTheDocument();
-    expect(within(c2).getByText('等待审批')).toBeInTheDocument();
+    expect(within(c2).getByText(/^等待审批( · .+)?$/)).toBeInTheDocument();
     expect(within(c2).getByText('track:full')).toBeInTheDocument();
     // intent in_review ◐, spec/plan not created ○
     expect(within(c2).getByLabelText('文档进度').textContent).toBe('I◐S○P○');
@@ -205,5 +205,16 @@ describe('StageBoard', () => {
     expect(await within(dialog).findByText('Issue 已有文档流程')).toBeInTheDocument();
     expect(screen.getByTestId('location')).toHaveTextContent(`/projects/${PID}/kanban`);
     expect(onChanged).not.toHaveBeenCalled();
+  });
+});
+
+describe('waitedFor', () => {
+  it('formats durations', async () => {
+    const { waitedFor } = await import('../StageBoard');
+    const now = Date.parse('2026-10-27T10:00:00Z');
+    expect(waitedFor('2026-10-27 09:30:00', now)).toBe('30 分钟');
+    expect(waitedFor('2026-10-27T05:00:00Z', now)).toBe('5 小时');
+    expect(waitedFor('2026-10-24T10:00:00Z', now)).toBe('3 天');
+    expect(waitedFor('bad', now)).toBe('');
   });
 });

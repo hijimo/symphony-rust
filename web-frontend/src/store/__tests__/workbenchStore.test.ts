@@ -67,3 +67,26 @@ describe('handleMessage', () => {
     expect(useWorkbenchStore.getState().notices[0].message).toBe('label 同步失败');
   });
 });
+
+describe('fixes after verification', () => {
+  afterEach(() => useWorkbenchStore.getState().dispose());
+
+  it('stage follows the flow when its state advances, keeps manual choice otherwise', () => {
+    useWorkbenchStore.setState({ flow: null, stage: 'intent' });
+    useWorkbenchStore.getState().applyFlow(makeFlow({ state: 'intent_review' }));
+    expect(useWorkbenchStore.getState().stage).toBe('intent');
+    useWorkbenchStore.getState().setStage('plan');
+    useWorkbenchStore.getState().applyFlow(makeFlow({ state: 'intent_review' }));
+    expect(useWorkbenchStore.getState().stage).toBe('plan');
+    useWorkbenchStore.getState().applyFlow(makeFlow({ state: 'spec_review' }));
+    expect(useWorkbenchStore.getState().stage).toBe('spec');
+  });
+
+  it('marks ancestor directories of AI-touched files', () => {
+    handleMessage({ type: 'agent', stage: 'intent', event: { type: 'turn_diff', diff: 'x', baseSha: 'a', files: ['docs/changes/1/spec.md'] } });
+    const t = useWorkbenchStore.getState().aiTouched;
+    expect(t['docs']).toBe(true);
+    expect(t['docs/changes/1']).toBe(true);
+    expect(t['docs/changes/1/spec.md']).toBe(true);
+  });
+});

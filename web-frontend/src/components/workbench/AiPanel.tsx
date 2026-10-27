@@ -27,20 +27,31 @@ import type { DocType } from '../../types/changes';
 
 const STAGE_LABEL: Record<DocType, string> = { intent: 'Intent', spec: 'Spec', plan: 'Plan' };
 
+const PATH_RE = /^`([^`\s]+\.[a-zA-Z0-9]+)(?::(\d+))?`$/;
+
+/** Parse `` `path.ext:12` `` references in AI messages. Exported for tests. */
+export function parseFileRef(token: string): { path: string; line: number | null } | null {
+  const m = PATH_RE.exec(token);
+  return m ? { path: m[1], line: m[2] ? Number(m[2]) : null } : null;
+}
+
 function FileLinks({ text }: { text: string }) {
   const openFile = useWorkbenchStore((s) => s.openFile);
-  const parts = text.split(/(`[^`]+\.[a-zA-Z0-9]+`)/g);
+  const parts = text.split(/(`[^`\s]+\.[a-zA-Z0-9]+(?::\d+)?`)/g);
   return (
     <>
       {parts.map((p, i) =>
-        /^`[^`]+\.[a-zA-Z0-9]+`$/.test(p) ? (
+        parseFileRef(p) ? (
           <Box
             key={i}
             component="a"
             href="#"
             onClick={(e: React.MouseEvent) => {
               e.preventDefault();
-              openFile(p.slice(1, -1).replace(/:\d+$/, ''));
+              const ref = parseFileRef(p)!;
+              void openFile(ref.path).then(() => {
+                if (ref.line) useWorkbenchStore.setState({ revealLine: { path: ref.path, line: ref.line } });
+              });
             }}
             sx={{ fontFamily: 'monospace', color: '#0053db' }}
           >
@@ -120,8 +131,9 @@ function Entry({ e }: { e: ChatEntry }) {
 
 function PendingCard() {
   const { stages, stage, answer } = useWorkbenchStore();
-  const [answers, setAnswers] = useState<Record<string, string>>({});
   const p = stages[stage].pending[0];
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  useEffect(() => setAnswers({}), [p?.requestId]);
   if (!p) return null;
   if (p.kind === 'approval' && p.event.type === 'approval_request') {
     return (

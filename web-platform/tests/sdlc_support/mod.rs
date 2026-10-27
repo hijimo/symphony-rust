@@ -73,6 +73,8 @@ pub struct GitLabState {
     pub access_level: Mutex<i64>,
     /// When set, the next merge attempt fails with 405 (policy).
     pub fail_merge: Mutex<bool>,
+    /// When set, creating a merge request fails with 500.
+    pub fail_create_mr: Mutex<bool>,
     /// Tokens seen on merge calls (to check approver token is used).
     pub merge_tokens: Mutex<Vec<String>>,
 }
@@ -240,7 +242,10 @@ async fn create_mr(
     State(st): State<GS>,
     AxPath(_p): AxPath<String>,
     Json(b): Json<Value>,
-) -> Json<Value> {
+) -> Result<Json<Value>, StatusCode> {
+    if *st.fail_create_mr.lock().unwrap() {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
     let mut m = st.mrs.lock().unwrap();
     let iid = m.keys().max().copied().unwrap_or(0) + 1;
     let mr = FakeMr {
@@ -254,7 +259,7 @@ async fn create_mr(
     };
     let v = mr_json(&mr);
     m.insert(iid, mr);
-    Json(v)
+    Ok(Json(v))
 }
 
 async fn get_mr(

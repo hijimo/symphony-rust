@@ -511,11 +511,19 @@ impl AgentSession {
                     .get(item_id)
                     .cloned()
                     .unwrap_or_default();
-                let outside: Vec<String> = paths
+                let mut outside: Vec<String> = paths
                     .iter()
                     .filter(|p| !self.in_writable(p))
                     .cloned()
                     .collect();
+                // Unknown paths (no item/started seen) or a request for extra
+                // write roots are never approved (verify A I-2).
+                if paths.is_empty() {
+                    outside.push("<未知路径>".to_string());
+                }
+                if let Some(root) = params.get("grantRoot").and_then(|v| v.as_str()) {
+                    outside.push(format!("grantRoot={root}"));
+                }
                 let decision = if outside.is_empty() {
                     "accept"
                 } else {
@@ -653,6 +661,13 @@ impl AgentSession {
         t.mode = Some(mode);
         t.turn_id = None;
         true
+    }
+
+    /// Release the process after a non-interactive draft so the session
+    /// quota is not held until the idle reaper runs (verify C #3). The
+    /// thread id is kept; the next turn resumes it.
+    pub async fn release_after_draft(&self) {
+        self.stop().await;
     }
 
     /// Release the session after a turn (also clears per-turn locks).

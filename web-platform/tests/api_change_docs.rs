@@ -813,3 +813,186 @@ async fn multi_repo_workspace_layout() {
         "{ctx}"
     );
 }
+
+// ------------------------------------------------- fixes after verification
+
+/// verify C #1/#2: starting on an existing `Todo` issue removes
+/// implementation labels and adds the track label.
+#[tokio::test]
+async fn existing_issue_drops_impl_labels_and_adds_track() {
+    let app = SdlcApp::new().await;
+    let iid = app.gitlab.add_issue("Existing", &["Todo", "bug"]) as i64;
+    let (st, v) = app
+        .post(&app.base(), json!({"track": "plan", "issueIid": iid}))
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let labels = app.gitlab.issue(iid as u64).labels;
+    assert!(!labels.contains(&"Todo".to_string()), "{labels:?}");
+    assert!(labels.contains(&"doc:plan".to_string()));
+    assert!(labels.contains(&"track:plan".to_string()));
+    assert!(labels.contains(&"bug".to_string()), "unrelated labels kept");
+}
+
+/// verify A I-7: failed MR creation rolls back branch + workspace + DB so
+/// the user can retry.
+#[tokio::test]
+async fn failed_start_rolls_back_completely() {
+    let app = SdlcApp::new().await;
+    let iid = app.gitlab.add_issue("Retry me", &[]) as i64;
+    *app.gitlab.fail_create_mr.lock().unwrap() = true;
+    let (st, _) = app
+        .post(&app.base(), json!({"track": "plan", "issueIid": iid}))
+        .await;
+    assert_ne!(st, StatusCode::OK);
+    assert!(
+        git(
+            &app.bare,
+            &[
+                "rev-parse",
+                "--verify",
+                &format!("refs/heads/symphony/docs-{iid}")
+            ]
+        )
+        .is_err(),
+        "remote docs branch removed"
+    );
+    assert!(!app.primary_ws(iid).exists(), "workspace removed");
+    *app.gitlab.fail_create_mr.lock().unwrap() = false;
+    let (st, v) = app
+        .post(&app.base(), json!({"track": "plan", "issueIid": iid}))
+        .await;
+    assert_eq!(st, StatusCode::OK, "retry works: {v}");
+}
+
+/// verify A I-4: commits pushed to the docs branch after approval are not
+/// merged silently.
+#[tokio::test]
+async fn merge_refuses_unreviewed_remote_commits() {
+    let app = SdlcApp::new().await;
+    let iid = app.gitlab.add_issue("Sneaky", &[]) as i64;
+    app.post(&app.base(), json!({"track": "plan", "issueIid": iid}))
+        .await;
+    let base = format!("{}/{iid}", app.base());
+    let cur = read(&app, iid, &file_path(iid, "plan")).await;
+    let fm_end = cur["content"].as_str().unwrap().find("\n---\n").unwrap() + 5;
+    let text = format!("{}# Plan\n\n## Files\n- src/main.rs\n\n## Steps\n1\n\n## Tests\n- t\n\n## Risks\n- r\n\n## Alternatives considered\n- n\n", &cur["content"].as_str().unwrap()[..fm_end]);
+    app.put(&format!("{base}/file"), json!({"path": file_path(iid, "plan"), "content": text, "baseVersion": cur["version"], "commit": true})).await;
+    app.post(&format!("{base}/docs/plan/submit"), json!({}))
+        .await;
+    // Someone pushes directly to the docs branch.
+    let seed = app.dir.path().join("sneak");
+    git(
+        app.dir.path(),
+        &[
+            "clone",
+            "-q",
+            "-b",
+            &format!("symphony/docs-{iid}"),
+            app.bare.to_str().unwrap(),
+            seed.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    std::fs::write(seed.join("src/evil.rs"), "evil\n").unwrap();
+    git(&seed, &["add", "-A"]).unwrap();
+    git(
+        &seed,
+        &[
+            "-c",
+            "user.name=x",
+            "-c",
+            "user.email=x@x",
+            "commit",
+            "-qm",
+            "evil",
+        ],
+    )
+    .unwrap();
+    git(
+        &seed,
+        &["push", "-q", "origin", &format!("symphony/docs-{iid}")],
+    )
+    .unwrap();
+
+    let (st, v) = app
+        .post(
+            &format!("{base}/docs/plan/decision"),
+            json!({"action": "approve"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let (_, v) = app.get(&base).await;
+    assert_eq!(v["data"]["state"], "plan_approved_pending_merge");
+    assert!(v["data"]["flow"]["mergeError"]
+        .as_str()
+        .unwrap()
+        .contains("被直接修改"));
+    assert!(read_branch_file(&app.bare, "main", "src/evil.rs").is_none());
+}
+
+/// verify A I-1: documents containing credentials are never committed.
+#[tokio::test]
+async fn secrets_are_never_committed() {
+    let app = SdlcApp::new().await;
+    let iid = start_full(&app, "Secrets").await;
+    let base = format!("{}/{iid}", app.base());
+    let cur = read(&app, iid, &file_path(iid, "intent")).await;
+    let text = format!(
+        "{}\nleak: glpat-abcdefghijklmnop\n",
+        cur["content"].as_str().unwrap()
+    );
+    let (st, v) = app
+        .put(&format!("{base}/file"), json!({"path": file_path(iid, "intent"), "content": text, "baseVersion": cur["version"], "commit": true}))
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+    assert!(v["retMsg"].as_str().unwrap().contains("凭据"));
+    let remote = read_branch_file(
+        &app.bare,
+        &format!("symphony/docs-{iid}"),
+        &file_path(iid, "intent"),
+    )
+    .unwrap();
+    assert!(!remote.contains("glpat-"));
+}
+
+/// verify C #5: `Symphony-Actor` only ever carries `ai` / `human`.
+#[tokio::test]
+async fn trailer_is_ai_or_human_only() {
+    let app = SdlcApp::new().await;
+    let iid = start_full(&app, "Trailer").await;
+    let log = git(
+        &app.bare,
+        &["log", "--format=%B", &format!("symphony/docs-{iid}")],
+    )
+    .unwrap();
+    for line in log.lines().filter(|l| l.starts_with("Symphony-Actor:")) {
+        assert!(
+            line == "Symphony-Actor: ai" || line == "Symphony-Actor: human",
+            "{line}"
+        );
+    }
+    assert!(log.contains("Symphony-User: Administrator"), "{log}");
+}
+
+/// verify C #3 / C #4: draft sessions release their quota; a manual
+/// takeover stops the retry loop.
+#[tokio::test]
+async fn draft_releases_quota_for_many_flows() {
+    let app = SdlcApp::new().await; // quota = 4 sessions
+    let mut iids = vec![];
+    for i in 0..5 {
+        let iid = start_full(&app, &format!("Q{i}")).await;
+        let base = format!("{}/{iid}", app.base());
+        app.post(&format!("{base}/docs/intent/submit"), json!({}))
+            .await;
+        app.post(
+            &format!("{base}/docs/intent/decision"),
+            json!({"action": "approve"}),
+        )
+        .await;
+        app.wait_flow(iid, |f| SdlcApp::doc_status(f, "spec") == "in_review")
+            .await;
+        iids.push(iid);
+    }
+    assert_eq!(iids.len(), 5);
+}

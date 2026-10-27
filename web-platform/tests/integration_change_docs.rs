@@ -126,6 +126,46 @@ async fn interactive_turn_streams_events_and_commits_as_ai() {
     )
     .unwrap();
     assert!(log.contains("Symphony-Actor: ai"), "{log}");
+    // Turn diff carries the pre-turn sha so the UI can revert the turn / hunks.
+    let mut ws3 = connect(&app, iid).await;
+    let hist = next_matching(&mut ws3, |v| {
+        v["type"] == "history" && v["stage"] == "intent"
+    })
+    .await;
+    let td = hist["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["type"] == "turn_diff")
+        .cloned()
+        .expect("turn_diff");
+    let base_sha = td["baseSha"].as_str().unwrap();
+    assert!(td["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f == &json!(target)));
+    let enc = urlencoding::encode(&target).to_string();
+    let (_, before) = app
+        .get(&format!(
+            "{}/{iid}/file?path={enc}&rev={base_sha}",
+            app.base()
+        ))
+        .await;
+    let before = before["data"]["content"].as_str().unwrap().to_string();
+    assert!(before.contains("users cannot see claim status"), "{before}");
+    let (_, now) = app
+        .get(&format!("{}/{iid}/file?path={enc}", app.base()))
+        .await;
+    assert_ne!(
+        now["data"]["content"].as_str().unwrap(),
+        before,
+        "rev must return old content"
+    );
+    let (st, _) = app
+        .get(&format!("{}/{iid}/file?path={enc}&rev=main", app.base()))
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
     let text = read_branch_file(&app.bare, &format!("symphony/docs-{iid}"), &target).unwrap();
     assert!(
         text.starts_with("---\nsymphony:"),
