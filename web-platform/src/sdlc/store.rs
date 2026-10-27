@@ -485,6 +485,18 @@ impl SdlcStore {
         .await
     }
 
+    /// Drafts left `running` by a previous process can never finish: mark
+    /// them failed so the UI offers retry / manual (review r2 I1).
+    pub async fn reset_stale_drafts(&self) -> Result<usize> {
+        blocking(self.pool.clone(), move |c| {
+            Ok(c.execute(
+                "UPDATE change_documents SET draft_state = 'failed', draft_error = '服务重启，起草被中断' WHERE draft_state = 'running'",
+                [],
+            )?)
+        })
+        .await
+    }
+
     pub async fn insert_approval(&self, a: NewApproval<'_>) -> Result<()> {
         let (doc, gate, action, actor) = (
             a.document_id,

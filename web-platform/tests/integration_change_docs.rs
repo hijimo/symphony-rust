@@ -473,3 +473,28 @@ async fn human_edits_never_attributed_to_ai_turn() {
         .collect();
     assert_eq!(deltas, "working");
 }
+
+/// review r2 I1: drafts left `running` by a crashed process are reset and
+/// can be retried.
+#[tokio::test]
+async fn stale_running_draft_is_recoverable() {
+    let app = SdlcApp::new().await;
+    let iid = start_full(&app).await;
+    let conn = rusqlite::Connection::open(app.dir.path().join("test.db")).unwrap();
+    conn.execute("UPDATE change_documents SET draft_state = 'running'", [])
+        .unwrap();
+    let store = web_platform::sdlc::store::SdlcStore::new(app.repo.pool());
+    assert_eq!(store.reset_stale_drafts().await.unwrap(), 1);
+    let (_, v) = app.get(&format!("{}/{iid}", app.base())).await;
+    assert_eq!(v["data"]["documents"][0]["draftState"], "failed");
+    // Retry is accepted even if a stale `running` value remained.
+    conn.execute("UPDATE change_documents SET draft_state = 'running'", [])
+        .unwrap();
+    let (st, v) = app
+        .post(
+            &format!("{}/{iid}/docs/intent/draft/retry", app.base()),
+            json!({}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+}

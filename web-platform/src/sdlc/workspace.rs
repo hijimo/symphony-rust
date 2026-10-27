@@ -94,6 +94,9 @@ pub struct ContextStatus {
 #[derive(Debug, Clone)]
 pub struct WorkspaceService {
     root: PathBuf,
+    /// Serializes git operations on the shared per-project mirrors
+    /// (fetch / worktree add / move / prune) (review r2 I4).
+    mirror_locks: std::sync::Arc<dashmap::DashMap<i64, std::sync::Arc<tokio::sync::Mutex<()>>>>,
 }
 
 fn git_err(msg: impl Into<String>) -> WebPlatformError {
@@ -116,6 +119,7 @@ impl WorkspaceService {
     pub fn new(workspace_root: impl Into<PathBuf>) -> Self {
         Self {
             root: workspace_root.into().join("editor"),
+            mirror_locks: std::sync::Arc::new(dashmap::DashMap::new()),
         }
     }
 
@@ -130,6 +134,13 @@ impl WorkspaceService {
             .join("mirrors")
             .join(project_id.to_string())
             .join(format!("{}.git", sanitize_key(alias.unwrap_or("primary"))))
+    }
+
+    fn mirror_lock(&self, project_id: i64) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        self.mirror_locks
+            .entry(project_id)
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     fn askpass_dir(&self) -> PathBuf {
@@ -266,6 +277,8 @@ impl WorkspaceService {
 
     /// Create or refresh the workspace (§4.1 初始化与同步). Idempotent.
     pub async fn ensure(&self, spec: &WorkspaceSpec) -> Result<ContextStatus, WebPlatformError> {
+        let lock = self.mirror_lock(spec.project_id);
+        let _g = lock.lock().await;
         let token = spec.token.as_deref();
         let ws = self.workspace_dir(spec.project_id, &spec.key);
         if spec.is_multi_repo() {
@@ -388,6 +401,8 @@ impl WorkspaceService {
 
     /// Fetch the primary mirror (refresh `origin/*` refs seen by worktrees).
     pub async fn fetch(&self, spec: &WorkspaceSpec) -> Result<(), WebPlatformError> {
+        let lock = self.mirror_lock(spec.project_id);
+        let _g = lock.lock().await;
         let mirror = self.mirror_dir(spec.project_id, spec.primary.alias.as_deref());
         self.git(
             &mirror,
@@ -793,12 +808,12 @@ impl WorkspaceService {
                 let d = ws.join(a);
                 if d.join(".git").exists() {
                     let out = self
-                        .git(&d, &["status", "--porcelain"], None)
+                        .git(&d, &["status", "--porcelain", "--ignored"], None)
                         .await
                         .unwrap_or_default();
                     if !out.trim().is_empty() {
                         let _ = self.git(&d, &["checkout", "--", "."], None).await;
-                        let _ = self.git(&d, &["clean", "-fd"], None).await;
+                        let _ = self.git(&d, &["clean", "-fdx"], None).await;
                         discarded.push(format!("{a}/*"));
                     }
                 }
@@ -907,6 +922,8 @@ impl WorkspaceService {
         spec: &WorkspaceSpec,
         new_key: &str,
     ) -> Result<(), WebPlatformError> {
+        let lock = self.mirror_lock(spec.project_id);
+        let _g = lock.lock().await;
         let from = self.workspace_dir(spec.project_id, &spec.key);
         let to = self.workspace_dir(spec.project_id, new_key);
         if to.exists() {
@@ -957,6 +974,8 @@ impl WorkspaceService {
     }
 
     pub async fn remove(&self, spec: &WorkspaceSpec) -> Result<(), WebPlatformError> {
+        let lock = self.mirror_lock(spec.project_id);
+        let _g = lock.lock().await;
         let ws = self.workspace_dir(spec.project_id, &spec.key);
         let _ = tokio::fs::remove_dir_all(&ws).await;
         let mut mirrors = vec![self.mirror_dir(spec.project_id, spec.primary.alias.as_deref())];

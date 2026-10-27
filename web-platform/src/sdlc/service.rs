@@ -265,11 +265,54 @@ pub async fn view(
     })
 }
 
+/// When labels are written.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LabelSync {
+    /// Flow start / revert: Symphony takes the issue into the document phase
+    /// and removes implementation labels.
+    Claim,
+    /// Any later change: never touch an issue that a human moved to the
+    /// implementation phase; report the mismatch instead (design §4.1).
+    Update,
+}
+
+/// Labels currently on the issue (empty when the platform is unreachable).
+async fn issue_labels(app: &AppState, project: &Project, flow: &ChangeFlow) -> Option<Vec<String>> {
+    let token = project_token(app, project).await.ok()?;
+    let c = client(app, project).await.ok()?;
+    c.get_issue(&token, &project_path(project), flow.issue_iid as u64)
+        .await
+        .ok()
+        .map(|i| i.labels)
+}
+
 /// Push the derived `doc:*` label (and the hand-off label) to the platform.
-/// Failures are logged and surfaced as a notice; state stays in the DB.
-async fn sync_label(app: &AppState, project: &Project, flow: &ChangeFlow) -> Option<String> {
+/// Returns a notice for the user when something is off.
+async fn sync_label_mode(
+    app: &AppState,
+    project: &Project,
+    flow: &ChangeFlow,
+    mode: LabelSync,
+) -> Option<String> {
     let statuses = sdlc(app).store.statuses(flow.id).await.ok()?;
     let st = state::derive_flow_state(flow.track, &statuses);
+    let impl_set = impl_labels(project);
+    if mode == LabelSync::Update && !matches!(st, FlowState::Todo | FlowState::Rejected) {
+        if let Some(current) = issue_labels(app, project, flow).await {
+            let manual: Vec<&String> = current
+                .iter()
+                .filter(|l| impl_set.contains(l) && *l != "Backlog")
+                .collect();
+            if !manual.is_empty() {
+                let msg = format!(
+                    "label 与文档状态不一致：Issue 已被人工改为 {}，文档仍在 {}。Symphony 不会自动改回，请人工处理",
+                    manual.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("、"),
+                    st.doc_label().unwrap_or("-")
+                );
+                return Some(msg);
+            }
+        }
+    }
     let (mut add, remove): (Vec<String>, Vec<String>) = match st {
         FlowState::Todo => (
             vec![todo_label(project)],
@@ -278,12 +321,15 @@ async fn sync_label(app: &AppState, project: &Project, flow: &ChangeFlow) -> Opt
         FlowState::Rejected => (vec![], DOC_LABELS.iter().map(|s| s.to_string()).collect()),
         other => {
             let label = other.doc_label().unwrap_or_default().to_string();
-            // Document phase owns the issue: drop implementation labels too.
             let remove = DOC_LABELS
                 .iter()
                 .filter(|l| **l != label)
                 .map(|s| s.to_string())
-                .chain(impl_labels(project))
+                .chain(if mode == LabelSync::Claim {
+                    impl_set.clone()
+                } else {
+                    vec![]
+                })
                 .collect();
             (vec![label], remove)
         }
@@ -307,6 +353,10 @@ async fn sync_label(app: &AppState, project: &Project, flow: &ChangeFlow) -> Opt
             Some(format!("label 同步失败：{e}"))
         }
     }
+}
+
+async fn sync_label(app: &AppState, project: &Project, flow: &ChangeFlow) -> Option<String> {
+    sync_label_mode(app, project, flow, LabelSync::Update).await
 }
 
 async fn comment_both(app: &AppState, project: &Project, flow: &ChangeFlow, body: &str) {
@@ -367,6 +417,7 @@ pub async fn start_flow(ctx: &Ctx, req: StartRequest) -> Result<FlowView, WebPla
     let c = client(app, project).await?;
     let path = project_path(project);
 
+    let mut created_issue = false;
     let (iid, title) = match req.issue_iid {
         Some(iid) => {
             let issue = c
@@ -404,6 +455,7 @@ pub async fn start_flow(ctx: &Ctx, req: StartRequest) -> Result<FlowView, WebPla
                 )
                 .await
                 .map_err(map_platform_error)?;
+            created_issue = true;
             (issue.iid as i64, title)
         }
     };
@@ -467,10 +519,23 @@ pub async fn start_flow(ctx: &Ctx, req: StartRequest) -> Result<FlowView, WebPla
             let _ = s.workspaces.remove(&spec).await;
         }
         let _ = crate::sdlc::store::delete_flow(&s.store, flow.id).await;
+        if created_issue {
+            // The issue only existed for this flow: close it so no orphan
+            // `doc:*` issue is left on the platform (review r2 I3).
+            let _ = c
+                .add_issue_comment(
+                    &token,
+                    &path,
+                    iid as u64,
+                    &format!("Symphony 文档流程创建失败，已关闭此 Issue：{e}"),
+                )
+                .await;
+            let _ = c.close_issue(&token, &path, iid as u64).await;
+        }
         return Err(e);
     }
     let flow = s.store.get_flow_by_id(flow.id).await?.unwrap();
-    if let Some(warn) = sync_label(app, project, &flow).await {
+    if let Some(warn) = sync_label_mode(app, project, &flow, LabelSync::Claim).await {
         s.notify(
             flow.id,
             json!({"type": "notice", "level": "warning", "message": warn}),
@@ -1020,6 +1085,10 @@ pub async fn merge_docs(ctx: &Ctx, flow: &ChangeFlow) -> Result<(), WebPlatformE
     let lock = s.flow_lock(flow.id);
     let _g = lock.lock().await;
     let flow = s.store.get_flow_by_id(flow.id).await?.unwrap();
+    // Between approval and merge an AI turn may have run (review r2 I2):
+    // refuse while one is running, and re-check content against approvals.
+    ensure_not_drafting(app, &flow, DocType::Plan)?;
+    reconcile_content(app, &ctx.project, &flow).await?;
     let statuses = s.store.statuses(flow.id).await?;
     if state::derive_flow_state(flow.track, &statuses) != FlowState::PlanApprovedPendingMerge {
         return Err(WebPlatformError::Conflict(
@@ -1063,23 +1132,26 @@ pub async fn merge_docs(ctx: &Ctx, flow: &ChangeFlow) -> Result<(), WebPlatformE
         c.set_merge_request_draft(&sys_token, &path, mr, false)
             .await
             .map_err(map_platform_error)?;
+        // Real content conflict only: merge main into the docs branch (no
+        // rebase) and retry once. Other rejections (pipeline running / failed,
+        // approvals required, protected branch) are reported, never retried
+        // with extra commits (review r2 B3).
+        let conflicted = c
+            .get_merge_request(&sys_token, &path, mr)
+            .await
+            .ok()
+            .and_then(|m| m.merge_status)
+            .is_some_and(|st| st == "cannot_be_merged");
+        if conflicted {
+            s.workspaces.merge_main(&spec).await?;
+            s.workspaces.push(&spec).await?;
+        }
         match c.merge_merge_request(&approver_token, &path, mr).await {
             Ok(sha) => Ok(sha),
-            Err(crate::services::git_platform::GitPlatformError::Conflict { .. }) => {
-                // Merge main into the docs branch (no rebase, B3) and retry once.
-                s.workspaces.merge_main(&spec).await?;
-                s.workspaces.push(&spec).await?;
-                c.merge_merge_request(&approver_token, &path, mr)
-                    .await
-                    .map_err(|e| match e {
-                        crate::services::git_platform::GitPlatformError::Conflict {
-                            message,
-                            ..
-                        } => WebPlatformError::Conflict(format!(
-                            "平台拒绝合并（可能要求另一位成员审批或流水线未通过）：{message}"
-                        )),
-                        other => map_platform_error(other),
-                    })
+            Err(crate::services::git_platform::GitPlatformError::Conflict { message, .. }) => {
+                Err(WebPlatformError::Conflict(format!(
+                    "平台拒绝合并（CI 未完成或未通过、需要审批，或分支受保护），请处理后点“重试合并”：{message}"
+                )))
             }
             Err(e) => Err(map_platform_error(e)),
         }
@@ -1228,16 +1300,34 @@ pub async fn revert(
         s.workspaces
             .rename_workspace(&spec, &flow.issue_iid.to_string())
             .await?;
+        // Approvals stay valid only for documents whose body is unchanged;
+        // anything copied from the implementation branch with new content
+        // goes back to review and its approval is voided (review r2 B1).
+        let before: std::collections::HashMap<DocType, Option<String>> = s
+            .store
+            .list_documents(flow.id)
+            .await?
+            .into_iter()
+            .map(|d| (d.doc_type, d.current_blob_sha))
+            .collect();
         let new_flow = s.store.start_revision(flow.id, &branch, to).await?;
         let spec = workspace_spec(app, &ctx.project, &new_flow).await?;
         for d in s.store.list_documents(flow.id).await? {
             let rel = ws_doc_path(&spec, flow.issue_iid, d.doc_type);
-            if let Ok(f) = s.workspaces.read_file(&spec, &rel, &[]).await {
-                if let Some(text) = f.content {
-                    s.store
-                        .set_blob(d.id, &content::body_hash(&text), None)
-                        .await?;
-                }
+            let Ok(f) = s.workspaces.read_file(&spec, &rel, &[]).await else {
+                continue;
+            };
+            let Some(text) = f.content else { continue };
+            let hash = content::body_hash(&text);
+            let changed =
+                before.get(&d.doc_type).cloned().flatten().as_deref() != Some(hash.as_str());
+            s.store.set_blob(d.id, &hash, None).await?;
+            if changed && d.status == DocStatus::Approved {
+                s.store.set_status(d.id, DocStatus::InReview, None).await?;
+                s.store.invalidate_approvals(d.id).await?;
+            } else if d.status != DocStatus::Approved {
+                // Target and downstream lose their old approvals too.
+                s.store.invalidate_approvals(d.id).await?;
             }
         }
         s.store
@@ -1254,7 +1344,16 @@ pub async fn revert(
         )
         .await;
     }
-    after_change(app, &ctx.project, flow).await
+    let s2 = sdlc(app);
+    let fresh = s2.store.get_flow_by_id(flow.id).await?.unwrap();
+    if let Some(w) = sync_label_mode(app, &ctx.project, &fresh, LabelSync::Claim).await {
+        s2.notify(
+            flow.id,
+            json!({"type": "notice", "level": "warning", "message": w}),
+        );
+    }
+    s2.notify(flow.id, json!({"type": "flow_changed"}));
+    view(app, &ctx.project, fresh).await
 }
 
 // --------------------------------------------------------------- drafting
@@ -1560,7 +1659,13 @@ pub async fn retry_draft(
         .get_document(flow.id, doc)
         .await?
         .ok_or_else(|| WebPlatformError::NotFound(format!("{doc} 不存在")))?;
-    if d.draft_state == "running" {
+    let live = ctx
+        .app
+        .sdlc
+        .agents
+        .get(flow.id, doc)
+        .is_some_and(|s| s.is_running());
+    if d.draft_state == "running" && live {
         return Err(WebPlatformError::Conflict("AI 正在起草".into()));
     }
     ctx.app

@@ -212,6 +212,12 @@ async fn main() {
         std::sync::Arc::new(web_platform::sdlc::platform::DefaultPlatformFactory),
     );
 
+    match sdlc.store.reset_stale_drafts().await {
+        Ok(n) if n > 0 => info!("Reset {} interrupted document drafts", n),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("Failed to reset interrupted drafts: {}", e),
+    }
+
     let state = AppState {
         sdlc,
         repo,

@@ -570,7 +570,8 @@ async fn merge_failure_keeps_plan_review_and_retry_works() {
     assert_eq!(st, StatusCode::OK, "{v}");
 
     *app.gitlab.fail_merge.lock().unwrap() = true;
-    // A conflict-like failure triggers merge-main + one retry; make the retry fail too.
+    // Policy rejection (405): no automatic retry, no extra commits (review r2 B3).
+    let head_before = git(&app.bare, &["rev-parse", &format!("symphony/docs-{iid}")]).unwrap();
     let (st, v) = app
         .post(
             &format!("{base}/docs/plan/decision"),
@@ -579,11 +580,18 @@ async fn merge_failure_keeps_plan_review_and_retry_works() {
         .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     let flow = v["data"].clone();
-    // fail_merge resets after one call; the automatic retry succeeds.
-    assert!(
-        flow["state"] == "todo" || flow["flow"]["mergeError"].is_string(),
-        "{flow}"
-    );
+    assert_eq!(flow["state"], "plan_approved_pending_merge", "{flow}");
+    assert!(flow["flow"]["mergeError"]
+        .as_str()
+        .unwrap()
+        .contains("重试合并"));
+    let head_after = git(&app.bare, &["rev-parse", &format!("symphony/docs-{iid}")]).unwrap();
+    assert_eq!(head_before, head_after, "no unreviewed merge commit pushed");
+    // Manual retry merges.
+    let (st, v) = app.post(&format!("{base}/merge"), json!({})).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["data"]["state"], "todo");
+    assert!(flow["state"] == "plan_approved_pending_merge", "{flow}");
 
     let app2 = SdlcApp::new().await;
     let iid2 = app2.gitlab.add_issue("P2", &[]) as i64;
@@ -995,4 +1003,165 @@ async fn draft_releases_quota_for_many_flows() {
         iids.push(iid);
     }
     assert_eq!(iids.len(), 5);
+}
+
+// ------------------------------------------------- r2 review fixes
+
+async fn plan_flow_in_review(app: &SdlcApp, title: &str) -> (i64, String) {
+    let iid = app.gitlab.add_issue(title, &[]) as i64;
+    app.post(&app.base(), json!({"track": "plan", "issueIid": iid}))
+        .await;
+    let base = format!("{}/{iid}", app.base());
+    let cur = read(app, iid, &file_path(iid, "plan")).await;
+    let fm_end = cur["content"].as_str().unwrap().find("\n---\n").unwrap() + 5;
+    let text = format!("{}# Plan\n\n## Files\n- src/main.rs\n\n## Steps\n1\n\n## Tests\n- t\n\n## Risks\n- r\n\n## Alternatives considered\n- n\n", &cur["content"].as_str().unwrap()[..fm_end]);
+    app.put(&format!("{base}/file"), json!({"path": file_path(iid, "plan"), "content": text, "baseVersion": cur["version"], "commit": true})).await;
+    let (st, v) = app
+        .post(&format!("{base}/docs/plan/submit"), json!({}))
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    (iid, base)
+}
+
+/// review r2 B2: a human moving the issue to the implementation phase is
+/// never reverted; a mismatch notice is reported instead.
+#[tokio::test]
+async fn manual_todo_is_not_reverted() {
+    let app = SdlcApp::new().await;
+    let (iid, base) = plan_flow_in_review(&app, "Manual").await;
+    // Human sets Todo on the platform while docs are in review.
+    {
+        let mut m = app.gitlab.issues.lock().unwrap();
+        let i = m.get_mut(&(iid as u64)).unwrap();
+        i.labels.retain(|l| !l.starts_with("doc:"));
+        i.labels.push("Todo".into());
+    }
+    let (st, v) = app
+        .post(
+            &format!("{base}/docs/plan/decision"),
+            json!({"action": "request_changes", "comment": "x"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let labels = app.gitlab.issue(iid as u64).labels;
+    assert!(
+        labels.contains(&"Todo".to_string()),
+        "manual Todo kept: {labels:?}"
+    );
+    assert!(!labels.iter().any(|l| l.starts_with("doc:")), "{labels:?}");
+}
+
+/// review r2 B3: a real content conflict merges main into the docs branch
+/// and retries once.
+#[tokio::test]
+async fn real_conflict_merges_main_then_retries() {
+    let app = SdlcApp::new().await;
+    let (iid, base) = plan_flow_in_review(&app, "Conflict").await;
+    *app.gitlab.mr_merge_status.lock().unwrap() = Some("cannot_be_merged".into());
+    let (st, v) = app
+        .post(
+            &format!("{base}/docs/plan/decision"),
+            json!({"action": "approve"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let flow = app.wait_flow(iid, |f| f["state"] == "todo").await;
+    assert!(flow["flow"]["mergeCommitSha"].is_string());
+}
+
+/// review r2 B1: on revert, a document whose content changed on the
+/// implementation branch loses its approval and goes back to review.
+#[tokio::test]
+async fn revert_voids_approval_of_changed_upstream() {
+    let app = SdlcApp::new().await;
+    let iid = start_full(&app, "Revert B1").await;
+    let base = format!("{}/{iid}", app.base());
+    app.post(&format!("{base}/docs/intent/submit"), json!({}))
+        .await;
+    app.post(
+        &format!("{base}/docs/intent/decision"),
+        json!({"action": "approve"}),
+    )
+    .await;
+    app.wait_flow(iid, |f| SdlcApp::doc_status(f, "spec") == "in_review")
+        .await;
+    app.post(
+        &format!("{base}/docs/spec/decision"),
+        json!({"action": "approve"}),
+    )
+    .await;
+    app.wait_flow(iid, |f| SdlcApp::doc_status(f, "plan") == "in_review")
+        .await;
+    app.post(
+        &format!("{base}/docs/plan/decision"),
+        json!({"action": "approve"}),
+    )
+    .await;
+    app.wait_flow(iid, |f| f["state"] == "todo").await;
+    // Implementation branch edits intent.md (upstream of the plan revert).
+    let seed = app.dir.path().join("impl-b1");
+    git(
+        app.dir.path(),
+        &[
+            "clone",
+            "-q",
+            app.bare.to_str().unwrap(),
+            seed.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    let ip = seed.join(file_path(iid, "intent"));
+    let mut t = std::fs::read_to_string(&ip).unwrap();
+    t.push_str("\n- changed during implementation\n");
+    std::fs::write(&ip, t).unwrap();
+    git(&seed, &["checkout", "-q", "-b", "impl-b1"]).unwrap();
+    git(
+        &seed,
+        &[
+            "-c",
+            "user.name=a",
+            "-c",
+            "user.email=a@a",
+            "commit",
+            "-qam",
+            "impl",
+        ],
+    )
+    .unwrap();
+    git(&seed, &["push", "-q", "origin", "impl-b1"]).unwrap();
+    let (st, v) = app
+        .post(
+            &format!("{base}/revert"),
+            json!({"to": "plan", "implBranch": "impl-b1"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(
+        SdlcApp::doc_status(&v["data"], "intent"),
+        "in_review",
+        "changed upstream re-reviewed"
+    );
+    assert_eq!(
+        SdlcApp::doc_status(&v["data"], "spec"),
+        "approved",
+        "unchanged spec keeps approval"
+    );
+    assert_eq!(v["data"]["state"], "intent_review");
+}
+
+/// review r2 I3: a failed "新建需求" start closes the issue it created.
+#[tokio::test]
+async fn failed_new_change_closes_created_issue() {
+    let app = SdlcApp::new().await;
+    *app.gitlab.fail_create_mr.lock().unwrap() = true;
+    let (st, _) = app
+        .post(
+            &app.base(),
+            json!({"track": "full", "title": "Orphan", "initialContent": INTENT_OK}),
+        )
+        .await;
+    assert_ne!(st, StatusCode::OK);
+    let issue = app.gitlab.issue(1);
+    assert_eq!(issue.state, "closed");
+    assert!(issue.notes.iter().any(|n| n.contains("创建失败")));
 }

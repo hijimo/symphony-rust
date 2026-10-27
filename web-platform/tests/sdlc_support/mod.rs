@@ -75,6 +75,8 @@ pub struct GitLabState {
     pub fail_merge: Mutex<bool>,
     /// When set, creating a merge request fails with 500.
     pub fail_create_mr: Mutex<bool>,
+    /// Reported MR merge_status (default can_be_merged).
+    pub mr_merge_status: Mutex<Option<String>>,
     /// Tokens seen on merge calls (to check approver token is used).
     pub merge_tokens: Mutex<Vec<String>>,
 }
@@ -121,10 +123,14 @@ fn issue_json(i: &FakeIssue) -> Value {
 }
 
 fn mr_json(m: &FakeMr) -> Value {
+    mr_json_status(m, "can_be_merged")
+}
+
+fn mr_json_status(m: &FakeMr, merge_status: &str) -> Value {
     json!({
         "id": m.iid + 1000, "iid": m.iid, "title": m.title, "description": null, "state": m.state,
         "author": user_json(), "source_branch": m.source, "target_branch": m.target,
-        "reviewers": [], "merge_status": "can_be_merged",
+        "reviewers": [], "merge_status": merge_status,
         "created_at": "2026-10-01T00:00:00Z", "updated_at": "2026-10-01T00:00:00Z",
         "merged_at": null, "web_url": format!("http://gitlab.local/{NS}/{REPO}/-/merge_requests/{}", m.iid),
         "merge_commit_sha": m.merge_sha,
@@ -266,11 +272,17 @@ async fn get_mr(
     State(st): State<GS>,
     AxPath((_p, iid)): AxPath<(String, u64)>,
 ) -> Result<Json<Value>, StatusCode> {
+    let ms = st
+        .mr_merge_status
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| "can_be_merged".into());
     st.mrs
         .lock()
         .unwrap()
         .get(&iid)
-        .map(|m| Json(mr_json(m)))
+        .map(|m| Json(mr_json_status(m, &ms)))
         .ok_or(StatusCode::NOT_FOUND)
 }
 
