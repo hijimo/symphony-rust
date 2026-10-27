@@ -581,6 +581,27 @@ impl WorkspaceService {
         })
     }
 
+    /// Content of a file at a git revision (`None` when absent at that rev).
+    pub async fn read_at(
+        &self,
+        spec: &WorkspaceSpec,
+        rel: &str,
+        rev: &str,
+    ) -> Result<Option<String>, WebPlatformError> {
+        self.resolve(spec, rel)?;
+        if !rev.chars().all(|c| c.is_ascii_hexdigit()) || rev.len() < 7 || rev.len() > 64 {
+            return Err(WebPlatformError::BadRequest("rev 必须是 commit sha".into()));
+        }
+        let (dir, inner) = self.split_repo(spec, rel);
+        match self
+            .git(&dir, &["show", &format!("{rev}:{inner}")], None)
+            .await
+        {
+            Ok(s) => Ok(Some(s)),
+            Err(_) => Ok(None),
+        }
+    }
+
     /// Version of a file, or `None` when it does not exist.
     pub async fn file_version(
         &self,

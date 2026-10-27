@@ -1198,6 +1198,7 @@ pub async fn run_ai_turn(
             }
         }
     }
+    let turn_base = s.workspaces.head_sha(&spec).await.ok();
     s.notify(flow.id, json!({"type": "agent_state", "stage": stage, "running": true, "mode": if mode == Mode::Interactive {"interactive"} else {"non_interactive"}}));
     session.emit(json!({"type": "user_message", "text": text, "mode": if mode == Mode::Interactive {"interactive"} else {"non_interactive"}}));
     let outcome = session.run_turn(&text).await;
@@ -1227,10 +1228,18 @@ pub async fn run_ai_turn(
             }
         }
         let diff = s.workspaces.diff(&spec, &issue_changes_dir(flow.issue_iid)).await.unwrap_or_default();
+        let changed: Vec<String> = s
+            .workspaces
+            .changed_paths(&spec)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| if spec.is_multi_repo() { format!("{}/{p}", spec.primary_rel()) } else { p })
+            .collect();
+        let commit = commit_pending(app, &spec, &flow, "ai (codex)").await?;
         if !diff.trim().is_empty() {
-            session.emit(json!({"type": "turn_diff", "diff": diff}));
+            session.emit(json!({"type": "turn_diff", "diff": diff, "baseSha": turn_base, "commitSha": commit, "files": changed}));
         }
-        commit_pending(app, &spec, &flow, "ai (codex)").await?;
         reconcile_content(app, project, &flow).await?;
         Ok(())
     }

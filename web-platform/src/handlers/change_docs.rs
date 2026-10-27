@@ -196,6 +196,8 @@ pub async fn merge_main(
 pub struct PathQuery {
     #[serde(default)]
     pub path: String,
+    /// Optional commit sha: read the file at that revision.
+    pub rev: Option<String>,
 }
 
 async fn flow_spec(
