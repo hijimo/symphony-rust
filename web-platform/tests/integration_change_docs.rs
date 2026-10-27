@@ -393,3 +393,83 @@ async fn stage_kanban_columns() {
         vec!["doc:spec", "In Progress"]
     );
 }
+
+/// verify r2 N1 / N2: pending human edits are committed as human before an
+/// AI turn (never part of the AI turn), and deltas are kept in history.
+#[tokio::test]
+async fn human_edits_never_attributed_to_ai_turn() {
+    let app = SdlcApp::new().await;
+    let iid = start_full(&app).await;
+    let notes = format!("docs/changes/{iid}/notes.md");
+    // Autosave a human edit (no commit).
+    let (st, v) = app
+        .put(
+            &format!("{}/{iid}/file", app.base()),
+            json!({"path": notes, "content": "human note\n", "baseVersion": null}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let mut ws = connect(&app, iid).await;
+    next_matching(&mut ws, |v| v["type"] == "ready").await;
+    let target = format!("docs/changes/{iid}/intent.md");
+    send(
+        &mut ws,
+        json!({"type": "send", "stage": "intent", "text": format!("改 `{target}`")}),
+    )
+    .await;
+    let td = next_matching(&mut ws, |v| {
+        v["type"] == "agent" && v["event"]["type"] == "turn_diff"
+    })
+    .await;
+    let files: Vec<String> = td["event"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_str().unwrap().to_string())
+        .collect();
+    assert!(files.contains(&target), "{files:?}");
+    assert!(
+        !files.contains(&notes),
+        "human file must not be part of the AI turn: {files:?}"
+    );
+    next_matching(&mut ws, |v| {
+        v["type"] == "agent" && v["event"]["type"] == "turn_completed"
+    })
+    .await;
+    let log = git(
+        &app.bare,
+        &["log", "--format=%s|%b", &format!("symphony/docs-{iid}")],
+    )
+    .unwrap();
+    let notes_commit = git(
+        &app.bare,
+        &[
+            "log",
+            "-1",
+            "--format=%B",
+            &format!("symphony/docs-{iid}"),
+            "--",
+            &notes,
+        ],
+    )
+    .unwrap();
+    assert!(
+        notes_commit.contains("Symphony-Actor: human"),
+        "{notes_commit}\n{log}"
+    );
+
+    // Reconnect: the streamed reply is in history.
+    let mut ws2 = connect(&app, iid).await;
+    let hist = next_matching(&mut ws2, |v| {
+        v["type"] == "history" && v["stage"] == "intent"
+    })
+    .await;
+    let deltas: String = hist["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "message_delta")
+        .map(|e| e["delta"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert_eq!(deltas, "working");
+}

@@ -71,7 +71,7 @@ function Card({ card, projectId, onStart }: { card: StageIssueCard; projectId: n
         <Chip size="small" label={p.subState} sx={{ height: 20, fontSize: 11 }} color={p.waitingHuman ? 'warning' : 'default'} />
         {p.waitingHuman && (
           <Typography sx={{ fontSize: 11, color: '#ac3500' }}>
-            等待审批{waitedFor(card.updatedAt) ? ` · ${waitedFor(card.updatedAt)}` : ''}
+            等待审批{card.flow?.reviewSince && waitedFor(card.flow.reviewSince) ? ` · ${waitedFor(card.flow.reviewSince)}` : ''}
           </Typography>
         )}
         {card.flow?.documents.some((d) => d.draftState === 'running') && <Typography sx={{ fontSize: 11, color: '#0053db' }}>AI 运行中</Typography>}
@@ -97,7 +97,8 @@ function Card({ card, projectId, onStart }: { card: StageIssueCard; projectId: n
               文档 MR
             </Link>
           )}
-          {!card.flow && card.placement.subState === '待启动' && (
+          {!card.flow && ['plan', 'build'].includes(card.placement.column) && !card.placement.anomaly &&
+            ['待启动', '排队'].includes(card.placement.subState) && (
             <Button size="small" sx={{ fontSize: 11, py: 0, minWidth: 0 }} onClick={() => onStart(card)}>
               开始文档流程
             </Button>

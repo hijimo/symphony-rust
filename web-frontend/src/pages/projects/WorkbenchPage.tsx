@@ -60,7 +60,7 @@ export default function WorkbenchPage() {
             <Tab value="ai" label="AI" sx={{ minHeight: 36 }} />
           </Tabs>
           <Box sx={{ flex: 1, minHeight: 0 }}>
-            {pane === 'tree' && <FileTree />}
+            {pane === 'tree' && <FileTree onOpen={() => setPane('editor')} />}
             {pane === 'editor' && <EditorPane onAskAi={(sel) => { setSelection(sel); setPane('ai'); }} />}
             {pane === 'gate' && <FlowGatePanel />}
             {pane === 'ai' && <AiPanel selection={selection} onClearSelection={() => setSelection(null)} />}

@@ -10,7 +10,7 @@ import { useWorkbenchStore } from '../../store/workbenchStore';
 import * as api from '../../api/changes';
 import type { SearchHit } from '../../types/changes';
 
-function Node({ path, depth }: { path: string; depth: number }) {
+function Node({ path, depth, onOpen }: { path: string; depth: number; onOpen?: () => void }) {
   const { tree, expanded, toggleDir, openFile, active, aiTouched } = useWorkbenchStore();
   const entries = tree[path] ?? [];
   return (
@@ -20,7 +20,7 @@ function Node({ path, depth }: { path: string; depth: number }) {
           <ListItemButton
             dense
             selected={active === e.path}
-            onClick={() => (e.kind === 'dir' ? toggleDir(e.path) : openFile(e.path))}
+            onClick={() => (e.kind === 'dir' ? toggleDir(e.path) : void openFile(e.path).then(() => onOpen?.()))}
             sx={{ pl: 0.5 + depth * 1.5, py: 0.1, minHeight: 24 }}
             data-testid={`tree-${e.path}`}
           >
@@ -49,14 +49,14 @@ function Node({ path, depth }: { path: string; depth: number }) {
               />
             )}
           </ListItemButton>
-          {e.kind === 'dir' && expanded[e.path] && <Node path={e.path} depth={depth + 1} />}
+          {e.kind === 'dir' && expanded[e.path] && <Node path={e.path} depth={depth + 1} onOpen={onOpen} />}
         </Box>
       ))}
     </>
   );
 }
 
-export default function FileTree() {
+export default function FileTree({ onOpen }: { onOpen?: () => void } = {}) {
   const { projectId, iid, openFile, pushNotice } = useWorkbenchStore();
   const [q, setQ] = useState('');
   const [mode, setMode] = useState<'file' | 'content'>('file');
@@ -99,7 +99,7 @@ export default function FileTree() {
               <Typography sx={{ fontSize: 12, color: '#0053db' }}>← 返回目录（{hits.length} 条结果）</Typography>
             </ListItemButton>
             {hits.map((h, i) => (
-              <ListItemButton key={`${h.path}:${h.line}:${i}`} dense onClick={() => openFile(h.path)}>
+              <ListItemButton key={`${h.path}:${h.line}:${i}`} dense onClick={() => void openFile(h.path).then(() => onOpen?.())}>
                 <Box sx={{ minWidth: 0 }}>
                   <Typography noWrap sx={{ fontSize: 12 }}>
                     {h.path}
@@ -115,7 +115,7 @@ export default function FileTree() {
             ))}
           </>
         ) : (
-          <Node path="" depth={0} />
+          <Node path="" depth={0} onOpen={onOpen} />
         )}
       </List>
     </Box>

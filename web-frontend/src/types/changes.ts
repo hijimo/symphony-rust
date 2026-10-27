@@ -152,7 +152,9 @@ export interface StageIssueCard {
     track: Track;
     docsMrUrl: string | null;
     mergeError: string | null;
-    documents: { docType: DocType; status: DocStatus; draftState: string }[];
+    /** Earliest time a document of this flow entered review (UTC). */
+    reviewSince?: string | null;
+    documents: { docType: DocType; status: DocStatus; draftState: string; statusChangedAt?: string }[];
   } | null;
 }
 

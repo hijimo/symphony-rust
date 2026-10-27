@@ -33,6 +33,7 @@ const DEFAULT_TODO_LABEL: &str = "Todo";
 /// Labels of the implementation phase; removed while a document flow owns
 /// the issue so the orchestrator never picks it up (verify C #1).
 const IMPL_LABELS: &[&str] = &[
+    "Backlog",
     "Todo",
     "In Progress",
     "Rework",
@@ -1340,6 +1341,17 @@ pub async fn run_ai_turn(
             if let Some(fm) = f.content.as_deref().and_then(content::frontmatter_block) {
                 frontmatters.push((rel, fm.to_string()));
             }
+        }
+    }
+    // Pending human edits (autosaved, not committed) must not be attributed
+    // to the AI turn or reverted with it (verify r2 N1): commit them first
+    // as human, then take the turn base.
+    {
+        let lock = s.flow_lock(flow.id);
+        let _g = lock.lock().await;
+        if let Err(e) = commit_pending(app, &spec, &flow, "human (workbench)").await {
+            session.end();
+            return Err(e);
         }
     }
     let turn_base = s.workspaces.head_sha(&spec).await.ok();

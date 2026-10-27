@@ -48,6 +48,8 @@ pub struct ChangeDocument {
     pub last_feedback: Option<String>,
     pub updated_by: Option<i64>,
     pub updated_at: String,
+    /// Last status transition (UTC, `YYYY-MM-DD HH:MM:SS`).
+    pub status_changed_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -85,7 +87,7 @@ where
 }
 
 const FLOW_COLS: &str = "id, project_id, issue_iid, track, revision, branch, docs_mr_iid, docs_mr_url, merge_commit_sha, merge_error, base_sha, closed, created_by, created_at, updated_at";
-const DOC_COLS: &str = "id, flow_id, doc_type, status, path, current_blob_sha, template_ref, org_config_sha, base_sha, draft_state, draft_failures, draft_error, last_feedback, updated_by, updated_at";
+const DOC_COLS: &str = "id, flow_id, doc_type, status, path, current_blob_sha, template_ref, org_config_sha, base_sha, draft_state, draft_failures, draft_error, last_feedback, updated_by, updated_at, COALESCE(status_changed_at, updated_at)";
 
 fn row_flow(r: &rusqlite::Row) -> rusqlite::Result<(ChangeFlow, String)> {
     let track: String = r.get(3)?;
@@ -137,6 +139,7 @@ fn row_doc(r: &rusqlite::Row) -> rusqlite::Result<(ChangeDocument, String, Strin
             last_feedback: r.get(12)?,
             updated_by: r.get(13)?,
             updated_at: r.get(14)?,
+            status_changed_at: r.get(15)?,
         },
         doc_type,
         status,
@@ -341,7 +344,7 @@ impl SdlcStore {
                     DocStatus::Approved
                 };
                 tx.execute(
-                    "UPDATE change_documents SET status = ?2, updated_at = datetime('now') WHERE id = ?1",
+                    "UPDATE change_documents SET status = ?2, updated_at = datetime('now'), status_changed_at = datetime('now') WHERE id = ?1",
                     params![id, status.as_str()],
                 )?;
             }
@@ -359,7 +362,7 @@ impl SdlcStore {
     pub async fn insert_document(&self, flow_id: i64, d: NewDocument) -> Result<ChangeDocument> {
         blocking(self.pool.clone(), move |c| {
             c.execute(
-                "INSERT INTO change_documents (flow_id, doc_type, status, path, current_blob_sha, template_ref, base_sha, updated_by) VALUES (?1, ?2, 'draft', ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO change_documents (flow_id, doc_type, status, path, current_blob_sha, template_ref, base_sha, updated_by, status_changed_at) VALUES (?1, ?2, 'draft', ?3, ?4, ?5, ?6, ?7, datetime('now'))",
                 params![flow_id, d.doc_type.as_str(), d.path, d.blob_sha, d.template_ref, d.base_sha, d.updated_by],
             )?;
             let id = c.last_insert_rowid();
@@ -415,7 +418,7 @@ impl SdlcStore {
     pub async fn set_status(&self, doc_id: i64, status: DocStatus, by: Option<i64>) -> Result<()> {
         blocking(self.pool.clone(), move |c| {
             c.execute(
-                "UPDATE change_documents SET status = ?2, updated_by = COALESCE(?3, updated_by), updated_at = datetime('now') WHERE id = ?1",
+                "UPDATE change_documents SET status = ?2, updated_by = COALESCE(?3, updated_by), updated_at = datetime('now'), status_changed_at = CASE WHEN status = ?2 THEN status_changed_at ELSE datetime('now') END WHERE id = ?1",
                 params![doc_id, status.as_str(), by],
             )?;
             Ok(())

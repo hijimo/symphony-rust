@@ -96,7 +96,7 @@ function Entry({ e }: { e: ChatEntry }) {
             <ExpandMoreIcon sx={{ fontSize: 14 }} />
           </Box>
           <Collapse in={open}>
-            <Box component="pre" sx={{ fontSize: 11, m: 0, mt: 0.5, maxHeight: 200, overflow: 'auto' }}>
+            <Box component="pre" sx={{ fontSize: 11, m: 0, mt: 0.5, maxHeight: 200, overflow: 'auto', maxWidth: '100%', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
               {String(e.meta?.output ?? '')}
             </Box>
           </Collapse>
@@ -118,7 +118,7 @@ function Entry({ e }: { e: ChatEntry }) {
             <ExpandMoreIcon sx={{ fontSize: 14 }} />
           </Box>
           <Collapse in={open}>
-            <Box component="pre" sx={{ fontSize: 11, m: 0, maxHeight: 240, overflow: 'auto' }}>
+            <Box component="pre" sx={{ fontSize: 11, m: 0, maxHeight: 240, overflow: 'auto', maxWidth: '100%', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
               {e.text}
             </Box>
           </Collapse>
@@ -235,7 +235,7 @@ function TurnReview() {
           <Typography sx={{ fontSize: 11, color: '#737686' }}>
             {file} · 第 {h.afterStart + 1} 行
           </Typography>
-          <Box component="pre" sx={{ fontSize: 11, m: 0, maxHeight: 120, overflow: 'auto' }}>
+          <Box component="pre" sx={{ fontSize: 11, m: 0, maxHeight: 120, overflow: 'auto', maxWidth: '100%', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
             {h.beforeLines.map((l) => `- ${l}`).join('\n')}
             {h.beforeLines.length ? '\n' : ''}
             {h.afterLines.map((l) => `+ ${l}`).join('\n')}
@@ -296,7 +296,7 @@ export default function AiPanel({ selection, onClearSelection }: { selection: Se
         </Tooltip>
         {st.running && <CircularProgress size={14} aria-label="AI 运行中" />}
       </Box>
-      <Box sx={{ flex: 1, overflow: 'auto', p: 1, display: 'flex', flexDirection: 'column', gap: 1 }} data-testid="chat">
+      <Box sx={{ flex: 1, overflow: 'auto', overflowX: 'hidden', minWidth: 0, p: 1, display: 'flex', flexDirection: 'column', gap: 1 }} data-testid="chat">
         {st.chat.length === 0 && (
           <Typography sx={{ fontSize: 12, color: '#737686' }}>
             和 AI 讨论 {STAGE_LABEL[stage]}：它能读整个仓库，只会修改 {flow?.writableDir ?? '文档目录'} 下的文档。

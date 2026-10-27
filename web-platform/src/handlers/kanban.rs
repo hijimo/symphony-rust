@@ -844,8 +844,13 @@ pub(crate) async fn build_stage_columns(
                 "mergeError": f.merge_error,
                 "rejected": st == crate::sdlc::model::FlowState::Rejected,
                 "documents": docs.iter().map(|d| serde_json::json!({
-                    "docType": d.doc_type, "status": d.status, "draftState": d.draft_state
+                    "docType": d.doc_type, "status": d.status, "draftState": d.draft_state,
+                    "statusChangedAt": d.status_changed_at
                 })).collect::<Vec<_>>(),
+                "reviewSince": docs.iter()
+                    .filter(|d| matches!(d.status, crate::sdlc::model::DocStatus::InReview | crate::sdlc::model::DocStatus::Stale))
+                    .map(|d| d.status_changed_at.clone())
+                    .min(),
             }),
         );
     }

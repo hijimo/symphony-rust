@@ -192,10 +192,34 @@ impl AgentSession {
         self.process.try_lock().map(|p| p.is_some()).unwrap_or(true)
     }
 
-    /// Publish an event to subscribers and (unless it is a delta) the transcript.
+    /// Publish an event to subscribers and the transcript. Text deltas are
+    /// folded into one history entry per item so reconnects replay the full
+    /// message even when no completed event follows (verify r2 N2).
     pub fn emit(&self, event: Value) {
         let kind = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if !kind.ends_with("_delta") && kind != "command_output" && kind != "diff" {
+        if kind == "message_delta" || kind == "reasoning_delta" {
+            let mut h = self.history.lock().unwrap();
+            let item = event.get("itemId").cloned().unwrap_or(Value::Null);
+            let delta = event.get("delta").and_then(|d| d.as_str()).unwrap_or("");
+            let found = h.iter_mut().rev().take(50).find(|e| {
+                e.get("type").and_then(|t| t.as_str()) == Some(kind)
+                    && e.get("itemId") == Some(&item)
+            });
+            match found {
+                Some(e) => {
+                    let cur = e
+                        .get("delta")
+                        .and_then(|d| d.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    e["delta"] = Value::String(cur + delta);
+                }
+                None => h.push_back(event.clone()),
+            }
+            while h.len() > HISTORY_LIMIT {
+                h.pop_front();
+            }
+        } else if kind != "command_output" && kind != "diff" {
             let mut h = self.history.lock().unwrap();
             h.push_back(event.clone());
             while h.len() > HISTORY_LIMIT {
