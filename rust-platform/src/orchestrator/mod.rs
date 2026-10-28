@@ -1242,15 +1242,11 @@ impl IssueStateRefresher for TrackerStateRefresher {
     }
 
     fn is_terminal_state(&self, state: &str) -> bool {
-        self.terminal_states
-            .iter()
-            .any(|s| s.eq_ignore_ascii_case(state))
+        is_terminal_state(state, &self.terminal_states)
     }
 
     fn is_active_state(&self, state: &str) -> bool {
-        self.active_states
-            .iter()
-            .any(|s| s.eq_ignore_ascii_case(state))
+        is_active_state(state, &self.active_states)
     }
 
     async fn set_issue_state(&self, issue_id: &str, state: &str) -> Result<(), String> {
@@ -1379,5 +1375,46 @@ mod tests {
 
         orch.dispatch_candidates(issues);
         assert!(!orch.state.claimed.contains("1"));
+    }
+
+    struct NoopTracker;
+
+    #[async_trait::async_trait]
+    impl Tracker for NoopTracker {
+        async fn fetch_candidate_issues(
+            &self,
+        ) -> Result<Vec<crate::tracker::TrackerIssue>, crate::tracker::TrackerError> {
+            Ok(vec![])
+        }
+
+        async fn fetch_issues_by_states(
+            &self,
+            _states: &[String],
+        ) -> Result<Vec<crate::tracker::TrackerIssue>, crate::tracker::TrackerError> {
+            Ok(vec![])
+        }
+
+        async fn fetch_issue_states_by_ids(
+            &self,
+            _ids: &[String],
+        ) -> Result<Vec<crate::tracker::TrackerIssue>, crate::tracker::TrackerError> {
+            Ok(vec![])
+        }
+    }
+
+    #[test]
+    fn test_state_refresher_matches_normalized_tracker_states() {
+        let refresher = TrackerStateRefresher {
+            tracker: Arc::new(NoopTracker),
+            active_states: vec!["Todo".to_string(), "In Progress".to_string()],
+            terminal_states: vec!["Done".to_string(), "Human Review".to_string()],
+        };
+
+        assert!(refresher.is_active_state("in_progress"));
+        assert!(refresher.is_active_state("In Progress"));
+        assert!(refresher.is_active_state("in-progress"));
+        assert!(refresher.is_terminal_state("human_review"));
+        assert!(!refresher.is_active_state("human_review"));
+        assert!(!refresher.is_terminal_state("in_progress"));
     }
 }

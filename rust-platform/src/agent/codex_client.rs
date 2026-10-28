@@ -899,9 +899,12 @@ impl CodexClient {
             //   暂停 turn 并通过 HTTP API 暴露 pending approval，等待操作员决策。
             //   参见 docs/migration-gap-analysis.md Phase 6。
 
-            // Turn completed successfully
+            // Turn finished. Codex app-server reports quota/auth/stream failures
+            // through `turn/completed` with `turn.status = "failed"` and a
+            // non-null `turn.error`, so inspect the payload before treating it
+            // as a success.
             "turn.completed" | "turn_completed" | "turn/completed" => {
-                Some(Ok(TurnResult::Completed))
+                Some(Ok(completed_turn_result(event)))
             }
 
             // Turn failed
@@ -1013,6 +1016,42 @@ impl CodexClient {
         // Reap the zombie
         let _ = self.child.wait().await;
     }
+}
+
+/// Interpret a `turn/completed` notification.
+///
+/// The app-server payload looks like
+/// `{"params":{"turn":{"status":"completed|failed|interrupted","error":{"message":..}}}}`.
+/// Legacy events without a `turn` object are treated as successful.
+pub fn completed_turn_result(event: &serde_json::Value) -> TurnResult {
+    let turn = event
+        .get("params")
+        .and_then(|p| p.get("turn"))
+        .or_else(|| event.get("turn"));
+    let Some(turn) = turn else {
+        return TurnResult::Completed;
+    };
+
+    let status = turn.get("status").and_then(|v| v.as_str());
+    let error = turn.get("error").filter(|v| !v.is_null());
+
+    if error.is_none() && status.is_none_or(|s| s == "completed") {
+        return TurnResult::Completed;
+    }
+
+    let message = error.and_then(|e| {
+        e.get("message")
+            .and_then(|m| m.as_str())
+            .map(str::to_string)
+            .or_else(|| e.as_str().map(str::to_string))
+    });
+    let reason = match (status, message) {
+        (Some(s), Some(m)) => format!("turn {s}: {m}"),
+        (None, Some(m)) => m,
+        (Some(s), None) => format!("turn {s}"),
+        (None, None) => "turn completed with error".to_string(),
+    };
+    TurnResult::Failed { reason }
 }
 
 fn codex_app_server_command(workspace_path: &Path, command_line: &str) -> tokio::process::Command {
