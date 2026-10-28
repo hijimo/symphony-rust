@@ -7,6 +7,8 @@ const __dirname = path.dirname(__filename);
 
 export default defineConfig({
   testDir: './e2e',
+  // SDLC suite has its own stack and config: playwright.sdlc.config.ts
+  testIgnore: '**/sdlc/**',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,

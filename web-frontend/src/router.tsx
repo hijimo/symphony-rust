@@ -16,6 +16,10 @@ import CreateIssuePage from './pages/projects/CreateIssuePage';
 import IssueDetailPage from './pages/projects/IssueDetailPage';
 import MrDetailPage from './pages/projects/MrDetailPage';
 import OverviewKanbanPage from './pages/OverviewKanbanPage';
+import { lazy, Suspense } from 'react';
+import NewChangePage from './pages/projects/NewChangePage';
+
+const WorkbenchPage = lazy(() => import('./pages/projects/WorkbenchPage'));
 
 const router = createBrowserRouter([
   {
@@ -57,6 +61,18 @@ const router = createBrowserRouter([
       {
         path: 'projects/:id/kanban',
         element: <KanbanPage />,
+      },
+      {
+        path: 'projects/:id/changes/new',
+        element: <NewChangePage />,
+      },
+      {
+        path: 'projects/:id/changes/:iid',
+        element: (
+          <Suspense fallback={null}>
+            <WorkbenchPage />
+          </Suspense>
+        ),
       },
       {
         path: 'projects/:id/issues/create',

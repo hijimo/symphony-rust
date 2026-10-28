@@ -87,7 +87,14 @@ impl TestApp {
         let process_manager = ProcessManager::new();
         let concurrency_manager = Arc::new(ConcurrencyManager::new(10));
 
+        let sdlc = web_platform::sdlc::SdlcState::new(
+            repo.pool(),
+            dir.path().to_str().unwrap(),
+            web_platform::sdlc::agent::AgentManager::new(Default::default(), 2),
+            Arc::new(web_platform::sdlc::platform::DefaultPlatformFactory),
+        );
         let state = AppState {
+            sdlc,
             repo,
             jwt_secret: "test-jwt-secret-key-at-least-32-characters-long".to_string(),
             encryption_key,

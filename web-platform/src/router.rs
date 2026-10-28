@@ -12,9 +12,9 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use crate::auth::middleware::{jwt_auth, require_admin};
 use crate::handlers::{
-    admin_config, admin_users, ai_generate, alerts, auth, concurrency, contributors, issue_mrs,
-    issues, kanban, merge_requests, network_proxy, overview, project_members, project_repos,
-    project_service, project_workflow, projects, token_validation, user_profile,
+    admin_config, admin_users, ai_generate, alerts, auth, change_docs, concurrency, contributors,
+    issue_mrs, issues, kanban, merge_requests, network_proxy, overview, project_members,
+    project_repos, project_service, project_workflow, projects, token_validation, user_profile,
 };
 use crate::AppState;
 
@@ -230,6 +230,10 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
             get(kanban::get_kanban_issues),
         )
         .route("/api/projects/{id}/kanban/prs", get(kanban::get_kanban_prs))
+        .route(
+            "/api/projects/{id}/kanban/stages",
+            get(kanban::get_kanban_stages),
+        )
         .route("/api/projects/{id}/issues", post(issues::create_issue))
         .route(
             "/api/projects/{id}/issues/ai-generate",
@@ -261,7 +265,83 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
             "/api/projects/{id}/concurrency",
             put(concurrency::update_project_concurrency),
         )
+        // AI-native SDLC document flow + workbench
+        .route("/api/projects/{id}/changes", get(change_docs::list))
+        .route("/api/projects/{id}/changes", post(change_docs::start))
+        .route(
+            "/api/projects/{id}/doc-templates",
+            get(change_docs::builtin_templates),
+        )
+        .route("/api/projects/{id}/changes/{iid}", get(change_docs::get))
+        .route(
+            "/api/projects/{id}/changes/{iid}/workspace",
+            post(change_docs::ensure_workspace),
+        )
+        .route(
+            "/api/projects/{id}/changes/{iid}/workspace/merge-main",
+            post(change_docs::merge_main),
+        )
+        .route(
+            "/api/projects/{id}/changes/{iid}/tree",
+            get(change_docs::tree),
+        )
+        .route(
+            "/api/projects/{id}/changes/{iid}/file",
+            get(change_docs::read_file),
+        )
+        .route(
+            "/api/projects/{id}/changes/{iid}/file",
+            put(change_docs::write_file),
+        )
+        .route(
+            "/api/projects/{id}/changes/{iid}/search",
+            get(change_docs::search),
+        )
+        .route(
+            "/api/projects/{id}/changes/{iid}/diff",
+            get(change_docs::diff),
+        )
+        .route(
+            "/api/projects/{id}/changes/{iid}/templates",
+            get(change_docs::list_templates),
+        )
+        .route(
+            "/api/projects/{id}/changes/{iid}/docs/{doc}/validate",
+            post(change_docs::validate),
+        )
+        .route(
+            "/api/projects/{id}/changes/{iid}/docs/{doc}/submit",
+            post(change_docs::submit),
+        )
+        .route(
+            "/api/projects/{id}/changes/{iid}/docs/{doc}/decision",
+            post(change_docs::decide),
+        )
+        .route(
+            "/api/projects/{id}/changes/{iid}/docs/{doc}/draft/retry",
+            post(change_docs::draft_retry),
+        )
+        .route(
+            "/api/projects/{id}/changes/{iid}/docs/{doc}/draft/manual",
+            post(change_docs::draft_manual),
+        )
+        .route(
+            "/api/projects/{id}/changes/{iid}/merge",
+            post(change_docs::retry_merge),
+        )
+        .route(
+            "/api/projects/{id}/changes/{iid}/revert",
+            post(change_docs::revert),
+        )
+        .route(
+            "/api/projects/{id}/changes/{iid}/ws-ticket",
+            post(change_docs::ws_ticket),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), jwt_auth));
+
+    // Workbench WebSocket (one-time ticket auth, no JWT middleware)
+    let workbench_ws_routes =
+        Router::new().route("/api/projects/{id}/changes/{iid}/ws", get(change_docs::ws));
 
     // Phase 4: Token validation (user route)
     let token_validation_routes = Router::new()
@@ -294,6 +374,7 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
         .merge(token_validation_routes)
         .merge(overview_routes)
         .merge(sse_routes)
+        .merge(workbench_ws_routes)
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .with_state(state);
 

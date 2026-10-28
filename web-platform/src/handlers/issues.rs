@@ -100,6 +100,7 @@ pub async fn create_issue(
         description: req.description,
         labels: req.labels.unwrap_or_default(),
         assignee: req.assignee,
+        add_default_todo: true,
     };
 
     // Call platform API to create the issue

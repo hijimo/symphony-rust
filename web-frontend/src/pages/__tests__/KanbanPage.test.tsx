@@ -120,6 +120,8 @@ describe('KanbanPage', () => {
     vi.useFakeTimers();
     localStorage.setItem('token', 'mock-token');
     localStorage.setItem('expiresAt', '2099-01-01T00:00:00Z');
+    // These tests cover the classic (implementation-progress) view.
+    localStorage.setItem('kanbanView', 'classic');
   });
 
   afterEach(() => {
