@@ -1153,4 +1153,63 @@ async fn failed_new_change_closes_created_issue() {
     let issue = app.gitlab.issue(1);
     assert_eq!(issue.state, "closed");
     assert!(issue.notes.iter().any(|n| n.contains("创建失败")));
+    // verify r4 B: the closed issue keeps no flow labels.
+    assert!(
+        !issue
+            .labels
+            .iter()
+            .any(|l| l.starts_with("doc:") || l.starts_with("track:")),
+        "{:?}",
+        issue.labels
+    );
+}
+
+/// verify r4 C-4: a manual takeover issued right after G1 cancels the
+/// spec draft that G1 scheduled (no retries, no failures).
+#[tokio::test]
+async fn manual_takeover_right_after_approval_cancels_draft() {
+    // Default fake app runs a codex command that does not exist, so a
+    // draft that is not cancelled fails and retries.
+    let app = SdlcApp::with(Opts {
+        multi_repo: false,
+        codex_script: None,
+    })
+    .await;
+    let (st, v) = app
+        .post(
+            &app.base(),
+            json!({"track": "full", "title": "M", "initialContent": INTENT_OK}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let iid = v["data"]["flow"]["issueIid"].as_i64().unwrap();
+    let base = format!("{}/{iid}", app.base());
+    let (st, v) = app
+        .post(&format!("{base}/docs/intent/submit"), json!({}))
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let (st, v) = app
+        .post(
+            &format!("{base}/docs/intent/decision"),
+            json!({"action": "approve"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let (st, v) = app
+        .post(&format!("{base}/docs/spec/draft/manual"), json!({}))
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    for _ in 0..12 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let (_, f) = app.get(&base).await;
+        let d = f["data"]["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["docType"] == "spec")
+            .cloned()
+            .unwrap();
+        assert_eq!(d["draftState"], "idle", "{d}");
+        assert_eq!(d["draftFailures"], 0, "{d}");
+    }
 }

@@ -274,6 +274,8 @@ enum LabelSync {
     /// Any later change: never touch an issue that a human moved to the
     /// implementation phase; report the mismatch instead (design §4.1).
     Update,
+    /// Only report a mismatch, never write labels (explicit saves).
+    Check,
 }
 
 /// Labels currently on the issue (empty when the platform is unreachable).
@@ -297,7 +299,7 @@ async fn sync_label_mode(
     let statuses = sdlc(app).store.statuses(flow.id).await.ok()?;
     let st = state::derive_flow_state(flow.track, &statuses);
     let impl_set = impl_labels(project);
-    if mode == LabelSync::Update && !matches!(st, FlowState::Todo | FlowState::Rejected) {
+    if mode != LabelSync::Claim && !matches!(st, FlowState::Todo | FlowState::Rejected) {
         if let Some(current) = issue_labels(app, project, flow).await {
             let manual: Vec<&String> = current
                 .iter()
@@ -312,6 +314,9 @@ async fn sync_label_mode(
                 return Some(msg);
             }
         }
+    }
+    if mode == LabelSync::Check {
+        return None;
     }
     let (mut add, remove): (Vec<String>, Vec<String>) = match st {
         FlowState::Todo => (
@@ -486,9 +491,8 @@ pub async fn start_flow(ctx: &Ctx, req: StartRequest) -> Result<FlowView, WebPla
         let first = req.track.doc_types()[0];
         create_document(app, &spec, &flow, first, &title, req.initial_content.as_deref(), ctx.user_id, status.base_sha.as_deref()).await?;
         let msg = format!("docs({iid}): start {} document", first);
-        ensure_no_secrets(app, &spec, &flow).await?;
         s.workspaces
-            .commit_and_push(&spec, &issue_changes_dir(iid), &msg, &format!("human ({})", username(app, ctx.user_id).await))
+            .commit_and_push(&spec, &issue_changes_dir(iid), &msg, &format!("human ({})", username(app, ctx.user_id).await), &credential_values())
             .await?;
         let mr = c
             .create_merge_request(
@@ -529,6 +533,16 @@ pub async fn start_flow(ctx: &Ctx, req: StartRequest) -> Result<FlowView, WebPla
                     iid as u64,
                     &format!("Symphony 文档流程创建失败，已关闭此 Issue：{e}"),
                 )
+                .await;
+            // Drop the flow labels first so the closed issue does not show
+            // up in `doc:*` / `track:*` filters (verify r4 B).
+            let remove: Vec<String> = DocType::ALL
+                .iter()
+                .flat_map(|d| [format!("doc:{d}"), format!("doc:{d}-review")])
+                .chain([req.track.label().to_string()])
+                .collect();
+            let _ = c
+                .update_issue_labels(&token, &path, iid as u64, &[], &remove)
                 .await;
             let _ = c.close_issue(&token, &path, iid as u64).await;
         }
@@ -688,8 +702,13 @@ pub async fn save_file(
         flow.id,
         json!({"type": "file_changed", "path": rel, "version": version, "by": "human"}),
     );
-    if reset {
-        if let Some(w) = sync_label(app, &ctx.project, flow).await {
+    if reset || commit {
+        let mode = if reset {
+            LabelSync::Update
+        } else {
+            LabelSync::Check
+        };
+        if let Some(w) = sync_label_mode(app, &ctx.project, flow, mode).await {
             s.notify(
                 flow.id,
                 json!({"type": "notice", "level": "warning", "message": w}),
@@ -737,40 +756,6 @@ fn credential_values() -> Vec<String> {
     out
 }
 
-/// Refuse to commit documents that contain credentials (verify A I-1).
-async fn ensure_no_secrets(
-    app: &AppState,
-    spec: &WorkspaceSpec,
-    flow: &ChangeFlow,
-) -> Result<(), WebPlatformError> {
-    let s = sdlc(app);
-    let extra = credential_values();
-    let dir = writable_dir(spec, flow.issue_iid);
-    for entry in s
-        .workspaces
-        .list_dir(spec, &dir, &[])
-        .await
-        .unwrap_or_default()
-    {
-        if entry.kind != "file" {
-            continue;
-        }
-        if let Ok(f) = s.workspaces.read_file(spec, &entry.path, &[]).await {
-            if let Some(m) = f
-                .content
-                .as_deref()
-                .and_then(|t| content::find_secret(t, &extra))
-            {
-                return Err(WebPlatformError::BadRequest(format!(
-                    "{} 疑似包含凭据（{m}），已拒绝提交，请删除后再保存",
-                    entry.path
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Commit pending workspace changes of the docs directory.
 async fn commit_pending(
     app: &AppState,
@@ -778,7 +763,6 @@ async fn commit_pending(
     flow: &ChangeFlow,
     actor: &str,
 ) -> Result<Option<String>, WebPlatformError> {
-    ensure_no_secrets(app, spec, flow).await?;
     sdlc(app)
         .workspaces
         .commit_and_push(
@@ -786,6 +770,7 @@ async fn commit_pending(
             &issue_changes_dir(flow.issue_iid),
             &format!("docs({}): update documents", flow.issue_iid),
             actor,
+            &credential_values(),
         )
         .await
 }
@@ -1418,6 +1403,7 @@ pub async fn run_ai_turn(
     stage: DocType,
     text: String,
     mode: Mode,
+    user_id: Option<i64>,
 ) -> Result<super::agent::TurnOutcome, WebPlatformError> {
     let s = sdlc(app);
     let flow = s
@@ -1448,7 +1434,13 @@ pub async fn run_ai_turn(
     {
         let lock = s.flow_lock(flow.id);
         let _g = lock.lock().await;
-        if let Err(e) = commit_pending(app, &spec, &flow, "human (workbench)").await {
+        // Attribute pending edits to the user who sent the message; drafts
+        // run without one (verify r4 A-4).
+        let who = match user_id {
+            Some(id) => username(app, id).await,
+            None => "symphony".to_string(),
+        };
+        if let Err(e) = commit_pending(app, &spec, &flow, &format!("human ({who})")).await {
             session.end();
             return Err(e);
         }
@@ -1530,6 +1522,9 @@ pub fn spawn_draft(
     doc: DocType,
     feedback: Option<String>,
 ) {
+    // Take the draft generation synchronously so a manual takeover issued
+    // right after (before the task runs) cancels this draft (verify r4 C-4).
+    let gen = app.sdlc.bump_draft(flow_id, doc);
     tokio::spawn(async move {
         let s = &app.sdlc;
         let Ok(Some(flow)) = s.store.get_flow_by_id(flow_id).await else {
@@ -1556,7 +1551,9 @@ pub fn spawn_draft(
             }
         };
         let prompt = draft_prompt(doc, &writable, feedback.as_deref(), &tpl_prompt);
-        let gen = s.bump_draft(flow.id, doc);
+        if !s.draft_current(flow.id, doc, gen) {
+            return;
+        }
         let _ = s.store.set_draft_state(d.id, "running", None).await;
         s.notify(flow.id, json!({"type": "flow_changed"}));
         let mut delay = std::time::Duration::from_secs(2);
@@ -1568,6 +1565,7 @@ pub fn spawn_draft(
                 doc,
                 prompt.clone(),
                 Mode::NonInteractive,
+                None,
             )
             .await;
             if let Some(sess) = s.agents.get(flow.id, doc) {

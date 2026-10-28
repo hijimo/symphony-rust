@@ -830,6 +830,7 @@ impl WorkspaceService {
         dir_in_repo: &str,
         message: &str,
         actor_trailer: &str,
+        extra_secrets: &[String],
     ) -> Result<Option<String>, WebPlatformError> {
         let dir = self.primary_dir(spec);
         self.git(&dir, &["add", "--all", "--", dir_in_repo], None)
@@ -840,11 +841,66 @@ impl WorkspaceService {
         if staged.trim().is_empty() {
             return Ok(None);
         }
+        if let Err(e) = self.check_staged(&dir, dir_in_repo, extra_secrets).await {
+            let _ = self
+                .git(&dir, &["reset", "-q", "--", dir_in_repo], None)
+                .await;
+            return Err(e);
+        }
         let msg = commit_message(message, actor_trailer);
         self.git(&dir, &["commit", "-q", "-m", &msg], None).await?;
         self.push(spec).await?;
         let sha = self.git(&dir, &["rev-parse", "HEAD"], None).await?;
         Ok(Some(sha.trim().to_string()))
+    }
+
+    /// Scan exactly what is about to be committed (verify r4 A-1/A-2): every
+    /// staged blob under `dir_in_repo`, at any depth, byte-wise with no size
+    /// limit, plus rejection of symlinks (mode 120000), which are removed from
+    /// the worktree so the next save can succeed.
+    async fn check_staged(
+        &self,
+        dir: &Path,
+        dir_in_repo: &str,
+        extra_secrets: &[String],
+    ) -> Result<(), WebPlatformError> {
+        let index = self
+            .git(dir, &["ls-files", "-s", "-z", "--", dir_in_repo], None)
+            .await?;
+        let mut links = Vec::new();
+        let mut blobs = Vec::new();
+        for entry in index.split('\0').filter(|e| !e.is_empty()) {
+            // `<mode> <sha> <stage>\t<path>`
+            let Some((meta, path)) = entry.split_once('\t') else {
+                continue;
+            };
+            let mut parts = meta.split_whitespace();
+            let mode = parts.next().unwrap_or("");
+            let sha = parts.next().unwrap_or("");
+            if mode == "120000" {
+                links.push(path.to_string());
+            } else if mode.starts_with("100") {
+                blobs.push((path.to_string(), sha.to_string()));
+            }
+        }
+        if !links.is_empty() {
+            for l in &links {
+                let _ = tokio::fs::remove_file(dir.join(l)).await;
+            }
+            return Err(WebPlatformError::BadRequest(format!(
+                "不允许提交符号链接，已删除：{}",
+                links.join(", ")
+            )));
+        }
+        for (path, sha) in blobs {
+            let bytes = self.git(dir, &["cat-file", "blob", &sha], None).await?;
+            if let Some(m) = super::content::find_secret(&bytes, extra_secrets) {
+                return Err(WebPlatformError::BadRequest(format!(
+                    "{path} 疑似包含凭据（{m}），已拒绝提交，请删除后再保存"
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub async fn push(&self, spec: &WorkspaceSpec) -> Result<(), WebPlatformError> {

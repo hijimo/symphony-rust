@@ -701,10 +701,18 @@ async fn handle_command(ctx: &Ctx, flow_id: i64, cmd: Value) -> (Option<Value>, 
             }
             let app = state.clone();
             let project = ctx.project.clone();
+            let user_id = ctx.user_id;
             tokio::spawn(async move {
-                if let Err(e) =
-                    service::run_ai_turn(&app, &project, flow_id, stage, text, Mode::Interactive)
-                        .await
+                if let Err(e) = service::run_ai_turn(
+                    &app,
+                    &project,
+                    flow_id,
+                    stage,
+                    text,
+                    Mode::Interactive,
+                    Some(user_id),
+                )
+                .await
                 {
                     app.sdlc.notify(
                         flow_id,

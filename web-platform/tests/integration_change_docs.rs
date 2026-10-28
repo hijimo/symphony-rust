@@ -498,3 +498,50 @@ async fn stale_running_draft_is_recoverable() {
         .await;
     assert_eq!(st, StatusCode::OK, "{v}");
 }
+
+/// verify r4 C-1: an explicit save while a human moved the issue to `Todo`
+/// keeps the labels as they are and reports the mismatch.
+#[tokio::test]
+async fn save_reports_label_mismatch_without_rewriting() {
+    let app = SdlcApp::new().await;
+    let iid = app.gitlab.add_issue("L", &["bug"]) as i64;
+    let (st, v) = app
+        .post(&app.base(), json!({"track": "plan", "issueIid": iid}))
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    {
+        let mut m = app.gitlab.issues.lock().unwrap();
+        let i = m.get_mut(&(iid as u64)).unwrap();
+        i.labels.retain(|l| !l.starts_with("doc:"));
+        i.labels.push("Todo".into());
+    }
+    let mut ws = connect(&app, iid).await;
+    let path = format!("docs/changes/{iid}/plan.md");
+    let (_, cur) = app
+        .get(&format!(
+            "{}/{iid}/file?path={}",
+            app.base(),
+            urlencoding::encode(&path)
+        ))
+        .await;
+    let cur = cur["data"].clone();
+    let content = format!("{}\n\nhuman edit\n", cur["content"].as_str().unwrap());
+    let (st, v) = app
+        .put(
+            &format!("{}/{iid}/file", app.base()),
+            json!({"path": path, "content": content, "baseVersion": cur["version"], "commit": true}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let n = next_matching(&mut ws, |v| v["type"] == "notice").await;
+    assert!(
+        n["message"]
+            .as_str()
+            .unwrap()
+            .contains("label 与文档状态不一致"),
+        "{n}"
+    );
+    let labels = app.gitlab.issue(iid as u64).labels;
+    assert!(labels.contains(&"Todo".to_string()), "{labels:?}");
+    assert!(!labels.iter().any(|l| l.starts_with("doc:")), "{labels:?}");
+}
