@@ -295,16 +295,8 @@ async fn full_flow_to_todo() {
     )
     .unwrap();
     assert!(log.contains("Symphony-Actor: ai"), "{log}");
-    let issue = app.gitlab.issue(iid as u64);
-    assert!(
-        issue
-            .notes
-            .iter()
-            .any(|n| n.contains("G1 已批准 intent.md")),
-        "{:?}",
-        issue.notes
-    );
-    assert!(issue.labels.contains(&"doc:spec-review".to_string()));
+    app.wait_note(iid, "G1 已批准 intent.md").await;
+    app.wait_label(iid, "doc:spec-review").await;
 
     let (st, _) = app
         .post(
@@ -351,12 +343,9 @@ async fn full_flow_to_todo() {
     );
     assert!(read_branch_file(&app.bare, "main", &file_path(iid, "plan")).is_some());
 
+    app.wait_label(iid, "Todo").await;
+    app.wait_note(iid, "文档已合入主干").await;
     let issue = app.gitlab.issue(iid as u64);
-    assert!(
-        issue.labels.contains(&"Todo".to_string()),
-        "{:?}",
-        issue.labels
-    );
     assert!(
         !issue.labels.iter().any(|l| l.starts_with("doc:")),
         "{:?}",

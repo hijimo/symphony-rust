@@ -833,6 +833,43 @@ impl SdlcApp {
         panic!("flow condition not reached: {v:#}\nthreads={decisions}\nspec={spec}");
     }
 
+    /// Platform label sync runs after the DB state change (background drafts
+    /// auto-submit, then sync labels): poll until the label is present.
+    pub async fn wait_label(&self, iid: i64, label: &str) -> Vec<String> {
+        for _ in 0..200 {
+            let labels = self.gitlab.issue(iid as u64).labels;
+            if labels.iter().any(|l| l == label) {
+                return labels;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!(
+            "label {label} not set on #{iid}: {:?}",
+            self.gitlab.issue(iid as u64).labels
+        );
+    }
+
+    /// Wait for an issue note containing `needle` (comments are posted after
+    /// the state change becomes visible).
+    pub async fn wait_note(&self, iid: i64, needle: &str) {
+        for _ in 0..200 {
+            if self
+                .gitlab
+                .issue(iid as u64)
+                .notes
+                .iter()
+                .any(|n| n.contains(needle))
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!(
+            "note {needle:?} not posted on #{iid}: {:?}",
+            self.gitlab.issue(iid as u64).notes
+        );
+    }
+
     pub fn doc_status(flow: &Value, doc: &str) -> String {
         flow["documents"]
             .as_array()
