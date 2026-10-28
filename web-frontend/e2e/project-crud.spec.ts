@@ -22,9 +22,19 @@ test.describe('Project CRUD', () => {
     // Submit the form - use the specific submit button in the form
     await page.getByRole('button', { name: '创建项目' }).click();
 
-    // Verify redirect to project page
-    await page.waitForURL(/\/projects\/\d+/, { timeout: 10000 });
-    expect(page.url()).toMatch(/\/projects\/\d+/);
+    // Verify redirect to project page. phase3-kanban.spec.ts runs earlier with
+    // GITLAB_TOKEN and registers the same repo through the API, in which case
+    // creation is rejected as a duplicate.
+    const created = page.waitForURL(/\/projects\/\d+/, { timeout: 10000 }).then(() => 'created', () => null);
+    const duplicate = page
+      .getByText(/already exists/)
+      .waitFor({ timeout: 10000 })
+      .then(() => 'duplicate', () => null);
+    const outcome = await Promise.race([created, duplicate]);
+    expect(outcome).not.toBeNull();
+    if (outcome === 'created') {
+      expect(page.url()).toMatch(/\/projects\/\d+/);
+    }
   });
 
   test('project appears in list', async ({ page }) => {

@@ -430,24 +430,31 @@ async fn e2e_real_github_full_workflow() {
         .expect("Failed to add todo label");
     println!("✓ Added workflow::todo label");
 
-    // Step 4: Fetch candidates
-    let candidates = adapter
-        .fetch_candidate_issues(FetchOptions::default())
-        .await
-        .expect("Failed to fetch candidates");
-    assert!(
-        candidates.iter().any(|i| i.number == issue_number),
-        "Test issue should appear in candidates"
-    );
+    // Step 4: Fetch candidates. GitHub's label filter lags a freshly added
+    // label by a couple of seconds, so poll before asserting.
+    let mut found = false;
+    for _ in 0..10 {
+        let candidates = adapter
+            .fetch_candidate_issues(FetchOptions::default())
+            .await
+            .expect("Failed to fetch candidates");
+        if candidates.iter().any(|i| i.number == issue_number) {
+            found = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    assert!(found, "Test issue should appear in candidates");
     println!("✓ Issue appears in candidates");
 
-    // Step 5: Transition to in_progress
+    // Step 5: Transition to in_progress. The GitHub adapter takes and returns
+    // state keys; it maps them to the `workflow::*` labels itself.
     adapter
-        .set_workflow_state(issue_id, "workflow::in-progress")
+        .set_workflow_state(issue_id, "in_progress")
         .await
         .expect("Failed to transition to in-progress");
     let state = adapter.get_workflow_state(issue_id).await.unwrap();
-    assert_eq!(state, Some("workflow::in-progress".to_string()));
+    assert_eq!(state, Some("in_progress".to_string()));
     println!("✓ Transitioned to in-progress");
 
     // Step 6: Create workpad comment
@@ -480,14 +487,14 @@ async fn e2e_real_github_full_workflow() {
 
     // Step 9: Transition to human_review
     adapter
-        .set_workflow_state(issue_id, "workflow::human-review")
+        .set_workflow_state(issue_id, "human_review")
         .await
         .expect("Failed to transition to human-review");
     println!("✓ Transitioned to human-review");
 
     // Step 10: Transition to done
     adapter
-        .set_workflow_state(issue_id, "workflow::done")
+        .set_workflow_state(issue_id, "done")
         .await
         .expect("Failed to transition to done");
     println!("✓ Transitioned to done");
