@@ -184,6 +184,8 @@ pub struct AiService {
     pub config: AiServiceConfig,
     pub http: Client,
     pub rate_limiter: AiRateLimiter,
+    /// Max wait for response headers; does not limit streaming the body.
+    pub response_header_timeout: Duration,
 }
 
 impl AiService {
@@ -193,8 +195,7 @@ impl AiService {
             config.global_rate_limit_per_minute,
         );
 
-        let http = Client::builder()
-            .timeout(Duration::from_secs(120))
+        let http = ai_client_builder(Client::builder())
             .build()
             .expect("failed to build AI HTTP client");
 
@@ -202,6 +203,7 @@ impl AiService {
             config,
             http,
             rate_limiter,
+            response_header_timeout: AI_RESPONSE_HEADER_TIMEOUT,
         }
     }
 
@@ -233,8 +235,8 @@ impl AiService {
     ) -> Result<Pin<Box<dyn Stream<Item = AiStreamChunk> + Send>>, String> {
         let http = proxy_config
             .apply_to_reqwest_builder(Client::builder())
-            .map_err(|e| format!("AI proxy config failed: {}", e))?
-            .timeout(Duration::from_secs(120))
+            .map_err(|e| format!("AI proxy config failed: {}", e))?;
+        let http = ai_client_builder(http)
             .build()
             .map_err(|e| format!("AI HTTP client build failed: {}", e))?;
         self.generate_stream_with_client(&http, system_prompt, user_prompt)
@@ -290,14 +292,18 @@ impl AiService {
             stream: true,
         };
 
-        let response = http
+        // Only bound the wait for response headers here. A per-request
+        // `.timeout()` would also cover reading the streamed body and abort
+        // long generations mid-stream with "error decoding response body".
+        let send = http
             .post(&url)
             .header(auth_header_name, &auth_header_value)
             .header("Content-Type", "application/json")
-            .timeout(Duration::from_secs(30))
             .json(&request_body)
-            .send()
+            .send();
+        let response = tokio::time::timeout(self.response_header_timeout, send)
             .await
+            .map_err(|_| "AI 服务响应超时，请重试".to_string())?
             .map_err(|e| {
                 if e.is_timeout() {
                     "AI 服务响应超时，请重试".to_string()
@@ -425,12 +431,36 @@ Generate Issue content in Markdown format with the following sections:
     }
 }
 
+/// Max wait for the AI service to return response headers.
+const AI_RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
+/// Max idle gap between streamed chunks before the stream is treated as stalled.
+const AI_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Hard upper bound for a whole generation, including streaming the body.
+const AI_TOTAL_TIMEOUT: Duration = Duration::from_secs(300);
+
+fn ai_client_builder(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    builder
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(AI_STREAM_IDLE_TIMEOUT)
+        .timeout(AI_TOTAL_TIMEOUT)
+}
+
+fn stream_error_message(e: &reqwest::Error) -> String {
+    if e.is_timeout() {
+        "AI 服务输出超时，请重试".to_string()
+    } else {
+        format!("Stream error: {}", e)
+    }
+}
+
 // ==================== SSE Parser for Azure OpenAI streaming ====================
 
 /// Parses an SSE byte stream from Azure OpenAI into AiStreamChunk items.
 struct SseParser<S> {
     inner: S,
     buffer: String,
+    /// Trailing bytes of an incomplete UTF-8 sequence split across chunks.
+    pending: Vec<u8>,
 }
 
 impl<S> SseParser<S> {
@@ -438,6 +468,7 @@ impl<S> SseParser<S> {
         Self {
             inner,
             buffer: String::new(),
+            pending: Vec::new(),
         }
     }
 }
@@ -471,16 +502,24 @@ where
             // Need more data from the inner stream
             match Pin::new(&mut this.inner).poll_next(cx) {
                 std::task::Poll::Ready(Some(Ok(bytes))) => {
-                    if let Ok(text) = std::str::from_utf8(&bytes) {
-                        this.buffer.push_str(text);
-                    }
+                    this.pending.extend_from_slice(&bytes);
+                    let valid_up_to = match std::str::from_utf8(&this.pending) {
+                        Ok(_) => this.pending.len(),
+                        // error_len() == None means the tail is an incomplete
+                        // multi-byte sequence; keep it for the next chunk.
+                        Err(e) if e.error_len().is_none() => e.valid_up_to(),
+                        Err(_) => this.pending.len(),
+                    };
+                    let rest = this.pending.split_off(valid_up_to);
+                    let text = String::from_utf8_lossy(&this.pending).into_owned();
+                    this.buffer.push_str(&text);
+                    this.pending = rest;
                     // Loop back to try parsing
                 }
                 std::task::Poll::Ready(Some(Err(e))) => {
-                    return std::task::Poll::Ready(Some(AiStreamChunk::Error(format!(
-                        "Stream error: {}",
-                        e
-                    ))));
+                    return std::task::Poll::Ready(Some(AiStreamChunk::Error(
+                        stream_error_message(&e),
+                    )));
                 }
                 std::task::Poll::Ready(None) => {
                     // Stream ended
@@ -749,6 +788,94 @@ mod tests {
             body.get("model").is_none(),
             "Azure deployment URL should not send model"
         );
+    }
+
+    /// Streams SSE chunks slowly so the total body time exceeds the header timeout.
+    async fn spawn_slow_stream_server(chunk_delay: Duration, chunks: usize) -> String {
+        async fn handler(State((delay, n)): State<(Duration, usize)>) -> axum::response::Response {
+            let stream = futures::stream::unfold(0usize, move |i| async move {
+                if i > n {
+                    return None;
+                }
+                tokio::time::sleep(delay).await;
+                let line = if i == n {
+                    "data: [DONE]\n\n".to_string()
+                } else {
+                    format!(
+                        "data: {{\"choices\":[{{\"delta\":{{\"content\":\"块{}\"}},\"finish_reason\":null}}]}}\n\n",
+                        i
+                    )
+                };
+                Some((Ok::<_, std::io::Error>(bytes::Bytes::from(line)), i + 1))
+            });
+            axum::response::Response::builder()
+                .header("Content-Type", "text/event-stream")
+                .body(axum::body::Body::from_stream(stream))
+                .unwrap()
+        }
+
+        let app = Router::new()
+            .route("/v1/chat/completions", post(handler))
+            .with_state((chunk_delay, chunks));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{}/v1", addr)
+    }
+
+    #[tokio::test]
+    async fn streaming_body_is_not_cut_by_header_timeout() {
+        let base_url = spawn_slow_stream_server(Duration::from_millis(150), 6).await;
+        let mut service = AiService::new(AiServiceConfig {
+            base_url,
+            api_key: "test-key".to_string(),
+            model: "deepseek".to_string(),
+            model_family: AiModelFamily::Legacy,
+            max_tokens: 100,
+            rate_limit_per_minute: 10,
+            global_rate_limit_per_minute: 30,
+        });
+        // Whole stream takes ~1s, far longer than the header timeout.
+        service.response_header_timeout = Duration::from_millis(300);
+
+        let mut stream = service
+            .generate_stream("system", "user")
+            .await
+            .expect("stream should start");
+        let mut content = String::new();
+        let mut done = false;
+        while let Some(chunk) = futures::StreamExt::next(&mut stream).await {
+            match chunk {
+                AiStreamChunk::Content(t) => content.push_str(&t),
+                AiStreamChunk::Done => {
+                    done = true;
+                    break;
+                }
+                AiStreamChunk::Error(e) => panic!("unexpected stream error: {e}"),
+            }
+        }
+        assert!(done);
+        assert_eq!(content, "块0块1块2块3块4块5");
+    }
+
+    #[tokio::test]
+    async fn sse_parser_handles_utf8_split_across_chunks() {
+        let event =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"},\"finish_reason\":null}]}\n\n";
+        let bytes = event.as_bytes();
+        // Split inside the 3-byte encoding of "你".
+        let split = event.find('你').unwrap() + 1;
+        let parts: Vec<Result<bytes::Bytes, reqwest::Error>> = vec![
+            Ok(bytes::Bytes::copy_from_slice(&bytes[..split])),
+            Ok(bytes::Bytes::copy_from_slice(&bytes[split..])),
+        ];
+        let mut parser = SseParser::new(futures::stream::iter(parts));
+        match futures::StreamExt::next(&mut parser).await {
+            Some(AiStreamChunk::Content(t)) => assert_eq!(t, "你好"),
+            other => panic!("unexpected chunk: {other:?}"),
+        }
     }
 
     async fn spawn_chat_completion_server(captured: Arc<Mutex<Option<Value>>>) -> String {
