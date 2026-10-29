@@ -45,6 +45,35 @@ describe('toIntentBody', () => {
     expect(body).not.toContain('idea');
   });
 
+  it('keeps a full AI intent document and syncs the heading with the title', () => {
+    const doc = [
+      '# Intent: 旧标题',
+      'Author: alice. Status: draft.',
+      '',
+      '## Problem',
+      '客户打电话问理赔进度',
+      '',
+      '## Proposed outcome',
+      '门户里能看到进度',
+      '',
+      '## Affected users and systems',
+      '理赔专员',
+      '',
+      '## Constraints',
+      '不新增 PII',
+      '',
+      '## Open questions',
+      '第三方是否需要访问？',
+    ].join('\n');
+    const body = toIntentBody('理赔进度自助查询', 'idea', `\n${doc}\n\n`);
+    expect(body.split('\n')[0]).toBe('# Intent: 理赔进度自助查询');
+    expect(body).toContain('Author: alice. Status: draft.');
+    expect(body).toContain('## Constraints\n不新增 PII');
+    expect(body.match(/^## Problem$/gm)).toHaveLength(1);
+    expect(body).not.toContain('idea');
+    expect(body.endsWith('\n')).toBe(true);
+  });
+
   it('leaves Problem empty when both idea and draft are blank', () => {
     expect(toIntentBody('T', '  ', '')).toContain('## Problem\n\n\n## Proposed outcome');
   });
@@ -119,6 +148,16 @@ describe('NewChangePage', () => {
     await waitFor(() => expect(bodies).toHaveLength(1));
     expect(bodies[0].initialContent).toBe(toIntentBody('AI 标题', '', '生成的问题描述'));
     expect(bodies[0].summary).toBeUndefined();
+  });
+
+  it('asks the AI for the intent template', async () => {
+    const user = userEvent.setup();
+    const calls: unknown[] = [];
+    useIssueStore.setState({ startGenerate: (pid: number, data: unknown) => calls.push([pid, data]) });
+    renderPage();
+    await user.type(screen.getByRole('textbox', { name: '想法' }), '客户想看理赔进度');
+    await user.click(screen.getByRole('button', { name: 'AI 生成草稿' }));
+    expect(calls).toEqual([[7, { prompt: '客户想看理赔进度', template: 'intent' }]]);
   });
 
   it('shows the server error and stays on the page', async () => {
