@@ -15,9 +15,20 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import { startFlow } from '../../api/changes';
 import { useIssueStore } from '../../store/issueStore';
 
-/** Turn a free-form AI issue draft into the intent skeleton sections. */
+const INTENT_HEADING = /^#\s*Intent\s*:.*$/m;
+
+/**
+ * Build the intent.md body. When the AI already returned a full intent
+ * document (`# Intent: ...` heading), keep it and only sync the heading with
+ * the final title; otherwise put the idea/draft under Problem.
+ */
 export function toIntentBody(title: string, idea: string, generated: string): string {
-  const problem = generated.trim() || idea.trim();
+  const draft = generated.trim();
+  if (INTENT_HEADING.test(draft)) {
+    const doc = draft.slice(draft.search(INTENT_HEADING)).replace(INTENT_HEADING, `# Intent: ${title}`);
+    return `${doc}\n`;
+  }
+  const problem = draft || idea.trim();
   return [
     `# Intent: ${title}`,
     '',
@@ -103,7 +114,7 @@ export default function NewChangePage() {
                 variant="outlined"
                 startIcon={<AutoAwesomeIcon />}
                 disabled={idea.trim().length < 5}
-                onClick={() => startGenerate(projectId, { prompt: idea.trim() })}
+                onClick={() => startGenerate(projectId, { prompt: idea.trim(), template: 'intent' })}
               >
                 AI 生成草稿
               </Button>

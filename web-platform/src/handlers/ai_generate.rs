@@ -131,7 +131,17 @@ pub async fn generate_issue(
     let sanitized_context = req.context.as_deref().map(sanitize_input);
 
     // Build system prompt
-    let system_prompt = build_system_prompt(&project.name, &project.repo_name);
+    let system_prompt = match req.template.as_deref() {
+        None | Some("") | Some("issue") => build_system_prompt(&project.name, &project.repo_name),
+        Some("intent") => {
+            build_intent_system_prompt(&project.name, &project.repo_name, &claims.username)
+        }
+        Some(other) => {
+            return Err(WebPlatformError::BadRequest(format!(
+                "unsupported template: {other}"
+            )));
+        }
+    };
 
     // Build user prompt
     let mut user_prompt = String::new();
@@ -315,6 +325,58 @@ RULES:
     )
 }
 
+/// Build the system prompt for an intent.md draft ("新建需求" page).
+///
+/// The body follows the built-in intent skeleton so the draft passes the
+/// required-section check used at submit time.
+fn build_intent_system_prompt(project_name: &str, repo_name: &str, author: &str) -> String {
+    let skeleton = crate::sdlc::templates::resolve(crate::sdlc::model::DocType::Intent, None)
+        .skeleton
+        .replace("<title>", "[same title as the 标题 line]");
+    format!(
+        r###"You help a proposer write an intent document (intent.md) for the project "{project}" (repository: {repo}).
+
+Output format, exactly in this order:
+1. The VERY FIRST line: the literal marker "标题：" followed by a concise one-line title (max ~50 characters).
+2. A blank line.
+3. The intent document in Markdown, following this template. Keep every heading verbatim and in this order, replace each HTML comment with real content, and never leave a section empty:
+
+{skeleton}
+Directly below the "# Intent:" heading, add one line: "Author: {author}. Status: draft."
+
+Example of the expected document (content is illustrative only):
+
+# Intent: claims status self-service
+Author: J. Ortiz (claims operations). Status: draft.
+
+## Problem
+Customers phone the contact center to ask where their claim is.
+Handlers spend roughly a third of call time on status-only queries.
+
+## Proposed outcome
+Customers see claim status, next step and expected date in the portal.
+
+## Affected users and systems
+Claims handlers, portal team, claims-core API.
+
+## Constraints
+No new PII in the portal session. Existing authentication only.
+
+## Open questions
+Do third-party loss adjusters need access too?
+
+RULES:
+1. Write section content in the same language as the user's input; keep the "#"/"##" headings in English exactly as in the template.
+2. Use the proposer's own plain words. Keep each section short (1-3 sentences or a few bullets). Describe the problem and desired outcome, not an implementation.
+3. Do not invent facts. When something is unknown, put it under "## Open questions" (Constraints may say "暂无明确约束" if none are given).
+4. Output ONLY the title line and the document. No preamble, no code fences, no meta-commentary."###,
+        project = project_name,
+        repo = repo_name,
+        skeleton = skeleton,
+        author = author,
+    )
+}
+
 /// Validate commands in the Validation section against the whitelist.
 /// Returns the content with warnings appended for non-whitelisted commands.
 fn validate_output_commands(content: &str) -> String {
@@ -390,6 +452,18 @@ fn split_title(content: &str) -> (Option<String>, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn intent_prompt_embeds_all_required_sections() {
+        let prompt = build_intent_system_prompt("P", "repo", "alice");
+        for sec in crate::sdlc::content::required_sections(crate::sdlc::model::DocType::Intent) {
+            assert!(prompt.contains(&format!("## {sec}")), "missing {sec}");
+        }
+        assert!(prompt.contains("# Intent:"));
+        assert!(prompt.contains("Author: alice. Status: draft."));
+        assert!(prompt.contains("标题："));
+        assert!(!prompt.contains("<title>"));
+    }
 
     #[test]
     fn split_title_parses_chinese_marker() {

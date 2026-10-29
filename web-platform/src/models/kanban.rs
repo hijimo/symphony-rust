@@ -123,6 +123,10 @@ pub struct AIGenerateRequest {
     pub prompt: String,
     pub title: Option<String>,
     pub context: Option<String>,
+    /// Output template. `intent` produces an intent.md draft; omitted keeps
+    /// the default issue format.
+    #[serde(default)]
+    pub template: Option<String>,
 }
 
 /// SSE event types for AI generation streaming.
