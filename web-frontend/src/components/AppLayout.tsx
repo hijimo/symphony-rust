@@ -15,6 +15,9 @@ export default function AppLayout() {
         component="main"
         sx={{
           flexGrow: 1,
+          // Let wide page content (tables, long lines) scroll inside the
+          // page instead of stretching the whole layout past the viewport.
+          minWidth: 0,
           bgcolor: '#faf8ff',
           minHeight: '100vh',
         }}
