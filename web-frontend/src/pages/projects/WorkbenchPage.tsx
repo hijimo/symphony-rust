@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Alert, Box, Button, CircularProgress, Snackbar, Tab, Tabs, Typography, useMediaQuery } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
-import { Group, Panel, Separator } from 'react-resizable-panels';
+import { Group, Panel, Separator, useDefaultLayout } from 'react-resizable-panels';
 import FileTree from '../../components/workbench/FileTree';
 import EditorPane from '../../components/workbench/EditorPane';
 import AiPanel from '../../components/workbench/AiPanel';
@@ -10,6 +10,10 @@ import FlowGatePanel from '../../components/workbench/FlowGatePanel';
 import { useWorkbenchStore, type SelectionRef } from '../../store/workbenchStore';
 
 const handle = { width: 4, background: '#e7e7f3', cursor: 'col-resize' } as const;
+
+/** Side panels keep a fixed pixel width; the editor takes the remaining space. */
+const TREE_WIDTH = { defaultSize: 260, minSize: 180, maxSize: 480 };
+const SIDE_WIDTH = { defaultSize: 400, minSize: 300, maxSize: 720 };
 
 export default function WorkbenchPage() {
   const { id, iid } = useParams<{ id: string; iid: string }>();
@@ -40,6 +44,8 @@ export default function WorkbenchPage() {
   const [pane, setPane] = useState<'tree' | 'editor' | 'gate' | 'ai'>('editor');
 
   const notice = notices[notices.length - 1];
+  // Remember dragged widths across visits.
+  const columns = useDefaultLayout({ id: 'workbench-columns', storage: localStorage });
 
   return (
     <Box sx={{ height: 'calc(100vh - 72px)', display: 'flex', flexDirection: 'column' }}>
@@ -69,16 +75,16 @@ export default function WorkbenchPage() {
       )}
       {!error && flow && !narrow && (
         <Box sx={{ flex: 1, minHeight: 0, border: '1px solid #e7e7f3', borderRadius: 1, overflow: 'hidden' }}>
-          <Group orientation="horizontal">
-            <Panel defaultSize="20%" minSize="12%">
+          <Group orientation="horizontal" defaultLayout={columns.defaultLayout} onLayoutChanged={columns.onLayoutChanged}>
+            <Panel id="tree" {...TREE_WIDTH} groupResizeBehavior="preserve-pixel-size">
               <FileTree />
             </Panel>
             <Separator style={handle} />
-            <Panel defaultSize="52%" minSize="30%">
+            <Panel id="editor" minSize={320}>
               <EditorPane onAskAi={setSelection} />
             </Panel>
             <Separator style={handle} />
-            <Panel defaultSize="28%" minSize="18%">
+            <Panel id="side" {...SIDE_WIDTH} groupResizeBehavior="preserve-pixel-size">
               <Group orientation="vertical">
                 <Panel defaultSize="38%" minSize="20%">
                   <FlowGatePanel />
