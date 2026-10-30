@@ -202,7 +202,7 @@ pub fn validate(doc: DocType, content: &str, readonly_aliases: &[String]) -> Vec
             if secs.iter().any(|(t, _)| t.eq_ignore_ascii_case("Files")) && files.is_empty() {
                 issues.push(ValidationIssue {
                     section: "Files".to_string(),
-                    message: "## Files 至少列出一个文件路径（每行一个，以 - 开头）".to_string(),
+                    message: "## Files 至少列出一个文件路径（每行一个，建议以 - 开头，例如 - src/app.ts）".to_string(),
                 });
             }
             for f in &files {
@@ -240,14 +240,39 @@ fn list_items(body: &str) -> Vec<String> {
         .collect()
 }
 
-/// Paths listed in the plan's `## Files` section (one per `- ` line; an
-/// optional backtick-quoted path and trailing description are allowed).
+/// Lines of the `## Files` section: `- ` / `* ` bullets, or bare lines that
+/// look like a path (contain `/` or a file extension). AI drafts often drop
+/// the bullet marker; such lines are still accepted.
+fn files_lines(body: &str) -> Vec<String> {
+    strip_comments(body)
+        .lines()
+        .filter_map(|l| {
+            let t = l.trim();
+            if let Some(item) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
+                return Some(item.trim().to_string());
+            }
+            let first = t.trim_start_matches('`').split(['`', ' ', '\t']).next()?;
+            let looks_like_path = !first.is_empty()
+                && !first.starts_with('#')
+                && (first.contains('/')
+                    || first
+                        .rsplit_once('.')
+                        .is_some_and(|(a, b)| !a.is_empty() && !b.is_empty()));
+            looks_like_path.then(|| t.to_string())
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Paths listed in the plan's `## Files` section (one per line, `- ` bullet
+/// preferred; an optional backtick-quoted path and trailing description are
+/// allowed).
 pub fn plan_files(content: &str) -> Vec<String> {
     let secs = sections(content);
     let Some((_, body)) = secs.iter().find(|(t, _)| t.eq_ignore_ascii_case("Files")) else {
         return Vec::new();
     };
-    list_items(body)
+    files_lines(body)
         .into_iter()
         .filter_map(|item| {
             let path = if let Some(rest) = item.strip_prefix('`') {
@@ -329,6 +354,31 @@ mod tests {
         let issues = validate(DocType::Plan, PLAN, &["backend".to_string()]);
         assert_eq!(issues.len(), 1);
         assert!(issues[0].message.contains("不可写"));
+    }
+
+    #[test]
+    fn plan_files_accepts_bare_path_lines() {
+        let plan = PLAN.replace(
+            "- `frontend/src/pages/New.tsx` new page\n- backend/src/api.rs\n",
+            "<!-- hint -->\nprimary/src/a.tsx\n`jxyai/Jxy.Model/B.cs` 新增\nREADME.md\n",
+        );
+        assert!(validate(DocType::Plan, &plan, &[]).is_empty());
+        assert_eq!(
+            plan_files(&plan),
+            vec!["primary/src/a.tsx", "jxyai/Jxy.Model/B.cs", "README.md"]
+        );
+    }
+
+    #[test]
+    fn plan_files_ignores_prose_and_comments() {
+        let plan = PLAN.replace(
+            "- `frontend/src/pages/New.tsx` new page\n- backend/src/api.rs\n",
+            "<!-- - src/hint.rs -->\n暂未确定要改哪些文件\n",
+        );
+        assert!(plan_files(&plan).is_empty());
+        assert!(validate(DocType::Plan, &plan, &[])
+            .iter()
+            .any(|i| i.section == "Files"));
     }
 
     #[test]
