@@ -246,22 +246,25 @@ subagent 把报告写入 `<工作区>/.symphony/validation.md`（工作区内、
 **阻塞标记**：
 
 ```text
-<!-- symphony:blocked reason=validation heads=primary:0802a8c,jxyai:7dfe255c -->
+<!-- symphony:blocked run=i-3338-0-1793343447 reason=validation heads=primary:0802a8c1d2e3,jxyai:7dfe255c4b5a -->
 ```
 
 - `reason` 取 `validation`（底线 3 轮失败）或 `access`（模板 escape hatch：工具或权限缺失）。escape hatch（现 `workflow_gitlab.md:249-260`）改为必须写该标记，自由文本不算。
 - `heads` 列出每个可写仓库写标记时的 HEAD，统一用 `git rev-parse --short=12`。
-- **标记只对写入它的那次 run 生效**。runner 在 run 开始时对 workpad 中的阻塞标记做快照；run 结束时，只有「本次 run 新写入、且 heads 与各仓库当前 HEAD 一致」的标记才算**本次有效**。之前 run 留下的标记一律不再触发任何动作，人删 label 之后也不会被重新加回。
-- 起始状态为 `Todo` / `In Progress` / `Rework` 的 run 开始时，runner 把 workpad 中已有的阻塞标记改写为 `<!-- symphony:blocked-cleared ... -->`（保留原文便于追溯）。本次 run 若仍阻塞，由 AI 重新写入新标记。
+- `run` 是本次 run 的 id。runner 通过环境变量 `SYMPHONY_RUN_ID` 和提示词交给 AI。
+- **标记只对写入它的那次 run 生效**：run 结束时，`run` 等于本次 run id、且 heads 与各仓库当前 HEAD 一致的标记才算**本次有效**。之前 run 留下的标记一律不再触发任何动作；人删 label 之后，即使 Merging run 没完成合并就结束，也不会被重新加回。每次 dispatch（包括 continuation 和失败重试）都是一次新 run，有新的 run id。
+- 模板要求 AI 在**最后一次 push 之后**再写标记，否则 heads 与 HEAD 不一致，标记无效。
+- 起始状态为 `Todo` / `In Progress` / `Rework` 的 run，在 `thread/start` 之前由 runner 把 workpad 中已有的阻塞标记改写为 `<!-- symphony:blocked-cleared ... -->`（保留原文便于追溯）；这一步只为 Merging 回退检查和阅读，不影响「本次有效」判定。读取或改写 workpad 失败时，本次 run 跳过阻塞识别并记录日志（不会误加 label）。
+- 轮次只在起始状态为 `Todo` / `Rework` 时重置；`In Progress` 起始的 continuation、重试沿用 workpad 中的轮次。
 
-**阻塞识别（独立步骤，不依赖 `validation.gate`、工作区布局和起始状态）**：runner 每次 run 结束后（包括被 reconciler 取消的 run，以及起始状态为 `Merging` 的 run）读取 workpad，存在**本次有效**的阻塞标记时按 reason 加 `validation-blocked` 或 `blocked-access` label。tracker 不支持读 workpad 或加 label（例如 Linear）时跳过，此时仅靠模板中 Merging 第一步的 workpad 检查（见下）。
+**阻塞识别（独立步骤，不依赖 `validation.gate`、工作区布局和起始状态）**：加 label 前再确认一次 Issue 当前状态，状态已变为 `Todo` / `Rework`（人已重新安排）时不加。runner 每次 run 结束后（包括被 reconciler 取消的 run，以及起始状态为 `Merging` 的 run）读取 workpad，存在**本次有效**的阻塞标记时按 reason 加 `validation-blocked` 或 `blocked-access` label。tracker 不支持读 workpad 或加 label（例如 Linear）时跳过，此时仅靠模板中 Merging 第一步的 workpad 检查（见下）。
 
 **阻塞后的处理**（由人决定）：
 
-- 环境问题修复后继续：移到 `Todo`。新一次运行保留分支和 MR；run 开始时旧标记被改写为 `blocked-cleared`，轮次以此为准从 1 重新计数。
+- 环境问题修复后继续：移到 `Todo`。新一次运行保留分支和 MR，轮次从 1 重新计数。环境仍不可用时，AI 写入带新 run id 的标记，照常被识别并加 label。
 - 换方案：移到 `Rework`，按现有 Rework 规则重来。
-- 接受失败、直接合并：人删除 `validation-blocked` label（可在评论中说明，**此处认评论**），再移到 `Merging`。Merging 第一步以 label 为准；之前的标记不是本次 run 写入的，run 结束时不会把 label 加回。
-- 带 `validation-blocked` label 的 Issue 不得进入 `Merging`；模板 Merging 第一步检查到该 label 时，移回 `Human Review` 并说明。tracker 不支持 label 时，Merging 第一步改为检查 workpad 中最近一个阻塞标记（未被改写为 `blocked-cleared`），且其后没有人写的「接受阻塞项」评论。
+- 接受失败、直接合并：人删除 `validation-blocked` label（可在评论中说明，**此处认评论**），再移到 `Merging`。Merging 第一步以 label 为准；之前的标记不是本次 run 写入的，run 结束时不会把 label 加回。被接受的是**底线失败**时，Merging 第 3 步的重跑只要求「之前通过的底线没有变成失败」，被接受的失败项不再阻塞。
+- 带 `validation-blocked` label 的 Issue 不得进入 `Merging`；模板 Merging 第一步检查到该 label 时，移回 `Human Review` 并说明。tracker 不支持 label 时（例如 Linear），runner 也无法改写标记；此时模板要求 AI 在 run 开始时自行把旧标记改写为 `blocked-cleared`，Merging 第一步检查 workpad 中最近一个未改写的阻塞标记，且其后没有人写的「接受阻塞项」评论。
 
 **label 生命周期**：runner 在 run 开始、且起始状态为 `Todo` / `In Progress` / `Rework` 时，移除 `validation-blocked`、`validation-missing`、`blocked-access`；run 结束时由「阻塞识别」和确定性检查重新加。阻塞识别和豁免判断只看**本次有效**的阻塞标记，不看 label 是否已存在。
 
@@ -269,7 +272,7 @@ Draft 与合并：人批准即视为接受 workpad 中列出的失败、未验�
 
 1. Issue 带 `validation-blocked` 时移回 `Human Review`，不合并。
 2. MR 为 Draft 时先取消 Draft（GitLab `glab mr update <iid> --ready`，GitHub `gh pr ready`）。
-3. land 流程中合并主干或产生任何新提交后，重新执行底线步骤；只要求底线和 workpad 中**未列为已接受**的项通过，已接受的失败项不再修复。底线失败时不修复、不合并，直接写 `reason=validation` 阻塞标记并移回 `Human Review`（由「阻塞识别」加 label）；由人决定继续路径，不会自动来回。
+3. land 流程中合并主干或产生任何新提交后，重新执行底线步骤；只要求底线中**未被接受**的项和 workpad 中未列为已接受的项通过，已接受的失败项不再修复。底线失败时不修复、不合并，直接写 `reason=validation` 阻塞标记并移回 `Human Review`（由「阻塞识别」加 label）；由人决定继续路径，不会自动来回。
 
 多仓库的人工合并清单中同样注明先取消 Draft。
 
@@ -401,7 +404,7 @@ See `aigc-test/AGENTS.md` for reference only.
   - skills：会话 skills 列表包含 `symphony-commit`、`symphony-push`、`symphony-pull`、`symphony-land`。
   - 仓库 `.codex/config.toml`：在测试仓库放一个无害的项目级配置，确认工作区未被 trusted 时它不会被加载。
   - 文档阶段：AGENTS.md 更新后 `thread/resume` 续接的会话是否使用新内容。
-- 单元测试补充：阻塞标记的「本次有效」判定（run 前快照、cleared 改写、人删 label → Merging → run 未合并结束时不重新加 label、Todo 继续后不残留）；single_root 仓库设置（不装 pre-push hook，AI 分支 push 成功）与 exclude、schema 3 判定与各旧形态、nonce 包裹、路径规则归类、label 生命周期、取消后的检查、e2e 目录清理。
+- 单元测试补充：阻塞标记的「本次有效」判定（run id 匹配、heads 不一致无效、cleared 改写、人删 label → Merging → run 未合并结束时不重新加 label、Todo 继续后写入相同内容的新标记仍被识别、workpad 读取失败时跳过）；single_root 仓库设置（不装 pre-push hook，AI 分支 push 成功）与 exclude、schema 3 判定与各旧形态、nonce 包裹、路径规则归类、label 生命周期、取消后的检查、e2e 目录清理。
 
 ### 4.5 本机迁移（运维操作，需确认后执行）
 
@@ -445,4 +448,5 @@ See `aigc-test/AGENTS.md` for reference only.
 | v2（2026-11-02） | 安全：无高风险；流程、运行时：存在高风险 | 底线失败改为 `validation-blocked` 移出 active 状态；确定性检查不改状态、只加 label，限定触发与豁免，绑定 head SHA，由 runner 按路径规则自算底线，默认关闭逐项目开启；Draft 只用于失败项，Merging 先取消 Draft；改动类型按路径规则分类并补齐构建/依赖、测试类型；Symphony skills 安装到 `CODEX_HOME`；单仓库补输入来源、full clone、保留全局 credential helper、重入、schema 3 接入点、旧形态；AGENTS.md 加 nonce、刷新后读取、单仓库工作分支防护；E2E env 文件由 runner 生成和清理、连接目标不由 Issue 指定、屏蔽仓库凭据；共享环境写数据的 E2E 约束 |
 | v3（2026-11-02） | 流程、运行时：各 1–2 个 P1 | single_root 不调用多仓库 `configure()`（避免 pre-push 白名单拒绝 AI 分支）；label 生命周期、阻塞后两条继续路径、blocked 禁止 Merging、轮次 ≥3；确定性检查只支持多仓库和 single_root，单仓库待 PR-2 后开启，run 结束（含取消）后重取状态，blocked 标记固定格式，检查工作树干净和已推送；模板冲突句子逐条列出；Merging 新提交重跑底线；路径规则确定化、技术栈判定、测试类补 F1；E2E 用 tag 筛选；skills 改写并加前缀；legacy `repo/` 注入的数据来源；GitHub/Gitea 单仓库不注入；工作分支防护改为只标注；e2e 目录启动时清理 |
 | v4（2026-11-02） | 合并审查：2 个 P1 | 阻塞标记带各仓库 heads，HEAD 变化后自动失效；阻塞识别做成独立步骤（不依赖开关、布局、起始状态，含 Merging 起始的 run）；Merging 中底线失败直接写阻塞标记，不自动来回；接受阻塞的方式（人删 label）；确定性检查只查有改动的仓库，已推送按 upstream 判定；skills 前缀名称统一；GitHub/Gitea 单仓库不注入统一；无法识别技术栈时不视为满足底线 |
-| v5（2026-11-02） | 合并审查：2 个 P1 | 阻塞标记改为「只对写入它的 run 生效」：run 开始时快照，起始为 Todo/In Progress/Rework 时把旧标记改写为 `blocked-cleared`；阻塞识别和豁免只看本次 run 新写入的标记，人删 label 接受后不会被加回；已推送判断改为比较远端同名分支；「有改动」含未提交改动；SHA 统一 12 位 |
+| v5（2026-11-02） | 合并审查：2 个 P1 | 阻塞标记改为「只对写入它的 run 生效」：起始为 Todo/In Progress/Rework 时把旧标记改写为 `blocked-cleared`；阻塞识别和豁免只看本次 run 新写入的标记，人删 label 接受后不会被加回；已推送判断改为比较远端同名分支；「有改动」含未提交改动；SHA 统一 12 位 |
+| v6（2026-11-02） | 合并审查：1 个 P1 | 标记加 `run=<run_id>`，「本次有效」改为 run id 匹配，不再做 workpad 前后比较；改写旧标记在 `thread/start` 前完成；workpad 读写失败跳过识别；最后一次 push 后才写标记；轮次只在 Todo/Rework 重置；接受底线失败后 Merging 不再因同一失败阻塞；加 label 前复核状态；Linear 由 AI 改写旧标记 |
