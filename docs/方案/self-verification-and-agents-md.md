@@ -191,7 +191,7 @@ subagent 把报告写入 `<工作区>/.symphony/validation.md`（工作区内、
 ```
 
 - 「结果」只能是 `通过`、`失败`、`未验证`、`跳过` 之一。
-- `head` 为该仓库验证时的 HEAD 短 SHA。验证之后任何新提交（合并主干、Review 修改）都要重新验证。
+- `head` 为该仓库验证时的 HEAD（`git rev-parse --short=12`）。验证之后任何新提交（合并主干、Review 修改）都要重新验证。
 - 有多个 `symphony:validation` 块时以最后一个为准。
 
 ### 3.3 E2E token
@@ -250,19 +250,20 @@ subagent 把报告写入 `<工作区>/.symphony/validation.md`（工作区内、
 ```
 
 - `reason` 取 `validation`（底线 3 轮失败）或 `access`（模板 escape hatch：工具或权限缺失）。escape hatch（现 `workflow_gitlab.md:249-260`）改为必须写该标记，自由文本不算。
-- `heads` 列出每个可写仓库写标记时的 HEAD 短 SHA（单仓库只写一个）。**只有 heads 与各仓库当前 HEAD 全部一致的标记才有效**；HEAD 变化后旧标记自动失效。
-- 新一次运行开始时，AI 删除 workpad 中已失效的旧标记（runner 判定时也会忽略，删除只为便于阅读）。
+- `heads` 列出每个可写仓库写标记时的 HEAD，统一用 `git rev-parse --short=12`。
+- **标记只对写入它的那次 run 生效**。runner 在 run 开始时对 workpad 中的阻塞标记做快照；run 结束时，只有「本次 run 新写入、且 heads 与各仓库当前 HEAD 一致」的标记才算**本次有效**。之前 run 留下的标记一律不再触发任何动作，人删 label 之后也不会被重新加回。
+- 起始状态为 `Todo` / `In Progress` / `Rework` 的 run 开始时，runner 把 workpad 中已有的阻塞标记改写为 `<!-- symphony:blocked-cleared ... -->`（保留原文便于追溯）。本次 run 若仍阻塞，由 AI 重新写入新标记。
 
-**阻塞识别（独立步骤，不依赖 `validation.gate`、工作区布局和起始状态）**：runner 每次 run 结束后（包括被 reconciler 取消的 run，以及起始状态为 `Merging` 的 run）读取 workpad，存在有效阻塞标记时按 reason 加 `validation-blocked` 或 `blocked-access` label。tracker 不支持读 workpad 或加 label（例如 Linear）时跳过，此时仅靠模板中 Merging 第一步的 workpad 检查（见下）。
+**阻塞识别（独立步骤，不依赖 `validation.gate`、工作区布局和起始状态）**：runner 每次 run 结束后（包括被 reconciler 取消的 run，以及起始状态为 `Merging` 的 run）读取 workpad，存在**本次有效**的阻塞标记时按 reason 加 `validation-blocked` 或 `blocked-access` label。tracker 不支持读 workpad 或加 label（例如 Linear）时跳过，此时仅靠模板中 Merging 第一步的 workpad 检查（见下）。
 
 **阻塞后的处理**（由人决定）：
 
-- 环境问题修复后继续：移到 `Todo`。新一次运行保留分支和 MR，轮次从 1 重新计数（新 run 发现 workpad 中存在 `reason=validation` 的阻塞标记时归零）。
+- 环境问题修复后继续：移到 `Todo`。新一次运行保留分支和 MR；run 开始时旧标记被改写为 `blocked-cleared`，轮次以此为准从 1 重新计数。
 - 换方案：移到 `Rework`，按现有 Rework 规则重来。
-- 接受失败、直接合并：人删除 `validation-blocked` label，并在 Issue 评论中写明「接受阻塞项」。Merging 第一步以 label 为准，不再检查 workpad 标记。
-- 带 `validation-blocked` label 的 Issue 不得进入 `Merging`；模板 Merging 第一步检查到该 label 时，移回 `Human Review` 并说明。tracker 不支持 label 时，Merging 第一步改为检查 workpad 中是否有有效阻塞标记（且没有「接受阻塞项」评论）。
+- 接受失败、直接合并：人删除 `validation-blocked` label（可在评论中说明，**此处认评论**），再移到 `Merging`。Merging 第一步以 label 为准；之前的标记不是本次 run 写入的，run 结束时不会把 label 加回。
+- 带 `validation-blocked` label 的 Issue 不得进入 `Merging`；模板 Merging 第一步检查到该 label 时，移回 `Human Review` 并说明。tracker 不支持 label 时，Merging 第一步改为检查 workpad 中最近一个阻塞标记（未被改写为 `blocked-cleared`），且其后没有人写的「接受阻塞项」评论。
 
-**label 生命周期**：runner 在 run 开始、且起始状态为 `Todo` / `In Progress` / `Rework` 时，移除 `validation-blocked`、`validation-missing`、`blocked-access`；run 结束时由「阻塞识别」和确定性检查重新加。所有判断只看有效（heads 一致）的阻塞标记，不看 label 是否已存在。
+**label 生命周期**：runner 在 run 开始、且起始状态为 `Todo` / `In Progress` / `Rework` 时，移除 `validation-blocked`、`validation-missing`、`blocked-access`；run 结束时由「阻塞识别」和确定性检查重新加。阻塞识别和豁免判断只看**本次有效**的阻塞标记，不看 label 是否已存在。
 
 Draft 与合并：人批准即视为接受 workpad 中列出的失败、未验证、跳过项。模板 Step 3 的 `Merging`：
 
@@ -285,10 +286,10 @@ Draft 与合并：人批准即视为接受 workpad 中列出的失败、未验�
 - 适用范围：多仓库和 single_root 单仓库。legacy 单仓库布局和 Linear tracker 固定跳过，在 workpad 注明「布局不支持确定性检查」。单仓库项目在 PR-2 上线后才能打开开关。
 - 位置：runner 在 `run_after_run` 之后的通用路径执行（单仓库和多仓库都经过；现有只读仓库检查提到同一位置并先执行）。**不管本次 run 的结果是什么（包括被 reconciler 取消）**，都用 `refresh_issue_state` 重新获取 Issue 状态；worker 被 hard deadline 或停机 drain abort 时不执行。
 - 接口：`IssueStateRefresher` 新增 `fetch_workpad`、`add_label`、`remove_label`，带默认实现（不支持时跳过检查）；GitLab 实现复用 `Platform::find_workpad_comment`，并新增普通 label 增删接口（现 `set_workflow_state` 只处理 workflow label）。
-- 触发：起始状态为 `Todo` / `In Progress` / `Rework`，结束状态为 `Human Review` 或 `Testing`。以下情形豁免检查：只读仓库违规（runner 自己处理，先于本检查）；workpad 中有有效阻塞标记（label 由「阻塞识别」负责）。多仓库 `Merging` 阶段写完合并清单回到 Human Review 时起始状态为 `Merging`，不触发。
+- 触发：起始状态为 `Todo` / `In Progress` / `Rework`，结束状态为 `Human Review` 或 `Testing`。以下情形豁免检查：只读仓库违规（runner 自己处理，先于本检查）；workpad 中有本次有效的阻塞标记（label 由「阻塞识别」负责）。多仓库 `Merging` 阶段写完合并清单回到 Human Review 时起始状态为 `Merging`，不触发。
 - 检查内容：
   1. workpad 中存在 `symphony:validation` 块（取最后一个）。
-  2. 对每个**有改动**的可写仓库（`git diff --name-only origin/<base>...HEAD` 非空；多仓库中没有改动的仓库不推送、不检查）：`git status --porcelain` 为空；当前分支有 upstream 且 `HEAD` 等于 upstream（已推送；detached 或没有 upstream 视为未推送）；表中 `head` 等于 `HEAD`。
+  2. 对每个**有改动**的可写仓库（`git diff --name-only origin/<base>...HEAD` 非空，或 `git status --porcelain` 非空；多仓库中没有改动的仓库不推送、不检查）：`git status --porcelain` 为空；先 `git fetch origin <当前分支名>`，`HEAD` 等于 `refs/remotes/origin/<当前分支名>`（不依赖 upstream 配置；detached 或远端分支不存在视为未推送）；表中 `head` 与 `HEAD` 按 12 位前缀一致。
   3. runner 自己执行 `git diff --name-only origin/<base>...HEAD`，按 3.2.2 的规则算出必需的底线步骤，表中这些行都存在且结果为「通过」。
 - 不满足时：**不改变 Issue 状态**，加 `validation-missing` label，在 workpad 追加检查结果。不移回 active 状态，避免与编排器的重试形成循环。
 - 已知局限：Symphony 使用真人账号 token，workpad 评论无法区分 AI 和人写的；检查只能发现遗漏和不一致，不能防止 AI 伪造报告（需求方已接受提示词约束，第 6 节）。
@@ -400,7 +401,7 @@ See `aigc-test/AGENTS.md` for reference only.
   - skills：会话 skills 列表包含 `symphony-commit`、`symphony-push`、`symphony-pull`、`symphony-land`。
   - 仓库 `.codex/config.toml`：在测试仓库放一个无害的项目级配置，确认工作区未被 trusted 时它不会被加载。
   - 文档阶段：AGENTS.md 更新后 `thread/resume` 续接的会话是否使用新内容。
-- 单元测试补充：single_root 仓库设置（不装 pre-push hook，AI 分支 push 成功）与 exclude、schema 3 判定与各旧形态、nonce 包裹、路径规则归类、label 生命周期、取消后的检查、e2e 目录清理。
+- 单元测试补充：阻塞标记的「本次有效」判定（run 前快照、cleared 改写、人删 label → Merging → run 未合并结束时不重新加 label、Todo 继续后不残留）；single_root 仓库设置（不装 pre-push hook，AI 分支 push 成功）与 exclude、schema 3 判定与各旧形态、nonce 包裹、路径规则归类、label 生命周期、取消后的检查、e2e 目录清理。
 
 ### 4.5 本机迁移（运维操作，需确认后执行）
 
@@ -444,3 +445,4 @@ See `aigc-test/AGENTS.md` for reference only.
 | v2（2026-11-02） | 安全：无高风险；流程、运行时：存在高风险 | 底线失败改为 `validation-blocked` 移出 active 状态；确定性检查不改状态、只加 label，限定触发与豁免，绑定 head SHA，由 runner 按路径规则自算底线，默认关闭逐项目开启；Draft 只用于失败项，Merging 先取消 Draft；改动类型按路径规则分类并补齐构建/依赖、测试类型；Symphony skills 安装到 `CODEX_HOME`；单仓库补输入来源、full clone、保留全局 credential helper、重入、schema 3 接入点、旧形态；AGENTS.md 加 nonce、刷新后读取、单仓库工作分支防护；E2E env 文件由 runner 生成和清理、连接目标不由 Issue 指定、屏蔽仓库凭据；共享环境写数据的 E2E 约束 |
 | v3（2026-11-02） | 流程、运行时：各 1–2 个 P1 | single_root 不调用多仓库 `configure()`（避免 pre-push 白名单拒绝 AI 分支）；label 生命周期、阻塞后两条继续路径、blocked 禁止 Merging、轮次 ≥3；确定性检查只支持多仓库和 single_root，单仓库待 PR-2 后开启，run 结束（含取消）后重取状态，blocked 标记固定格式，检查工作树干净和已推送；模板冲突句子逐条列出；Merging 新提交重跑底线；路径规则确定化、技术栈判定、测试类补 F1；E2E 用 tag 筛选；skills 改写并加前缀；legacy `repo/` 注入的数据来源；GitHub/Gitea 单仓库不注入；工作分支防护改为只标注；e2e 目录启动时清理 |
 | v4（2026-11-02） | 合并审查：2 个 P1 | 阻塞标记带各仓库 heads，HEAD 变化后自动失效；阻塞识别做成独立步骤（不依赖开关、布局、起始状态，含 Merging 起始的 run）；Merging 中底线失败直接写阻塞标记，不自动来回；接受阻塞的方式（人删 label）；确定性检查只查有改动的仓库，已推送按 upstream 判定；skills 前缀名称统一；GitHub/Gitea 单仓库不注入统一；无法识别技术栈时不视为满足底线 |
+| v5（2026-11-02） | 合并审查：2 个 P1 | 阻塞标记改为「只对写入它的 run 生效」：run 开始时快照，起始为 Todo/In Progress/Rework 时把旧标记改写为 `blocked-cleared`；阻塞识别和豁免只看本次 run 新写入的标记，人删 label 接受后不会被加回；已推送判断改为比较远端同名分支；「有改动」含未提交改动；SHA 统一 12 位 |
