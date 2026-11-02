@@ -92,29 +92,59 @@ Todo → In Progress ───────────────────�
 
 写入 WORKFLOW 模板，标题为 `## App runtime validation (required)`，使现有完成条件的引用有效。
 
-**优先级**：Issue / 提示词中声明的测试方案 > 目标仓库 `AGENTS.md` 中的测试要求 > 本默认方案。用户声明可以增加、替换或跳过某项，跳过必须写明理由。
+#### 3.2.1 优先级与命令来源
 
-**后端**（diff 涉及后端代码时）：
+- **优先级**：Issue / 提示词中声明的测试方案 > 目标仓库 `AGENTS.md` 中的测试要求 > 本默认方案。用户声明可以增加、替换或跳过某一步，跳过必须写明理由。
+- **命令来源**：默认方案只规定「做哪几步、每步的通过标准」，具体命令按以下顺序确定：目标仓库 `AGENTS.md` 写明的命令 → `package.json` scripts / 解决方案文件 / `Makefile` → 技术栈的标准命令。subagent 在报告中写明每一步用了哪条命令、命令来自哪里。
+- **触发**：按 diff 判断。改了后端代码执行后端流程，改了前端代码执行前端流程，都改了两个都执行。只改文档和配置时只做构建和静态检查。
 
-| 项 | 要求 |
-|---|---|
-| 构建 | 项目的标准构建命令，0 错误 |
-| 单元测试 | 覆盖新增和修改的业务逻辑 |
-| 集成测试 | 连开发环境依赖（数据库等）运行受影响的集成测试 |
-| API 测试 | **在本地启动服务，用真实 HTTP 请求调用本次新增或修改的接口**，覆盖正常请求、参数错误、权限不足；记录请求和响应摘要。进程内反射调用不算 API 测试 |
+#### 3.2.2 后端验证流程
 
-**前端**（diff 涉及前端代码时）：
+按顺序执行，前一步失败就停下修复，不继续往后跑：
 
-| 项 | 要求 |
-|---|---|
-| 静态检查 | 类型检查、lint，0 错误 |
-| 单元 / 组件测试 | **全量**运行，不只跑改动目录 |
-| 集成测试 | 至少一条不 mock 本次改动的 service 层的测试，或在 E2E 中覆盖（见下） |
-| E2E | 有 E2E 信息时必须执行，UI 改动必须新增或更新用例；关键页面截图附到 MR |
+| 步骤 | 做什么 | 通过标准 | 示例（jxyai，.NET） |
+|---|---|---|---|
+| B1 构建 | 全量构建 | 0 错误；改动文件不新增警告 | `dotnet build Jxy.Ai.slnx` |
+| B2 单元测试 | 运行与改动相关的单元测试；新增或修改的业务逻辑必须有对应用例，并用「注入缺陷后用例会失败」确认用例有效 | 全部通过 | `dotnet test Jxy.Test --filter "FullyQualifiedName~<类名>"` |
+| B3 集成测试 | 连开发环境依赖（数据库、缓存等）运行受影响模块的集成测试；需要的 DDL 先在开发库执行 | 全部通过；写过的开发库数据在 workpad 记录 | 设 `JXY_TEST_DB_CONNECTION`、`JXY_TEST_DB_ALLOW_WRITE=true`，`dotnet test Jxy.Test --filter "FullyQualifiedName~<模块>"` |
+| B4 API 测试 | 在本地启动服务，用真实 HTTP 请求调用本次新增或修改的每个接口，至少覆盖：正常请求、参数错误、未登录或权限不足 | 状态码和响应结构符合 spec；记录请求和响应摘要 | 启动 `Jxy.Ai.Web`，`curl -X POST http://127.0.0.1:<port>/water/ops_stat/company_rank ...` |
+| B5 回归 | 运行改动所在模块的全部测试（不只是新增用例） | 全部通过 | `dotnet test Jxy.Test --filter "FullyQualifiedName~WaterOps"` |
 
-**证据**：每一项在 workpad `Validation` 中写明命令和结果摘要。未执行的项不得勾选，必须写明原因（例如「Issue 未提供 E2E token，跳过 E2E」）。
+说明：
 
-**截图对比**：本期只要求附截图作为证据，不做像素级基线对比。目标仓库已有 Playwright `toHaveScreenshot` 基线时，按仓库约定运行。
+- B4 进程内反射调用、直接 new 控制器调用都不算 API 测试，只能算单元测试。
+- B4 需要登录的接口：Issue 提供了接口 token 时用 token 调用；没有提供时只测参数错误和未登录两种情况，正常请求标为「未验证」并写明原因。
+- 服务无法在本地启动（缺配置、依赖不可达）时，B4 标为「未验证」，写明启动失败的错误，不得用其他方式冒充。
+
+#### 3.2.3 前端验证流程
+
+| 步骤 | 做什么 | 通过标准 | 示例（jst-ai-studio，Vite + React） |
+|---|---|---|---|
+| F1 静态检查 | 类型检查和 lint | 0 错误；改动文件不新增警告（仓库要求 0 warning 时按仓库要求） | `pnpm type-check`、`pnpm lint` |
+| F2 构建 | 生产构建 | 成功 | `pnpm build` |
+| F3 单元 / 组件测试 | **全量**运行；新增或修改的组件、hook、工具函数必须有对应用例 | 全部通过 | `pnpm test:unit`（不带目录参数） |
+| F4 集成测试 | 至少一条测试不 mock 本次改动的 service 层：用 MSW 等在网络层模拟后端响应，或在 F5 中用真实后端覆盖 | 全部通过 | `vitest` + MSW，按 spec 中的接口契约构造响应 |
+| F5 E2E | 有 E2E 信息（3.3）时执行：启动前端连开发环境后端，跑与改动相关的 Playwright 用例；UI 改动必须新增或更新用例，覆盖 plan.md `## Tests` 中的用户路径 | 全部通过；关键页面截图附到 MR | `E2E_BASE_URL=... E2E_TOKEN=... pnpm test:e2e <spec>` |
+
+说明：
+
+- F4 的 mock 只能在网络层（MSW / Playwright route），不能 mock 本次改动的 service、hook 或组件，否则不算集成测试。
+- F5 没有 E2E 信息时跳过并在 workpad 写明「Issue 未提供 E2E token，跳过 E2E」，不得用伪造的登录状态代替。仓库已有的、不需要登录的 E2E 用例（例如全部走 route mock 的用例）仍要运行。
+- 截图：F5 中对本次改动涉及的页面各截一张，放在 MR 描述中。本期不做像素级基线对比；目标仓库已有 `toHaveScreenshot` 基线时按仓库约定运行。
+
+#### 3.2.4 证据
+
+subagent 按以下格式报告，主会话原样写入 workpad `Validation`：
+
+```text
+| 步骤 | 命令（来源） | 结果 | 备注 |
+|---|---|---|---|
+| B1 构建 | dotnet build Jxy.Ai.slnx（AGENTS.md） | 通过，0 错误 | |
+| B4 API 测试 | curl POST /water/ops_stat/company_rank（手写） | 通过 3/4 | 正常请求未验证：Issue 未提供接口 token |
+| F5 E2E | — | 跳过 | Issue 未提供 E2E token |
+```
+
+未执行或未通过的步骤不得勾选。
 
 ### 3.3 E2E token
 
@@ -210,8 +240,10 @@ Skills of a repository live in `<alias>/.codex/skills/` when present.
 
 PR-1 和 PR-3 互不依赖，可以并行。PR-2 改动 checkout 时序，风险最高，单独审查。
 
-## 6. 未解决问题
+## 6. 已确认的限制
 
-- subagent 的权限：Codex subagent 继承主会话的沙箱和审批策略，目前无法限制它只改测试文件，只能靠提示词约束。
-- 多仓库 `developerInstructions` 与 Codex 自身加载的 AGENTS.md 同时存在时的优先级以 Codex 实现为准，需要在 4.4 中实测。
-- 目标仓库的 skills（`<alias>/.codex/skills`）在多仓库下不会被 Codex 自动发现，本期只在说明中告诉 AI 位置，是否需要通过 `CODEX_HOME` 合并 skills 另行评估。
+以下限制已与需求方确认可以接受（2026-11-02）：
+
+- subagent 继承主会话的沙箱和审批策略，无法限制它只改测试文件，靠提示词约束。
+- 多仓库时 `developerInstructions` 与 Codex 自身加载的 AGENTS.md 同时存在，优先级以 Codex 实现为准，在 4.4 中实测记录。
+- 多仓库下目标仓库的 skills（`<alias>/.codex/skills`）不会被 Codex 自动发现，与 Codex 自身行为一致；本期只在说明中告诉 AI 位置。
