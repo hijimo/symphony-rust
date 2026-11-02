@@ -94,7 +94,7 @@ Codex 从 git 根目录到工作目录（`cwd`）逐级查找并合并 `AGENTS.m
    - 不能修改连接目标、环境或安全规则。
 4. **默认验证方案**（3.2）。
 
-**底线**（不可跳过；失败时不能以「待审」身份进入 Human Review，只能以 `validation-blocked` 阻塞身份进入，见 3.5）：B1 构建、F1 静态检查、F2 构建、B5 / F3 回归。本次改动类型（3.2.2）对应的底线集合为空时（例如纯文档），视为满足底线。
+**底线**（不可跳过；失败时不能以「待审」身份进入 Human Review，只能以 `validation-blocked` 阻塞身份进入，见 3.5）：B1 构建、F1 静态检查、F2 构建、B5 / F3 回归。本次改动类型（3.2.2）对应的底线集合为空时（例如纯文档），视为满足底线；仓库技术栈无法识别时（根目录既无 `package.json` 也无 `*.sln*` / `*.csproj`），不视为满足，B1 / F1 标为「未验证：无法识别技术栈」。
 
 ### 3.2 默认验证方案
 
@@ -104,7 +104,7 @@ Codex 从 git 根目录到工作目录（`cwd`）逐级查找并合并 `AGENTS.m
 |---|---|
 | 第 114、218 行：Issue 中的 Validation / Test Plan 不可降级 | Issue 描述中的验证要求只能增加步骤；跳过非底线步骤须写明理由 |
 | 第 246 行：feedback 后 re-run validation | 按 `App runtime validation` 重新验证，计入轮次 |
-| 第 297–298 行：重复直到 pipeline 全部通过 | 按 3.5 结果处理表处理 |
+| 第 296、298 行：pipeline green；重复直到 pipeline 全部通过 | 按 3.5 结果处理表处理 |
 | 第 348 行：Validation/tests are green for the latest commit | 最新提交的验证报告满足 3.5 结果处理表中「进入 Human Review」的条件 |
 | 第 367 行：Completion bar 不满足不得进入 Human Review | 只能按 3.5 结果处理表进入 Human Review（含 `validation-blocked` 阻塞情形） |
 
@@ -241,21 +241,34 @@ subagent 把报告写入 `<工作区>/.symphony/validation.md`（工作区内、
 | 全部通过，或只有「未验证」「跳过」 | push；「未验证」「跳过」项写进 workpad 和 MR 描述；进入 Human Review（`testing_enabled` 时进入 Testing，见 3.6） |
 | 非底线步骤失败 | push，MR 设为 Draft，workpad 顶部写明失败项，进入 Human Review |
 | 底线步骤失败，轮次 < 3 | 修复后重新验证 |
-| 底线步骤失败，轮次 ≥ 3 | push 当前分支（MR 保持或设为 Draft），在 workpad 写 `<!-- symphony:blocked reason=validation -->` 和阻塞原因，移到 `Human Review`。`Human Review` 不在 `active_states` 中，编排器不再调度。runner 检测到该标记后给 Issue 加 `validation-blocked` label |
+| 底线步骤失败，轮次 ≥ 3 | push 当前分支（MR 保持或设为 Draft），在 workpad 写阻塞标记（格式见下）和阻塞原因，移到 `Human Review`。`Human Review` 不在 `active_states` 中，编排器不再调度 |
+
+**阻塞标记**：
+
+```text
+<!-- symphony:blocked reason=validation heads=primary:0802a8c,jxyai:7dfe255c -->
+```
+
+- `reason` 取 `validation`（底线 3 轮失败）或 `access`（模板 escape hatch：工具或权限缺失）。escape hatch（现 `workflow_gitlab.md:249-260`）改为必须写该标记，自由文本不算。
+- `heads` 列出每个可写仓库写标记时的 HEAD 短 SHA（单仓库只写一个）。**只有 heads 与各仓库当前 HEAD 全部一致的标记才有效**；HEAD 变化后旧标记自动失效。
+- 新一次运行开始时，AI 删除 workpad 中已失效的旧标记（runner 判定时也会忽略，删除只为便于阅读）。
+
+**阻塞识别（独立步骤，不依赖 `validation.gate`、工作区布局和起始状态）**：runner 每次 run 结束后（包括被 reconciler 取消的 run，以及起始状态为 `Merging` 的 run）读取 workpad，存在有效阻塞标记时按 reason 加 `validation-blocked` 或 `blocked-access` label。tracker 不支持读 workpad 或加 label（例如 Linear）时跳过，此时仅靠模板中 Merging 第一步的 workpad 检查（见下）。
 
 **阻塞后的处理**（由人决定）：
 
-- 环境问题修复后继续：移到 `Todo`。新一次运行保留分支和 MR，轮次从 1 重新计数（新 run 发现上一个 validation 块带 blocked 标记时归零）。
+- 环境问题修复后继续：移到 `Todo`。新一次运行保留分支和 MR，轮次从 1 重新计数（新 run 发现 workpad 中存在 `reason=validation` 的阻塞标记时归零）。
 - 换方案：移到 `Rework`，按现有 Rework 规则重来。
-- 带 `validation-blocked` 的 Issue 不得进入 `Merging`；模板 Merging 第一步检查到该 label 时，移回 `Human Review` 并说明。
+- 接受失败、直接合并：人删除 `validation-blocked` label，并在 Issue 评论中写明「接受阻塞项」。Merging 第一步以 label 为准，不再检查 workpad 标记。
+- 带 `validation-blocked` label 的 Issue 不得进入 `Merging`；模板 Merging 第一步检查到该 label 时，移回 `Human Review` 并说明。tracker 不支持 label 时，Merging 第一步改为检查 workpad 中是否有有效阻塞标记（且没有「接受阻塞项」评论）。
 
-**label 生命周期**：runner 在 run 开始、且起始状态为 `Todo` / `In Progress` / `Rework` 时，移除 `validation-blocked`、`validation-missing`、`blocked-access`；run 结束时按检查结果重新加。豁免判断不看 label，只看 workpad 中当前 HEAD 对应的标记。
+**label 生命周期**：runner 在 run 开始、且起始状态为 `Todo` / `In Progress` / `Rework` 时，移除 `validation-blocked`、`validation-missing`、`blocked-access`；run 结束时由「阻塞识别」和确定性检查重新加。所有判断只看有效（heads 一致）的阻塞标记，不看 label 是否已存在。
 
 Draft 与合并：人批准即视为接受 workpad 中列出的失败、未验证、跳过项。模板 Step 3 的 `Merging`：
 
 1. Issue 带 `validation-blocked` 时移回 `Human Review`，不合并。
 2. MR 为 Draft 时先取消 Draft（GitLab `glab mr update <iid> --ready`，GitHub `gh pr ready`）。
-3. land 流程中合并主干或产生任何新提交后，重新执行底线步骤；只要求底线和 workpad 中**未列为已接受**的项通过，已接受的失败项不再修复。底线失败时按「轮次 ≥ 3」处理，不继续合并。
+3. land 流程中合并主干或产生任何新提交后，重新执行底线步骤；只要求底线和 workpad 中**未列为已接受**的项通过，已接受的失败项不再修复。底线失败时不修复、不合并，直接写 `reason=validation` 阻塞标记并移回 `Human Review`（由「阻塞识别」加 label）；由人决定继续路径，不会自动来回。
 
 多仓库的人工合并清单中同样注明先取消 Draft。
 
@@ -272,10 +285,10 @@ Draft 与合并：人批准即视为接受 workpad 中列出的失败、未验�
 - 适用范围：多仓库和 single_root 单仓库。legacy 单仓库布局和 Linear tracker 固定跳过，在 workpad 注明「布局不支持确定性检查」。单仓库项目在 PR-2 上线后才能打开开关。
 - 位置：runner 在 `run_after_run` 之后的通用路径执行（单仓库和多仓库都经过；现有只读仓库检查提到同一位置并先执行）。**不管本次 run 的结果是什么（包括被 reconciler 取消）**，都用 `refresh_issue_state` 重新获取 Issue 状态；worker 被 hard deadline 或停机 drain abort 时不执行。
 - 接口：`IssueStateRefresher` 新增 `fetch_workpad`、`add_label`、`remove_label`，带默认实现（不支持时跳过检查）；GitLab 实现复用 `Platform::find_workpad_comment`，并新增普通 label 增删接口（现 `set_workflow_state` 只处理 workflow label）。
-- 触发：起始状态为 `Todo` / `In Progress` / `Rework`，结束状态为 `Human Review` 或 `Testing`。以下情形豁免检查，但同样加可见 label：只读仓库违规（runner 自己处理，先于本检查）；workpad 中有 `<!-- symphony:blocked reason=... -->` 标记（escape hatch 和底线 3 轮失败都必须写该标记，自由文本不算），按 reason 加 `validation-blocked` 或 `blocked-access`。多仓库 `Merging` 阶段写完合并清单回到 Human Review 时起始状态为 `Merging`，不触发。
+- 触发：起始状态为 `Todo` / `In Progress` / `Rework`，结束状态为 `Human Review` 或 `Testing`。以下情形豁免检查：只读仓库违规（runner 自己处理，先于本检查）；workpad 中有有效阻塞标记（label 由「阻塞识别」负责）。多仓库 `Merging` 阶段写完合并清单回到 Human Review 时起始状态为 `Merging`，不触发。
 - 检查内容：
   1. workpad 中存在 `symphony:validation` 块（取最后一个）。
-  2. 每个可写仓库：`git status --porcelain` 为空；`HEAD` 等于 `origin/<工作分支>`（已推送）；表中 `head` 等于 `HEAD`。
+  2. 对每个**有改动**的可写仓库（`git diff --name-only origin/<base>...HEAD` 非空；多仓库中没有改动的仓库不推送、不检查）：`git status --porcelain` 为空；当前分支有 upstream 且 `HEAD` 等于 upstream（已推送；detached 或没有 upstream 视为未推送）；表中 `head` 等于 `HEAD`。
   3. runner 自己执行 `git diff --name-only origin/<base>...HEAD`，按 3.2.2 的规则算出必需的底线步骤，表中这些行都存在且结果为「通过」。
 - 不满足时：**不改变 Issue 状态**，加 `validation-missing` label，在 workpad 追加检查结果。不移回 active 状态，避免与编排器的重试形成循环。
 - 已知局限：Symphony 使用真人账号 token，workpad 评论无法区分 AI 和人写的；检查只能发现遗漏和不一致，不能防止 AI 伪造报告（需求方已接受提示词约束，第 6 节）。
@@ -298,13 +311,13 @@ Draft 与合并：人批准即视为接受 workpad 中列出的失败、未验�
   - 其他失败（git 不存在、`safe.directory` 等）：拒绝启动并报出原因。
 - web-platform spawn worker 时，自定义 `workflow_content` 中的 `workspace.root` 也由 rust-platform 的这项检查覆盖。
 - web-platform 启动时对 `<root>/editor` 做同样的检查（文档阶段工作区不经过 rust-platform）。
-- **skills 分发（D10）**：现有 `.codex/skills/push`、`land` 是上游 GitHub/Elixir 版本（`make -C elixir all`、`mix pr_body.check`、`gh`、相对路径 `python3 .codex/skills/land/land_watch.py`），不能直接分发。PR-1 先改写为按平台（GitLab / GitHub）分支的版本，去掉 Elixir 步骤，脚本路径改为相对 skill 目录；以 `symphony-commit`、`symphony-push`、`symphony-pull`、`symphony-land` 等名称安装到 worker 的 `CODEX_HOME/skills`（本机 `~/.codex/skills`，会在用户个人会话中可见，前缀用于区分）。模板中 `.codex/skills/land/SKILL.md` 等相对路径改为按 skill 名引用。4.4 验证会话的 skills 列表包含这些 skill。
+- **skills 分发（D10）**：现有 `.codex/skills/push`、`land` 是上游 GitHub/Elixir 版本（`make -C elixir all`、`mix pr_body.check`、`gh`、相对路径 `python3 .codex/skills/land/land_watch.py`），不能直接分发。PR-1 先改写为按平台（GitLab / GitHub）分支的版本，去掉 Elixir 步骤，脚本路径改为相对 skill 目录；以 `symphony-commit`、`symphony-push`、`symphony-pull`、`symphony-land` 等名称安装到 worker 的 `CODEX_HOME/skills`（本机 `~/.codex/skills`，会在用户个人会话中可见，前缀用于区分）。模板中 `.codex/skills/land/SKILL.md` 等相对路径改为按 skill 名引用；skill 之间的互相引用（`land`、`push` 中对 `push`、`pull`、`commit` 的引用）一并改为带前缀的名称。4.4 验证会话的 skills 列表包含这些 skill。
 
 ### 4.2 单仓库：Symphony 准备仓库，根目录即仓库根
 
 现状：单仓库工作区是空目录，仓库由 AI 在会话中自己 clone（1.4）。
 
-**范围**：本期只支持 GitLab 单仓库项目（现有 checkout 认证只实现了 GitLab 的 `GITLAB_HOST` / `GITLAB_TOKEN` 与 `oauth2` askpass）。GitHub、Gitea 单仓库保持现状（AI 自行 clone），并在 4.3 按多仓库方式注入 AGENTS.md 作为补偿；它们的 AGENTS.md 问题在后续版本解决。
+**范围**：本期只支持 GitLab 单仓库项目（现有 checkout 认证只实现了 GitLab 的 `GITLAB_HOST` / `GITLAB_TOKEN` 与 `oauth2` askpass）。GitHub、Gitea 单仓库保持现状（AI 自行 clone），本期不修复、也不注入 AGENTS.md（见第 6 节），在后续版本解决。
 
 **输入**：web-platform 渲染单仓库 WORKFLOW 时，在 `workspace` 段增加 `slug` 和 `default_branch`；rust-platform 解析为单仓库的 `SingleRepoSpec`。不渲染 `workspace.repos`，`is_multi_repo` 判断不变。`workspace.slug` 与 `workspace.repos` 同时出现时配置校验报错。
 
@@ -384,7 +397,7 @@ See `aigc-test/AGENTS.md` for reference only.
   - 单仓库：`AGENTS.md instructions for <cwd>` 的内容是目标仓库的。
   - 多仓库和文档阶段：首个 turn 输入包含各仓库 AGENTS.md，且不再出现 symphony-rust 的 AGENTS.md（例如 `Frontend Node Environment` 一节）。
   - subagent：子会话记录中包含 `SYMPHONY-VALIDATION-V1` 和 3.4 的安全规则；developerInstructions 是否被子线程继承；runner 没有被子线程事件提前结束。
-  - skills：会话 skills 列表包含 `land`、`push`、`pull`。
+  - skills：会话 skills 列表包含 `symphony-commit`、`symphony-push`、`symphony-pull`、`symphony-land`。
   - 仓库 `.codex/config.toml`：在测试仓库放一个无害的项目级配置，确认工作区未被 trusted 时它不会被加载。
   - 文档阶段：AGENTS.md 更新后 `thread/resume` 续接的会话是否使用新内容。
 - 单元测试补充：single_root 仓库设置（不装 pre-push hook，AI 分支 push 成功）与 exclude、schema 3 判定与各旧形态、nonce 包裹、路径规则归类、label 生命周期、取消后的检查、e2e 目录清理。
@@ -406,8 +419,8 @@ See `aigc-test/AGENTS.md` for reference only.
 |---|---|---|
 | PR-1 | 工作区根检查（rust-platform `main.rs` + web-platform editor）；skills 改写为 GitLab/GitHub 版本、加 `symphony-` 前缀安装到 `CODEX_HOME`，模板改按 skill 名引用；多仓库、legacy 与文档阶段注入 AGENTS.md（nonce、默认分支）；改写文档阶段 `developer_instructions` | `rust-platform/src/main.rs`、`agent/runner.rs`、`agent/codex_client.rs`（首个 turn 前置内容）、`web-platform/src/main.rs`、`config.rs`、`sdlc/service.rs`、`sdlc/agent.rs`、`dev.sh`、`.codex/skills/*`、模板、共用的 AGENTS.md 读取函数 |
 | PR-2 | 单仓库 single_root（schema 3）原地初始化、重入、状态机接入点、旧形态处理、工作分支防护；web-platform 渲染单仓库 `workspace.slug/default_branch` | `rust-platform/src/workspace/mod.rs`、`repos.rs`、`config/service_config.rs`、`config/repos.rs`、`agent/runner.rs`、`prompt/mod.rs`、`web-platform/src/templates/mod.rs`、模板文案 |
-| PR-3a | subagent 实测；runner 线程 id 过滤、server request 回复；`thread/start` 传 developerInstructions；E2E env 文件生成与清理；确定性检查（开关默认关闭，WORKFLOW `validation.gate`）；`IssueStateRefresher` 读 workpad、增删普通 label；label 生命周期 | `rust-platform/src/agent/codex_client.rs`、`agent/runner.rs`、`orchestrator/*`、`tracker/*`、`platform/gitlab.rs`、`web-platform`（`validation_gate` 项目字段） |
-| PR-3b | 模板：`App runtime validation` 章节（3.1–3.5）替换 Step 2 验证步骤并修改冲突句子；Merging 先取消 Draft；subagent 固定提示词；Testing Gate 与 `workflow_test_*` 只复核未通过项；项目设置页 Testing、E2E 风险、`validation_gate` 开关；`teamwork-integration-scheme.md` 继承清单、`test-engineer-agent.md`、`ai-native-sdlc-flow-design.md` 第 2 节修订 | `web-platform/src/templates/workflow_{gitlab,github,gitea}.md`、`workflow_test_*.md`、`templates/mod.rs`、snapshots、`web-frontend` 项目设置页、`docs/方案/*` |
+| PR-3a | subagent 实测；runner 线程 id 过滤、server request 回复；`thread/start` 传 developerInstructions；E2E env 文件生成与清理；阻塞识别（独立于开关）；确定性检查（开关默认关闭，WORKFLOW `validation.gate`）；`IssueStateRefresher` 读 workpad、增删普通 label；label 生命周期 | `rust-platform/src/agent/codex_client.rs`、`agent/runner.rs`、`orchestrator/*`、`tracker/*`、`platform/gitlab.rs`、`web-platform`（`validation_gate` 项目字段） |
+| PR-3b | 模板：`App runtime validation` 章节（3.1–3.5）替换 Step 2 验证步骤并修改冲突句子；escape hatch 改为写阻塞标记；Merging 第一步的 blocked 检查；Merging 先取消 Draft；subagent 固定提示词；Testing Gate 与 `workflow_test_*` 只复核未通过项；项目设置页 Testing、E2E 风险、`validation_gate` 开关；`teamwork-integration-scheme.md` 继承清单、`test-engineer-agent.md`、`ai-native-sdlc-flow-design.md` 第 2 节修订 | `web-platform/src/templates/workflow_{gitlab,github,gitea}.md`、`workflow_test_*.md`、`templates/mod.rs`、snapshots、`web-frontend` 项目设置页、`docs/方案/*` |
 | 运维 | 本机迁移（4.5） | 无代码改动 |
 
 顺序：PR-1 → PR-3a（含 subagent 实测）→ PR-3b → PR-2。上线：模板在 worker 启动时渲染，PR-3b 部署后重启所有项目 worker，然后逐个打开 `validation_gate`；`workflow_content` 为自定义内容的项目需人工合并新章节后再打开。
@@ -430,3 +443,4 @@ See `aigc-test/AGENTS.md` for reference only.
 | v1（2026-11-02） | 3×存在高风险（安全 / 运行时 / 流程） | 写明实际沙箱；单仓库改为原地初始化并新增 `single_root` 布局；AGENTS.md 改为 user 级、取默认分支、只读仓库只给路径；新增安全规则和底线，Issue 只能增加步骤；验证步骤按改动类型分级；B4 仅在可安全启动时执行，DDL 交人工；runner 按主线程 id 过滤事件、Human Review 前确定性检查；E2E 产物不提交、截图上传方式；迁移补 `service_workdir`、trust 条目 |
 | v2（2026-11-02） | 安全：无高风险；流程、运行时：存在高风险 | 底线失败改为 `validation-blocked` 移出 active 状态；确定性检查不改状态、只加 label，限定触发与豁免，绑定 head SHA，由 runner 按路径规则自算底线，默认关闭逐项目开启；Draft 只用于失败项，Merging 先取消 Draft；改动类型按路径规则分类并补齐构建/依赖、测试类型；Symphony skills 安装到 `CODEX_HOME`；单仓库补输入来源、full clone、保留全局 credential helper、重入、schema 3 接入点、旧形态；AGENTS.md 加 nonce、刷新后读取、单仓库工作分支防护；E2E env 文件由 runner 生成和清理、连接目标不由 Issue 指定、屏蔽仓库凭据；共享环境写数据的 E2E 约束 |
 | v3（2026-11-02） | 流程、运行时：各 1–2 个 P1 | single_root 不调用多仓库 `configure()`（避免 pre-push 白名单拒绝 AI 分支）；label 生命周期、阻塞后两条继续路径、blocked 禁止 Merging、轮次 ≥3；确定性检查只支持多仓库和 single_root，单仓库待 PR-2 后开启，run 结束（含取消）后重取状态，blocked 标记固定格式，检查工作树干净和已推送；模板冲突句子逐条列出；Merging 新提交重跑底线；路径规则确定化、技术栈判定、测试类补 F1；E2E 用 tag 筛选；skills 改写并加前缀；legacy `repo/` 注入的数据来源；GitHub/Gitea 单仓库不注入；工作分支防护改为只标注；e2e 目录启动时清理 |
+| v4（2026-11-02） | 合并审查：2 个 P1 | 阻塞标记带各仓库 heads，HEAD 变化后自动失效；阻塞识别做成独立步骤（不依赖开关、布局、起始状态，含 Merging 起始的 run）；Merging 中底线失败直接写阻塞标记，不自动来回；接受阻塞的方式（人删 label）；确定性检查只查有改动的仓库，已推送按 upstream 判定；skills 前缀名称统一；GitHub/Gitea 单仓库不注入统一；无法识别技术栈时不视为满足底线 |
