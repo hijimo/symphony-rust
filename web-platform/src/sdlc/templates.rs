@@ -28,14 +28,14 @@ const INTENT_SKELETON: &str = "# Intent: <title>\n\n## Problem\n<!-- 用提出�
 
 const SPEC_SKELETON: &str = "# Spec: <title>\n\n## Requirements\n<!-- 需求：要做什么、验收标准 -->\n\n## Design\n<!-- 设计：如何集成进现有代码库，接口、数据、交互 -->\n\n## Concerns\n<!-- 关注点：每条一行，写明 owner: <负责人> resolution: <结论>；没有则写“无” -->\n";
 
-const PLAN_SKELETON: &str = "# Plan: <title>\n\n## Files\n<!-- 每行一个路径，与实现阶段工作区相对路径一致；多仓库项目以仓库别名开头 -->\n\n## Steps\n<!-- 工作顺序 -->\n\n## Tests\n<!-- 证明改动有效的测试 -->\n\n## Risks\n<!-- 可能弄坏什么、风险最大的一步 -->\n\n## Alternatives considered\n<!-- 放弃了哪些方案、为什么 -->\n";
+const PLAN_SKELETON: &str = "# Plan: <title>\n\n## Files\n<!-- 每行一个 Markdown 列表项，以 \"- \" 开头，写工作区相对路径，可在路径后加说明；多仓库项目以仓库别名开头。例如：\n- src/pages/Example.tsx 新增页面\n- backend/src/api.rs 增加接口\n-->\n\n## Steps\n<!-- 工作顺序 -->\n\n## Tests\n<!-- 证明改动有效的测试 -->\n\n## Risks\n<!-- 可能弄坏什么、风险最大的一步 -->\n\n## Alternatives considered\n<!-- 放弃了哪些方案、为什么 -->\n";
 
 const INTENT_PROMPT: &str = "Help the proposer write intent.md in their own words: what they want, why, under which constraints, and what is still open. Ask the questions an analyst would ask (scope, users, constraints, what success looks like). Keep the section structure of the template.";
 
 /// Playbook Design-stage prompt (verbatim), plus Symphony output rules.
 const SPEC_PROMPT: &str = "Read the attached intent.md and produce a requirements and design spec for integrating it into our existing codebase. Apply the skills available to you so the plan conforms to our brand guidelines, security policies and UX standards. Document the spec fully as spec.md, ready to hand to the engineering team. Describe clearly any areas of concern, especially where you cannot satisfy contradicting policies.";
 
-const PLAN_PROMPT: &str = "Read the approved intent.md (if any) and spec.md and produce an implementation plan as plan.md: which files to change (in ## Files, one workspace-relative path per line), the order of work, the tests that prove it works, the risks, and the alternatives you rejected. Iterate until an engineer who never saw this conversation could implement the change from the plan alone.";
+const PLAN_PROMPT: &str = "Read the approved intent.md (if any) and spec.md and produce an implementation plan as plan.md: which files to change (in ## Files, one Markdown bullet per file: a line starting with \"- \" followed by the workspace-relative path, e.g. \"- src/app.ts\"; for multi-repo projects start the path with the repository alias), the order of work, the tests that prove it works, the risks, and the alternatives you rejected. Iterate until an engineer who never saw this conversation could implement the change from the plan alone.";
 
 fn builtin(doc: DocType) -> DocTemplate {
     let (skeleton, prompt, checklist): (&str, &str, &[&str]) = match doc {
