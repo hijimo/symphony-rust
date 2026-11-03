@@ -5,12 +5,16 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import SearchIcon from '@mui/icons-material/Search';
+import UploadFileIcon from '@mui/icons-material/UploadFile';
 import EditNoteIcon from '@mui/icons-material/EditNote';
 import { useWorkbenchStore } from '../../store/workbenchStore';
 import * as api from '../../api/changes';
 import type { SearchHit } from '../../types/changes';
+import UploadDialog from './UploadDialog';
 
-function Node({ path, depth, onOpen }: { path: string; depth: number; onOpen?: () => void }) {
+type UploadFn = (dir: string, files?: File[]) => void;
+
+function Node({ path, depth, onOpen, onUpload }: { path: string; depth: number; onOpen?: () => void; onUpload: UploadFn }) {
   const { tree, expanded, toggleDir, openFile, active, aiTouched } = useWorkbenchStore();
   const entries = tree[path] ?? [];
   return (
@@ -21,6 +25,17 @@ function Node({ path, depth, onOpen }: { path: string; depth: number; onOpen?: (
             dense
             selected={active === e.path}
             onClick={() => (e.kind === 'dir' ? toggleDir(e.path) : void openFile(e.path).then(() => onOpen?.()))}
+            onDragOver={e.kind === 'dir' && e.writable ? (ev) => ev.preventDefault() : undefined}
+            onDrop={
+              e.kind === 'dir' && e.writable
+                ? (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    const files = Array.from(ev.dataTransfer.files);
+                    if (files.length) onUpload(e.path, files);
+                  }
+                : undefined
+            }
             sx={{ pl: 0.5 + depth * 1.5, py: 0.1, minHeight: 24 }}
             data-testid={`tree-${e.path}`}
           >
@@ -37,6 +52,21 @@ function Node({ path, depth, onOpen }: { path: string; depth: number; onOpen?: (
             <Typography noWrap sx={{ fontSize: 13, flex: 1 }}>
               {e.name}
             </Typography>
+            {e.writable && e.kind === 'dir' && (
+              <Tooltip title="上传文件到此目录">
+                <IconButton
+                  size="small"
+                  aria-label={`上传到 ${e.path}`}
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    onUpload(e.path);
+                  }}
+                  sx={{ p: 0.25 }}
+                >
+                  <UploadFileIcon sx={{ fontSize: 14, color: '#0053db' }} />
+                </IconButton>
+              </Tooltip>
+            )}
             {e.writable && e.kind === 'file' && (
               <Tooltip title="可编辑">
                 <EditNoteIcon sx={{ fontSize: 14, color: '#0053db' }} />
@@ -49,7 +79,7 @@ function Node({ path, depth, onOpen }: { path: string; depth: number; onOpen?: (
               />
             )}
           </ListItemButton>
-          {e.kind === 'dir' && expanded[e.path] && <Node path={e.path} depth={depth + 1} onOpen={onOpen} />}
+          {e.kind === 'dir' && expanded[e.path] && <Node path={e.path} depth={depth + 1} onOpen={onOpen} onUpload={onUpload} />}
         </Box>
       ))}
     </>
@@ -57,7 +87,9 @@ function Node({ path, depth, onOpen }: { path: string; depth: number; onOpen?: (
 }
 
 export default function FileTree({ onOpen }: { onOpen?: () => void } = {}) {
-  const { projectId, iid, openFile, pushNotice } = useWorkbenchStore();
+  const { projectId, iid, openFile, pushNotice, flow } = useWorkbenchStore();
+  const [upload, setUpload] = useState<{ dir?: string; files?: File[] } | null>(null);
+  const onUpload: UploadFn = (dir, files) => setUpload({ dir, files });
   const [q, setQ] = useState('');
   const [mode, setMode] = useState<'file' | 'content'>('file');
   const [hits, setHits] = useState<SearchHit[] | null>(null);
@@ -86,6 +118,13 @@ export default function FileTree({ onOpen }: { onOpen?: () => void } = {}) {
           sx={{ fontSize: 13, flex: 1 }}
           inputProps={{ 'aria-label': '搜索' }}
         />
+        {flow && (
+          <Tooltip title="上传文件（如 xlsx 评分标准）到文档目录">
+            <IconButton size="small" aria-label="上传文件" onClick={() => setUpload({ dir: flow.writableDir })}>
+              <UploadFileIcon sx={{ fontSize: 16 }} />
+            </IconButton>
+          </Tooltip>
+        )}
         <Tooltip title={mode === 'file' ? '切换为内容搜索' : '切换为文件名搜索'}>
           <IconButton size="small" onClick={() => setMode(mode === 'file' ? 'content' : 'file')} sx={{ fontSize: 11 }}>
             {mode === 'file' ? '名' : '文'}
@@ -115,9 +154,15 @@ export default function FileTree({ onOpen }: { onOpen?: () => void } = {}) {
             ))}
           </>
         ) : (
-          <Node path="" depth={0} onOpen={onOpen} />
+          <Node path="" depth={0} onOpen={onOpen} onUpload={onUpload} />
         )}
       </List>
+      <UploadDialog
+        open={upload !== null}
+        initialDir={upload?.dir}
+        initialFiles={upload?.files}
+        onClose={() => setUpload(null)}
+      />
     </Box>
   );
 }

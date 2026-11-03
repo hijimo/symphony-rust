@@ -294,6 +294,12 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
             put(change_docs::write_file),
         )
         .route(
+            "/api/projects/{id}/changes/{iid}/upload",
+            post(change_docs::upload_file).layer(axum::extract::DefaultBodyLimit::max(
+                crate::sdlc::service::MAX_UPLOAD + 1024,
+            )),
+        )
+        .route(
             "/api/projects/{id}/changes/{iid}/search",
             get(change_docs::search),
         )

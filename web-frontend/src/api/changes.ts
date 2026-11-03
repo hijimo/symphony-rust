@@ -74,6 +74,33 @@ export async function writeFile(
   return res.data.data;
 }
 
+function readBytes(file: Blob): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result as ArrayBuffer);
+    r.onerror = () => reject(r.error ?? new Error('读取文件失败'));
+    r.readAsArrayBuffer(file);
+  });
+}
+
+/** Upload an attachment into the issue's documents directory (<= 10MB). */
+export async function uploadFile(
+  projectId: number,
+  iid: number,
+  path: string,
+  file: Blob,
+  overwrite = false,
+): Promise<{ path: string; version: string; commitSha: string | null }> {
+  // Send raw bytes (an ArrayBuffer is never re-encoded by axios).
+  const body = await readBytes(file);
+  const res = await client.post(`${base(projectId)}/${iid}/upload`, body, {
+    params: { path, overwrite },
+    headers: { 'Content-Type': 'application/octet-stream' },
+    timeout: 120000,
+  });
+  return res.data.data;
+}
+
 export async function search(
   projectId: number,
   iid: number,
