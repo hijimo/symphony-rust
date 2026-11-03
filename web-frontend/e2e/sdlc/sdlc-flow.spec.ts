@@ -137,6 +137,8 @@ test.describe.serial('AI-native SDLC document flow', () => {
     await expect(page.getByTestId('validation-issues')).toContainText('Proposed outcome');
 
     // Edit the body (keep the system frontmatter) and commit with 保存.
+    // Markdown opens in preview by default; switch to 源码 to edit.
+    await page.getByRole('button', { name: '源码' }).click();
     const editor = page.getByLabel('编辑器');
     const original = await editor.inputValue();
     expect(original.startsWith('---\n')).toBe(true);
@@ -215,7 +217,7 @@ test.describe.serial('AI-native SDLC document flow', () => {
     await page.getByRole('button', { name: '创建并进入工作台' }).click();
     await page.waitForURL(/\/changes\/\d+$/, { timeout: 120_000 });
 
-    await expect(page.getByLabel('编辑器')).toBeVisible();
+    await expect(page.getByTestId('markdown-preview')).toBeVisible();
     // Wait for the WebSocket (sending earlier only shows "AI 连接未就绪").
     await expect(page.getByLabel('AI 已连接')).toBeVisible({ timeout: 30_000 });
     await page.getByLabel('AI 输入').fill('[chat] 帮我看看这份需求');

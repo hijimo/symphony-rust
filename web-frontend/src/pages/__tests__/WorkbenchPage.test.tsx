@@ -34,6 +34,8 @@ function renderPage() {
 }
 
 async function ready() {
+  // Markdown opens in preview by default; switch to 源码 to reach the editor.
+  await userEvent.click(await screen.findByRole('button', { name: '源码' }));
   const editor = (await screen.findByLabelText('编辑器')) as HTMLTextAreaElement;
   await waitFor(() => expect(editor.value).toBe(INTENT_TEXT));
   return editor;
@@ -70,15 +72,17 @@ describe('WorkbenchPage', () => {
   it('loads flow, workspace and tree, opens the stage document with preview', async () => {
     server.use(...workbenchHandlers(makeFlow(), calls));
     renderPage();
-    await ready();
+    // Markdown documents open in 预览 mode by default: no source editor.
+    const preview = await screen.findByTestId('markdown-preview');
+    await waitFor(() => expect(within(preview).getByRole('heading', { name: 'Intent: X' })).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: '预览' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByLabelText('编辑器')).not.toBeInTheDocument();
     expect(screen.getByText('需求文档工作台')).toBeInTheDocument();
     // Root tree entries
     expect(screen.getByTestId('tree-docs')).toBeInTheDocument();
     expect(screen.getByTestId('tree-src')).toBeInTheDocument();
     // Intent tab and preview (frontmatter stripped, GFM table)
     expect(screen.getByRole('tab', { name: /intent\.md/ })).toBeInTheDocument();
-    const preview = screen.getByTestId('markdown-preview');
-    expect(within(preview).getByRole('heading', { name: 'Intent: X' })).toBeInTheDocument();
     expect(within(preview).getByRole('table')).toBeInTheDocument();
     expect(preview.textContent).not.toContain('symphony:');
     // Flow state chip

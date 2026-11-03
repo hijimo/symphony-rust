@@ -52,7 +52,9 @@ export const useMonaco = () => (import.meta.env.MODE !== 'test' && !(window as u
 
 export default function EditorPane({ onAskAi }: { onAskAi: (sel: SelectionRef) => void }) {
   const { tabs, active, buffers, setActive, closeTab, edit, save, resolveConflict, stages, stage, revealLine: reveal } = useWorkbenchStore();
-  const [mode, setMode] = useState<ViewMode>(() => (window.matchMedia?.('(max-width:900px)').matches ? 'source' : 'split'));
+  // Markdown documents (intent/spec/plan) open in preview for reading/review;
+  // switch to 源码/分栏 to edit.
+  const [mode, setMode] = useState<ViewMode>('preview');
   const [diffOpen, setDiffOpen] = useState(false);
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const [selection, setSelection] = useState<SelectionRef | null>(null);
