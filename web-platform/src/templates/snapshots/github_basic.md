@@ -27,6 +27,7 @@ agent:
 codex:
   command: codex app-server -c 'model_provider="kiro"'
   read_timeout_ms: 30000
+  turn_timeout_ms: 14400000
 ---
 
 You are working on a GitHub issue `{{ issue.identifier }}`
@@ -61,7 +62,9 @@ Instructions:
 3. Final message must report completed actions and blockers only. Do not include "next steps for user".
 
 Work only in the provided repository copy. Do not touch any other path.
-{% if workspace_layout == "single_root" %}
+{% if workspace_layout == "legacy" %}
+Clone the repository into the workspace root (`git clone <url> .`) or into `repo/`; Symphony reads the branch head from one of these two locations for the validation records.
+{% endif %}{% if workspace_layout == "single_root" %}
 Symphony has already checked the repository out at the workspace root (detached at `origin/dev`). Do not clone it again and do not change its remote; create your working branch from `origin/dev`.
 If the workpad contains `### Symphony notice: instruction files changed`, copy that notice into the PR description.
 {% endif %}
@@ -266,10 +269,12 @@ Use this only when completion is blocked by missing required tools or missing au
   - what is missing,
   - why it blocks required acceptance/validation,
   - exact human action needed to unblock.
-- Before moving, add `<!-- symphony:blocked run={{ run_id }} reason=access heads=<alias>:<git rev-parse --short=12 HEAD>,... -->` to the workpad (after your last push). A free-text brief without this marker is not a valid hand-off.
+- Before moving, add `<!-- symphony:blocked run={{ run_id }} reason=access heads=<alias>:<git rev-parse --short=12 HEAD>,... -->` to the workpad (after your last push; one entry per writable repository, comma-separated without spaces; `run` must equal `$SYMPHONY_RUN_ID`). A free-text brief without this marker is not a valid hand-off.
 - Keep the brief concise and action-oriented; do not add extra top-level comments outside the workpad.
 
 ## App runtime validation (required)
+
+If your message starts with `SYMPHONY-VALIDATION-V1`, you are the validation sub-agent: only run the steps and write `.symphony/validation.md`. Never commit, push, edit the PR, the issue or the workpad, write blocked markers or change labels; `Outcome` and `Running the sub-agent` are for the main agent.
 
 Verify every change before handing it off. Run the steps below through a **validation sub-agent** (Codex `spawn_agent`) so the checks get a fresh context; you stay responsible for fixing code, the workpad and the PR.
 
@@ -287,8 +292,8 @@ Baseline steps (never skipped; a failure means the issue cannot be handed off as
 ### Change types (classify each changed file; take the union)
 
 Run `git diff --name-only origin/<base>...HEAD` in each writable repository.
-- Docs: `*.md`, `docs/**` (except `*.sql`) -> nothing required.
-- Build/dependency config: `package.json`, lock files, `vite.config.*`, `tsconfig*`, `eslint*`, `*.csproj`, `*.sln*`, `Directory.*.props`, `settings/**`, `appsettings*.json`, CI config -> all baseline steps of that stack.
+- Docs: `*.md`, `docs/**` (except `*.sql`) -> no steps, but still write the report with one row per changed repository, for example `| primary | <head> | 纯文档 | — | — | 跳过 | docs only |`.
+- Build/dependency config: `package.json`, lock files, `vite.config.*`, `tsconfig*`, `eslint*`, `*.csproj`, `*.sln*`, `Directory.*.props`, `settings/**`, `appsettings*.json`, CI config -> all baseline steps of every stack the repository has (frontend and backend when both are present).
 - Tests: `**/__tests__/**`, `**/*.test.*`, `**/*.spec.*`, `e2e/**`, `**/*.Test/**`, `**/*.Tests/**` -> run them, plus F1 F3 (frontend) or B1 B5 (backend).
 - Frontend style (`*.css`, `*.less`, `*.scss`) -> F1 F2 F3, F5 if E2E data exists.
 - Frontend logic -> F1 F2 F3 F4, F5 if E2E data exists.
@@ -354,7 +359,7 @@ Symphony turns it into an env file and exposes only its path as `$SYMPHONY_E2E_E
 - All passed, or only "未验证" / "跳过": push, list the unverified/skipped items in the workpad and the PR description, then continue to the hand-off step.
 - A non-baseline step failed: push, mark the PR as draft (`gh pr ready <pr_number> --undo`), put the failures at the top of the workpad, continue to the hand-off step.
 - A baseline step failed and round < 3: fix and validate again.
-- A baseline step failed and round >= 3: push the branch (keep or set the PR as draft), write the failure at the top of the workpad, then, **after the last push**, add `<!-- symphony:blocked run={{ run_id }} reason=validation heads=<alias>:<git rev-parse --short=12 HEAD>,... -->` (one entry per writable repository) and move the issue to `Human Review`. Symphony adds the `validation-blocked` label.
+- A baseline step failed and round >= 3: push the branch (keep or set the PR as draft), write the failure at the top of the workpad, then, **after the last push**, add `<!-- symphony:blocked run={{ run_id }} reason=validation heads=<alias>:<git rev-parse --short=12 HEAD>,... -->` (one entry per writable repository, comma-separated without spaces; `run` must equal `$SYMPHONY_RUN_ID`, check with `echo "$SYMPHONY_RUN_ID"`) and move the issue to `Human Review`. Symphony adds the `validation-blocked` label.
 
 ## Step 2: Execution phase (Todo -> In Progress -> Human Review)
 
@@ -417,7 +422,7 @@ Symphony turns it into an env file and exposes only its path as `$SYMPHONY_E2E_E
 {% else %}5. When the issue is in `Merging`:
    - If the issue has the `validation-blocked` label, move it back to `Human Review` with a short note and stop. A human removing that label means the blocked items are accepted.
    - If the PR is a draft, mark it ready first: `gh pr ready <pr_number>`.
-   - After merging `origin/dev` or any new commit, re-run the baseline steps; only baseline steps and items not listed as accepted in the workpad must pass. If a baseline step fails, do not fix and do not merge: write a `reason=validation` blocked marker (after the last push) and move the issue to `Human Review`.
+   - After merging `origin/dev` or any new commit, re-run the baseline steps. If a human removed the `validation-blocked` label (or a human comment accepts the blocked items), the steps reported `失败` in the last report before that are accepted: only steps that passed in that report must still pass. Otherwise every baseline step must pass. If a step that must pass fails, do not fix and do not merge: write a `reason=validation` blocked marker (after the last push) and move the issue to `Human Review`.
    - Then follow the `symphony-land` skill in a loop until the PR is merged. Do not call `gh pr merge` directly.
 {% endif %}6. After merge is complete, move the issue to `Done`:
    ```bash
@@ -473,7 +478,7 @@ Symphony turns it into an env file and exposes only its path as `$SYMPHONY_E2E_E
 - In `Human Review`, do not make changes; wait and poll.
 - If state is terminal (`Done`), do nothing and shut down.
 - Keep issue text concise, specific, and reviewer-oriented.
-- If blocked and no workpad exists yet, add one blocker comment describing blocker, impact, and next unblock action.
+- If blocked and no workpad exists yet, create the `## Codex Workpad` comment first and write the blocker (and its `symphony:blocked` marker) there; Symphony only reads markers from the workpad.
 - Avoid calling GitHub API in tight loops. Prefer batch operations (single label change command over multiple). GitHub rate limit: 5000 req/hour (authenticated).
 
 ## Workpad template

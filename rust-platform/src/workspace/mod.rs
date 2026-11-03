@@ -314,21 +314,23 @@ impl WorkspaceManager {
         if metadata_path.exists() {
             let mut metadata = read_workspace_metadata(&metadata_path).await?;
             validate_workspace_metadata(&metadata, issue_id, &issue_id_path_key, &workspace_key)?;
-            if metadata.schema_version == 2 {
+            // Ready multi-repo (schema 2) and single_root (schema 3)
+            // workspaces are reused as they are by workers without checkout
+            // config, e.g. the testing agent whose workflow carries neither
+            // `workspace.repos` nor `workspace.slug` (same as before schema 3).
+            // Unfinished ones need their checkout config to be re-entered.
+            if metadata.schema_version == 2 && metadata.init_status != "ready" {
                 return Err(WorkspaceError::ManualRecoveryRequired {
                     reason: "workspace_multi_repo_not_migrated".to_string(),
                 });
             }
-            // A ready single_root workspace (schema 3) can be reused by a
-            // worker without checkout config, e.g. the testing agent whose
-            // workflow has no `workspace.slug`. Unfinished ones still need
-            // the checkout config to be re-entered.
             if metadata.schema_version == 3 && metadata.init_status != "ready" {
                 return Err(WorkspaceError::ManualRecoveryRequired {
                     reason: "workspace_single_root_requires_checkout_config".to_string(),
                 });
             }
-            if metadata.init_status == "ready"
+            if metadata.schema_version == 1
+                && metadata.init_status == "ready"
                 && !workspace_path.join(".git").exists()
                 && !workspace_path.join("repo").join(".git").exists()
                 && !is_only_marker(&workspace_path).await
@@ -732,6 +734,8 @@ impl WorkspaceManager {
         };
         self.validate_path_containment(&workspace_path)?;
 
+        // after_create already run by a marker-only schema-1 workspace.
+        let mut inherited_fingerprint = None;
         let existing = if metadata_path.exists() {
             let m = read_workspace_metadata(&metadata_path).await?;
             validate_workspace_metadata(&m, issue_id, &issue_id_path_key, &workspace_key)?;
@@ -741,8 +745,11 @@ impl WorkspaceManager {
                         reason: "workspace_multi_repo_not_migrated".to_string(),
                     })
                 }
-                1 if is_only_marker(&workspace_path).await => None, // upgrade in place
-                1 => return Ok(None),                               // legacy, keep as is
+                1 if is_only_marker(&workspace_path).await => {
+                    inherited_fingerprint = m.after_create_fingerprint.clone();
+                    None // upgrade in place
+                }
+                1 => return Ok(None), // legacy, keep as is
                 _ => Some(m),
             }
         } else {
@@ -775,7 +782,7 @@ impl WorkspaceManager {
             initialized_at: None,
             last_used_at: Some(started_at),
             init_status: "initializing".to_string(),
-            after_create_fingerprint: None,
+            after_create_fingerprint: inherited_fingerprint,
             initialized_by_run_id: run_id.to_string(),
             expected_git_root: Some(".".to_string()),
             last_error: None,
@@ -1368,6 +1375,23 @@ fn script_fingerprint(script: &str) -> String {
     format!("fnv1a64:{hash:016x}")
 }
 
+/// True when no process holds the issue lock of `issue_id_path_key` under
+/// `root` (the lock file is missing or can be locked right now). The dev and
+/// testing workers of a project share `root`, so cleanups that must not touch
+/// a running issue check this first.
+pub fn issue_lock_is_free(root: &Path, issue_id_path_key: &str) -> bool {
+    let path = root
+        .join(".symphony")
+        .join("locks")
+        .join("issues")
+        .join(format!("{issue_id_path_key}.lock"));
+    match std::fs::OpenOptions::new().append(true).open(&path) {
+        // Dropping the file releases the probe lock immediately.
+        Ok(file) => matches!(lock_file_exclusive_nonblocking(&file), Ok(true)),
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
 async fn acquire_stable_lock_file(path: &Path) -> Result<Arc<std::fs::File>, WorkspaceError> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -1463,14 +1487,20 @@ async fn is_only_marker(path: &Path) -> bool {
     let Ok(mut rd) = tokio::fs::read_dir(path).await else {
         return false;
     };
-    while let Ok(Some(e)) = rd.next_entry().await {
-        let name = e.file_name();
-        let n = name.to_string_lossy();
-        if n != ".symphony-workspace.json" && n != ".symphony" {
-            return false;
+    loop {
+        match rd.next_entry().await {
+            Ok(Some(e)) => {
+                let name = e.file_name();
+                let n = name.to_string_lossy();
+                if n != ".symphony-workspace.json" && n != ".symphony" {
+                    return false;
+                }
+            }
+            Ok(None) => return true,
+            // Unknown content: never treat it as an empty workspace.
+            Err(_) => return false,
         }
     }
-    true
 }
 
 async fn is_dir_empty(path: &Path) -> Result<bool, WorkspaceError> {

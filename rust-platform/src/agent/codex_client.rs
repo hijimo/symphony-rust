@@ -715,7 +715,14 @@ impl CodexClient {
                         _ => true,
                     };
                     if !is_main_thread {
-                        // Still forward as activity so the stall timer stays fresh.
+                        // Still forward as activity so the stall timer stays
+                        // fresh, without usage: sub-thread totals would break
+                        // the orchestrator's per-session token deltas.
+                        let mut update = update;
+                        update.input_tokens = None;
+                        update.output_tokens = None;
+                        update.total_tokens = None;
+                        update.rate_limits = None;
                         let _ = event_callback.send(update).await;
                         continue;
                     }

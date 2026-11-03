@@ -174,7 +174,8 @@ fn single_root_layout_and_run_id_render() {
             single.contains("symphony:blocked run=i-1375-0-42 "),
             "{name}"
         );
-        assert!(!single.contains("$SYMPHONY_RUN_ID"), "{name}");
+        // The marker value is rendered; the env var is only a cross-check.
+        assert!(!single.contains("run=$SYMPHONY_RUN_ID"), "{name}");
         let legacy = run("legacy");
         assert!(
             !legacy.contains("Symphony has already checked the repository out"),

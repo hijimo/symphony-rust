@@ -143,25 +143,32 @@ pub async fn instruction_changes(dir: &Path, default_branch: &str) -> Result<Vec
 }
 
 /// Workpad body with the instruction-file notice set to `files`; `None`
-/// when the body already carries exactly this notice. An existing notice
-/// is replaced (it is always the last section Symphony writes).
+/// when the body already carries exactly this notice.
 pub fn with_instruction_notice(body: &str, files: &[String]) -> Option<String> {
-    let notice = format!(
-        "{INSTRUCTION_NOTICE_HEADING}\nThis branch changes repository instruction files; \
-         reviewers must check them closely. Copy this notice into the MR description.\n{}\n",
+    let text = format!(
+        "This branch changes repository instruction files; reviewers must check them closely. \
+         Copy this notice into the MR description.\n{}",
         files
             .iter()
             .map(|f| format!("- `{f}`"))
             .collect::<Vec<_>>()
             .join("\n")
     );
-    let base = match body.find(INSTRUCTION_NOTICE_HEADING) {
+    with_section(body, INSTRUCTION_NOTICE_HEADING, &text)
+}
+
+/// Heading of the section Symphony writes when the validation gate fails.
+pub const GATE_HEADING: &str = "### Symphony validation gate";
+
+/// Workpad body with the `### ...` section `heading` set to `text` (replaced
+/// in place, so repeated runs never stack copies); `None` when unchanged.
+pub fn with_section(body: &str, heading: &str, text: &str) -> Option<String> {
+    let section = format!("{heading}\n{text}\n");
+    let base = match body.find(heading) {
         Some(i) => {
-            let rest = &body[i + INSTRUCTION_NOTICE_HEADING.len()..];
-            let end = rest
-                .find("\n### ")
-                .map(|j| i + INSTRUCTION_NOTICE_HEADING.len() + j);
-            if body[i..end.unwrap_or(body.len())].trim_end() == notice.trim_end() {
+            let rest = &body[i + heading.len()..];
+            let end = rest.find("\n### ").map(|j| i + heading.len() + j);
+            if body[i..end.unwrap_or(body.len())].trim_end() == section.trim_end() {
                 return None;
             }
             let tail = end.map(|e| &body[e + 1..]).unwrap_or("");
@@ -169,7 +176,7 @@ pub fn with_instruction_notice(body: &str, files: &[String]) -> Option<String> {
         }
         None => body.to_string(),
     };
-    Some(format!("{}\n\n{notice}", base.trim_end()))
+    Some(format!("{}\n\n{section}", base.trim_end()))
 }
 
 /// Outcome of the deterministic gate.

@@ -552,7 +552,23 @@ impl AgentRunner {
         self.workspace_mgr.run_after_run(&ws.path).await;
         validation::remove_e2e_run(&root, &run_id);
 
-        // 5b. Read-only integrity check *after* the agent ran (design §5.3).
+        self.instruction_guard(&issue, layout, &checked, &state_refresher)
+            .await;
+
+        // 5b. Blocked-marker recognition and the optional validation gate
+        // (design §3.5). Runs for every outcome, including cancelled runs
+        // and read-only violations, so a blocked marker is never lost.
+        self.post_run_checks(
+            &issue,
+            &run_id,
+            layout,
+            &checked,
+            service_config.validation_gate,
+            &state_refresher,
+        )
+        .await;
+
+        // 5c. Read-only integrity check *after* the agent ran (design §5.3).
         if let Some((ctx, _)) = &multi {
             let violations = self
                 .workspace_mgr
@@ -574,21 +590,6 @@ impl AgentRunner {
                 return Err(AgentError::ReadOnlyViolation(violations.join("; ")));
             }
         }
-
-        self.instruction_guard(&issue, layout, &checked, &state_refresher)
-            .await;
-
-        // 5c. Blocked-marker recognition and the optional validation gate
-        // (design §3.5). Runs for every outcome, including cancelled runs.
-        self.post_run_checks(
-            &issue,
-            &run_id,
-            layout,
-            &checked,
-            service_config.validation_gate,
-            &state_refresher,
-        )
-        .await;
 
         match result {
             Ok(()) => {
@@ -801,6 +802,19 @@ impl AgentRunner {
             }
             return; // exempt from the gate
         }
+        if heads.len() < repos.len() && markers.iter().any(|m| m.run == run_id) {
+            // This run wrote a marker but Symphony cannot read the HEAD of
+            // every writable repository (for example a legacy workspace
+            // cloned into another directory): never drop it silently.
+            tracing::warn!(issue_id = %issue.id, "blocked marker of this run cannot be verified; flagging");
+            let _ = refresher
+                .add_labels(
+                    &issue.id,
+                    &[validation::LABEL_VALIDATION_MISSING.to_string()],
+                )
+                .await;
+            return;
+        }
         if !gate_enabled || layout == WorkspaceLayout::Legacy {
             return;
         }
@@ -830,15 +844,14 @@ impl AgentRunner {
                 )
                 .await;
             if let Ok(Some((comment_id, body))) = refresher.fetch_workpad(&issue.id).await {
-                let note = format!(
-                    "{body}\n\n### Symphony validation gate\n{}\n",
-                    problems
-                        .iter()
-                        .map(|p| format!("- {p}"))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                );
-                let _ = refresher.update_workpad(comment_id, &note).await;
+                let text = problems
+                    .iter()
+                    .map(|p| format!("- {p}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if let Some(note) = post_run::with_section(&body, post_run::GATE_HEADING, &text) {
+                    let _ = refresher.update_workpad(comment_id, &note).await;
+                }
             }
         }
     }

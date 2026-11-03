@@ -144,12 +144,10 @@ fn build_single_repo_section(ctx: &WorkflowTemplateContext) -> String {
     {
         return String::new();
     }
-    if ctx
-        .hooks_after_create
-        .as_deref()
-        .is_some_and(clones_into_root)
-    {
-        // A legacy after_create that clones into `.` keeps the old layout.
+    if ctx.hooks_after_create.as_deref().is_some_and(clones_repo) {
+        // An after_create that clones (into `.` or a subdirectory) keeps the
+        // old layout; otherwise it would nest a repository inside the
+        // Symphony checkout.
         return String::new();
     }
     format!(
@@ -159,22 +157,13 @@ fn build_single_repo_section(ctx: &WorkflowTemplateContext) -> String {
     )
 }
 
-/// Mirrors rust-platform's `clones_into_workspace_root`.
-fn clones_into_root(script: &str) -> bool {
+/// True when the script runs `git clone` anywhere.
+fn clones_repo(script: &str) -> bool {
     script.lines().any(|line| {
-        let tokens: Vec<&str> = line.split_whitespace().collect();
-        let Some(pos) = tokens
+        line.split_whitespace()
+            .collect::<Vec<_>>()
             .windows(2)
-            .position(|w| w[0] == "git" && w[1] == "clone")
-        else {
-            return false;
-        };
-        let args: Vec<&str> = tokens[pos + 2..]
-            .iter()
-            .copied()
-            .take_while(|t| !matches!(*t, "&&" | "||" | ";" | "|"))
-            .collect();
-        matches!(args.last(), Some(&".") | Some(&"./"))
+            .any(|w| w[0] == "git" && w[1] == "clone")
     })
 }
 
@@ -262,6 +251,10 @@ fn build_codex_section(
         s.push_str(&format!("  thread_sandbox: {}\n", sb));
     }
     s.push_str("  read_timeout_ms: 30000\n");
+    // One turn covers implementation plus the validation sub-agent (up to 3
+    // rounds of builds and tests). Idle turns are still caught by the stall
+    // timeout, which sub-agent events keep refreshing.
+    s.push_str("  turn_timeout_ms: 14400000\n");
     s
 }
 
@@ -579,6 +572,13 @@ mod single_repo_snapshots {
             merge_after: vec![],
         }];
         assert!(!render_template(&ctx).contains("  slug: \"group/sub/project\"\n  default_branch"));
+        // An after_create that clones anywhere keeps the legacy layout.
+        let mut hooked = super::snapshot_contexts().remove(0).1;
+        hooked.repos.clear();
+        hooked.hooks_after_create = Some("git clone http://example/x.git repo\nnpm ci".to_string());
+        assert!(!render_template(&hooked).contains("\n  slug: "));
+        hooked.hooks_after_create = Some("npm ci".to_string());
+        assert!(render_template(&hooked).contains("\n  slug: "));
         // GitHub keeps the agent-cloned layout for now.
         let gh = super::snapshot_contexts().remove(2).1;
         assert!(!render_template(&gh).contains("\n  slug: "));

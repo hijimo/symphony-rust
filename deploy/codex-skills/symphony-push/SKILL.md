@@ -8,7 +8,7 @@ description:
 # Symphony push
 
 Use the platform CLI that the workflow prompt names (`glab` for GitLab, `gh` for
-GitHub). Do not run project-specific build commands from another repository.
+GitHub, the `gitea_api` helper for Gitea). Do not run project-specific build commands from another repository.
 
 1. The latest validation round must cover the commit you push (its `head`
    equals `HEAD`), see `App runtime validation (required)` in the workflow.
@@ -21,6 +21,8 @@ GitHub). Do not run project-specific build commands from another repository.
    - GitLab: `glab mr view` / `glab mr create --title <t> --description <d> --label symphony`
      / `glab mr update <iid> --title <t> --description <d>`.
    - GitHub: `gh pr view` / `gh pr create --title <t> --body-file <f>` / `gh pr edit`.
+   - Gitea: the workflow's `gitea_api` helper: `GET "${REPO_PATH}/pulls?state=open"`,
+     `POST "${REPO_PATH}/pulls"`, `PATCH "${REPO_PATH}/pulls/<index>"`.
    - If the branch is tied to a closed or merged request, create a new branch.
 5. The description must reflect the whole branch: what changed, the validation
    table summary (unverified/skipped items included), screenshots when

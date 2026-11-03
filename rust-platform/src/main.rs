@@ -154,8 +154,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             e
         })?;
 
-    // No run is active yet: drop E2E env files left by aborted runs.
-    symphony_platform::agent::validation::cleanup_e2e(&service_config.workspace_root, &[]);
+    // Drop E2E env files left by aborted runs. The testing worker shares this
+    // root, so directories of issues that are running elsewhere are kept.
+    symphony_platform::agent::validation::cleanup_e2e_idle(&service_config.workspace_root);
 
     // Startup workspace cleanup (SPEC Section 8.6)
     // In a full integration, terminal issue identifiers would come from the tracker.

@@ -484,6 +484,23 @@ See `aigc-test/AGENTS.md` for reference only.
 - **MCP elicitation**：`mcpServer/elicitation/request` 回复 `{"action":"decline"}`。
 - **Docker 镜像**：复制 `deploy/codex-skills` 并以 `symphony` 用户运行安装脚本。
 
+**第二轮实现验证（3 个 agent，2026-11-03）后的修订**：
+
+- Merging 重跑底线：人删 `validation-blocked`（或评论接受）后，删除前最后一份报告中为 `失败` 的底线视为已接受，重跑只要求那份报告中 `通过` 的步骤仍通过（对应 3.5「之前通过的底线没有变成失败」）。
+- 自验证 label 由 `ensure_workflow_labels` 在启动时创建（Gitea 的加 label 接口只接受已存在的 label id）。
+- 子 Agent 只跑步骤、写报告，不 commit、push、改 MR/Issue/workpad、写标记或改 label。
+- 纯文档改动也写报告行；构建配置改动跑仓库所有技术栈的底线（与 runner 计算一致）。
+- 阻塞标记的 `run` 与 `$SYMPHONY_RUN_ID` 交叉核对；heads 逗号分隔不留空格。本次 run 写了标记、但 runner 读不全可写仓库 HEAD 时加 `validation-missing`。
+- 只读仓库违规时，先做阻塞识别和 gate，再移交 Human Review。
+- gate 失败说明替换 workpad 中已有小节，不重复追加。
+- `symphony-land` 在 Merging 中不改业务代码，失败时写阻塞标记。
+- `after_create` 中只要有 `git clone`（含克隆到子目录）就不渲染 single_root。
+- 开发模板渲染 `turn_timeout_ms: 14400000`（4 小时）：实现和验证 subagent 在同一个 turn 内；空闲仍由 stall 超时（子线程事件会刷新）兜住。
+- 子线程事件转发时去掉 token 用量，避免打乱按会话计算的增量。
+- E2E：变量名拒绝 `PATH`、`NODE_OPTIONS`、`BASH_ENV`、`*_PROXY`、`*_URL`、`*_HOST`、`PLAYWRIGHT_*`、`GIT_*`、`SYMPHONY_*` 等；值中含非本地 URL 时拒绝；日志中的字段名截断到 `=` 前。启动清理只删除 run id 格式且 issue 锁空闲的目录（开发和测试 worker 共用 root），不跟随符号链接。
+- 测试 Agent 复用 ready 的 schema 2（多仓库）和 schema 3 工作区，与引入 schema 3 前的行为一致。
+- schema 1 只有 marker 的工作区升级时保留 after_create fingerprint；读目录出错时不视为空工作区。
+
 **已知限制（不在本期修复）**：
 
 - GitLab 的 workpad CommentId 由 `issue_iid * 1_000_000 + note_id` 组合而成，note id 超过 100 万时会与相邻 Issue 冲突；本机 GitLab 当前 note id 远低于该值。

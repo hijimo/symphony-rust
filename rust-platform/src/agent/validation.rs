@@ -367,13 +367,20 @@ pub fn parse_e2e_section(description: &str) -> (BTreeMap<String, String>, Vec<St
                         continue;
                     };
                     let k = k.trim();
-                    if !k.is_empty()
-                        && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                        && !k.starts_with(|c: char| c.is_ascii_digit())
+                    let v = v.trim();
+                    if k.is_empty()
+                        || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                        || k.starts_with(|c: char| c.is_ascii_digit())
                     {
-                        vars.insert(k.to_string(), v.trim().to_string());
+                        problems.push(format!("invalid variable name `{}`", log_name(k)));
+                    } else if is_reserved_env_name(k) {
+                        problems.push(format!("variable `{k}` is not allowed in E2E data"));
+                    } else if has_remote_url(v) {
+                        problems.push(format!(
+                            "variable `{k}` points to a non-local address; connection targets never come from the issue"
+                        ));
                     } else {
-                        problems.push(format!("invalid variable name `{k}`"));
+                        vars.insert(k.to_string(), v.to_string());
                     }
                 }
             }
@@ -386,10 +393,83 @@ pub fn parse_e2e_section(description: &str) -> (BTreeMap<String, String>, Vec<St
                 }
                 other => problems.push(format!("unsupported backend `{other}`")),
             },
-            other => problems.push(format!("unsupported E2E field `{other}`")),
+            other => problems.push(format!("unsupported E2E field `{}`", log_name(other))),
         }
     }
     (vars, problems)
+}
+
+/// Field names end up in logs: keep them short and cut at the first `=` so a
+/// malformed line never logs a value.
+fn log_name(name: &str) -> String {
+    let n = name.split('=').next().unwrap_or("");
+    n.chars().take(40).collect()
+}
+
+/// Names that change how shells, Node, git, proxies or the test runner
+/// behave, or where they connect. E2E data may only carry test data such as
+/// tokens and user info (design §3.3, safety rule 6).
+fn is_reserved_env_name(name: &str) -> bool {
+    let u = name.to_ascii_uppercase();
+    const EXACT: &[&str] = &[
+        "PATH",
+        "HOME",
+        "SHELL",
+        "ENV",
+        "BASH_ENV",
+        "IFS",
+        "PS4",
+        "PROMPT_COMMAND",
+        "CDPATH",
+        "NODE_OPTIONS",
+        "NODE_PATH",
+        "NODE_EXTRA_CA_CERTS",
+        "NODE_TLS_REJECT_UNAUTHORIZED",
+        "NO_PROXY",
+        "CODEX_HOME",
+        "TMPDIR",
+    ];
+    const PREFIX: &[&str] = &[
+        "LD_",
+        "DYLD_",
+        "GIT_",
+        "SYMPHONY_",
+        "PLAYWRIGHT_",
+        "NPM_CONFIG_",
+        "SSL_",
+    ];
+    EXACT.contains(&u.as_str())
+        || PREFIX.iter().any(|p| u.starts_with(p))
+        || u.ends_with("_PROXY")
+        || u.contains("BASE_URL")
+        || u.ends_with("_URL")
+        || u.ends_with("_HOST")
+}
+
+/// True when the value contains a URL whose host is not loopback.
+fn has_remote_url(value: &str) -> bool {
+    let mut rest = value;
+    while let Some(i) = rest.find("://") {
+        let after = &rest[i + 3..];
+        let authority = after
+            .split(['/', '?', '#', '"', '\'', ' ', ',', ';'])
+            .next()
+            .unwrap_or("");
+        let host_port = authority.rsplit('@').next().unwrap_or("");
+        let host = if let Some(h) = host_port.strip_prefix('[') {
+            h.split(']').next().unwrap_or("")
+        } else {
+            host_port.split(':').next().unwrap_or("")
+        };
+        if !matches!(
+            host.to_ascii_lowercase().as_str(),
+            "localhost" | "127.0.0.1" | "::1"
+        ) {
+            return true;
+        }
+        rest = after;
+    }
+    false
 }
 
 fn shell_quote(v: &str) -> String {
@@ -449,9 +529,27 @@ pub fn write_e2e_env(
     Ok(Some((file, Vec::new())))
 }
 
-/// Remove every E2E run directory (process start: no run is active).
+/// Remove every E2E run directory except `keep`.
 pub fn cleanup_e2e(workspace_root: &Path, keep: &[&str]) {
     cleanup_e2e_matching(workspace_root, keep, |_| true);
+}
+
+/// Process start: remove E2E run directories whose issue is not running.
+/// The dev and testing workers share `workspace_root`, so a directory is
+/// kept while another process holds that issue's lock.
+pub fn cleanup_e2e_idle(workspace_root: &Path) {
+    // Only run-id shaped names are Symphony's; anything else is left alone.
+    cleanup_e2e_matching(workspace_root, &[], |name| match run_issue_key(name) {
+        Some(key) => crate::workspace::issue_lock_is_free(workspace_root, key),
+        None => false,
+    });
+}
+
+/// Issue key of a run id `i-<hex>-<attempt>-<nanos>`.
+fn run_issue_key(run_id: &str) -> Option<&str> {
+    let rest = run_id.strip_prefix("i-")?;
+    let end = rest.find('-')?;
+    Some(&run_id[..2 + end])
 }
 
 /// Remove the E2E directory of one run.
@@ -472,6 +570,11 @@ pub fn cleanup_e2e_for_issue(workspace_root: &Path, issue_key: &str, keep_run: &
 
 fn cleanup_e2e_matching(workspace_root: &Path, keep: &[&str], select: impl Fn(&str) -> bool) {
     let root = e2e_root(workspace_root);
+    // Never follow a replaced (symlinked) e2e root.
+    match std::fs::symlink_metadata(&root) {
+        Ok(m) if m.is_dir() => {}
+        _ => return,
+    }
     let Ok(entries) = std::fs::read_dir(&root) else {
         return;
     };
@@ -655,6 +758,19 @@ trailing text
         assert_eq!(problems.len(), 1);
         let bad2 = "## E2E\n- 后端: https://prod\n- 环境变量: 1X=1; A-B=2\n";
         assert_eq!(parse_e2e_section(bad2).1.len(), 3);
+
+        // Variables that redirect connections or change runtimes are refused.
+        let hostile = "## E2E\n- 环境变量: PLAYWRIGHT_BASE_URL=http://127.0.0.1; HTTPS_PROXY=http://x; NODE_OPTIONS=--require /tmp/a.js; BASH_ENV=/tmp/x; API_URL=http://localhost:1; E2E_API=https://prod.example.com/v1; E2E_LOCAL=http://localhost:5173/x; E2E_TOKEN=ok\n";
+        let (vars, problems) = parse_e2e_section(hostile);
+        assert_eq!(problems.len(), 6, "{problems:?}");
+        assert_eq!(vars.len(), 2, "{vars:?}");
+        assert!(vars.contains_key("E2E_TOKEN") && vars.contains_key("E2E_LOCAL"));
+        // Malformed lines never log values.
+        let (_, problems) = parse_e2e_section("## E2E\nE2E_USER_INFO={\"id\":1}\n");
+        assert!(
+            problems.iter().all(|p| !p.contains("\"id\"")),
+            "{problems:?}"
+        );
     }
 
     #[test]
@@ -705,5 +821,33 @@ trailing text
         assert!(!e2e_root(tmp.path()).join("stale").exists());
         cleanup_e2e(tmp.path(), &[]);
         assert!(!path.exists());
+
+        // Startup sweep keeps directories of issues whose lock is held.
+        assert_eq!(run_issue_key("i-3331-0-17"), Some("i-3331"));
+        assert_eq!(run_issue_key("stale"), None);
+        let locks = tmp.path().join(".symphony/locks/issues");
+        std::fs::create_dir_all(&locks).unwrap();
+        let held = std::fs::File::create(locks.join("i-41.lock")).unwrap();
+        {
+            use std::os::fd::AsRawFd;
+            assert_eq!(unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX) }, 0);
+        }
+        std::fs::File::create(locks.join("i-42.lock")).unwrap();
+        for d in ["i-41-0-1", "i-42-0-1", "i-43-0-1"] {
+            std::fs::create_dir_all(e2e_root(tmp.path()).join(d)).unwrap();
+        }
+        // flock is per open file description: a second open in this process
+        // conflicts with `held`, like another process would.
+        cleanup_e2e_idle(tmp.path());
+        assert!(e2e_root(tmp.path()).join("i-41-0-1").exists());
+        assert!(!e2e_root(tmp.path()).join("i-42-0-1").exists());
+        assert!(!e2e_root(tmp.path()).join("i-43-0-1").exists());
+        // Foreign names are not Symphony's and stay.
+        std::fs::create_dir_all(e2e_root(tmp.path()).join("notes")).unwrap();
+        cleanup_e2e_idle(tmp.path());
+        assert!(e2e_root(tmp.path()).join("notes").exists());
+        // Not re-checked after `drop(held)`: a child forked concurrently by
+        // another test may hold an inherited copy of the fd until it execs.
+        drop(held);
     }
 }

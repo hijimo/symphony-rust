@@ -235,13 +235,19 @@ impl HttpClient {
     ///
     /// Called once during adapter startup after credential validation.
     pub async fn ensure_workflow_labels(&self) -> Result<(), PlatformError> {
-        let required_labels: Vec<&str> = self
+        // Workflow states plus the self-verification labels the runner adds
+        // after a run. Gitea's add-label API only takes existing label ids,
+        // so a missing label would silently drop `validation-blocked`.
+        let mut required_labels: Vec<&str> = self
             .config
             .workflow
             .states
             .values()
             .map(|s| s.as_str())
             .collect();
+        required_labels.extend(crate::agent::validation::ALL_LABELS);
+        required_labels.sort_unstable();
+        required_labels.dedup();
 
         let existing = self.list_labels().await?;
         let existing_names: HashSet<&str> = existing.iter().map(|l| l.name.as_str()).collect();
