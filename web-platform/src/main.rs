@@ -205,6 +205,19 @@ async fn main() {
             );
         }
     }
+    // Workspaces (implementation and document stage) must not live inside a
+    // git repository, or Codex loads that repository's AGENTS.md / skills for
+    // every session (self-verification design §4.1).
+    if let Err(e) = web_platform::workspace_guard::ensure_outside_git(
+        std::path::Path::new(&config.workspace_root),
+        "SYMPHONY_WORKSPACE_ROOT",
+    )
+    .await
+    {
+        tracing::error!("{e}");
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
     let sdlc = web_platform::sdlc::SdlcState::new(
         repo.pool(),
         &config.workspace_root,

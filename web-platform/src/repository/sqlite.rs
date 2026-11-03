@@ -419,10 +419,11 @@ fn row_to_project(row: &rusqlite::Row) -> rusqlite::Result<Project> {
         testing_service_pid: row.get(44)?,
         testing_service_instance_id: row.get(45)?,
         testing_service_generation: row.get(46)?,
+        validation_gate: row.get::<_, i64>(47)? != 0,
     })
 }
 
-const PROJECT_COLUMNS: &str = "id, name, description, git_url, platform, platform_host, namespace, repo_name, default_branch, workflow_template, workflow_content, service_status, service_pid, max_concurrent_agents, auto_restart, restart_count, last_started_at, last_stopped_at, error_message, created_by, created_at, updated_at, hooks_after_create, hooks_before_remove, codex_command, codex_approval_policy, codex_sandbox, web_instance_id, lifecycle_op_id, lifecycle_lease_expires_at, service_owner_web_instance_id, service_owner_lease_expires_at, service_owner_heartbeat_at, service_generation, service_instance_id, service_pgid, service_session_id, service_cmdline_hash, service_workdir, last_lifecycle_op, service_proxy_config_version, testing_enabled, testing_max_turns, testing_service_status, testing_service_pid, testing_service_instance_id, testing_service_generation";
+const PROJECT_COLUMNS: &str = "id, name, description, git_url, platform, platform_host, namespace, repo_name, default_branch, workflow_template, workflow_content, service_status, service_pid, max_concurrent_agents, auto_restart, restart_count, last_started_at, last_stopped_at, error_message, created_by, created_at, updated_at, hooks_after_create, hooks_before_remove, codex_command, codex_approval_policy, codex_sandbox, web_instance_id, lifecycle_op_id, lifecycle_lease_expires_at, service_owner_web_instance_id, service_owner_lease_expires_at, service_owner_heartbeat_at, service_generation, service_instance_id, service_pgid, service_session_id, service_cmdline_hash, service_workdir, last_lifecycle_op, service_proxy_config_version, testing_enabled, testing_max_turns, testing_service_status, testing_service_pid, testing_service_instance_id, testing_service_generation, validation_gate";
 
 #[async_trait]
 impl ProjectRepository for SqliteRepository {
@@ -573,8 +574,8 @@ impl ProjectRepository for SqliteRepository {
                     rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
                     |row| {
                         let mut p = row_to_project(row)?;
-                        p.member_count = row.get(47)?;
-                        p.my_role = row.get(48)?;
+                        p.member_count = row.get(48)?;
+                        p.my_role = row.get(49)?;
                         Ok(p)
                     },
                 )?
@@ -706,6 +707,11 @@ impl ProjectRepository for SqliteRepository {
                 let idx = params.len() + 1;
                 set_clauses.push(format!("testing_max_turns = ?{}", idx));
                 params.push(Box::new(v));
+            }
+            if let Some(v) = updates.validation_gate {
+                let idx = params.len() + 1;
+                set_clauses.push(format!("validation_gate = ?{}", idx));
+                params.push(Box::new(v as i64));
             }
 
             if set_clauses.is_empty() {

@@ -26,6 +26,8 @@ pub struct WorkflowTemplateContext {
     /// Related (secondary) repositories. Empty = single-repo project; the rendered
     /// output is then byte-identical to the pre-multi-repo templates.
     pub repos: Vec<ResolvedRepo>,
+    /// Render `validation.gate: true` (self-verification design §3.5).
+    pub validation_gate: bool,
 }
 
 /// Get the raw template content for a given platform.
@@ -68,7 +70,11 @@ pub fn render_template_string(template: &str, ctx: &WorkflowTemplateContext) -> 
         Platform::Gitea => ctx.platform_host.clone(),
     };
 
-    let repos_section = build_repos_section(ctx);
+    let repos_section = format!(
+        "{}{}",
+        build_single_repo_section(ctx),
+        build_repos_section(ctx)
+    );
     let hooks_section = build_hooks_section(&ctx.hooks_after_create, &ctx.hooks_before_remove);
     let codex_section = build_codex_section(
         &ctx.codex_command,
@@ -83,7 +89,7 @@ pub fn render_template_string(template: &str, ctx: &WorkflowTemplateContext) -> 
     let testing_fail_minor_section =
         build_testing_fail_minor_section(ctx.testing_enabled, &ctx.platform);
 
-    template
+    let rendered = template
         .replace("{{project_slug}}", &ctx.project_slug)
         .replace("{{platform_host}}", &ctx.platform_host)
         .replace("{{platform_endpoint}}", &platform_endpoint)
@@ -103,7 +109,69 @@ pub fn render_template_string(template: &str, ctx: &WorkflowTemplateContext) -> 
         .replace(
             "{{testing_fail_minor_section}}",
             &testing_fail_minor_section,
-        )
+        );
+    if ctx.validation_gate {
+        insert_validation_gate(&rendered)
+    } else {
+        rendered
+    }
+}
+
+/// Insert `validation:\n  gate: true\n` before the closing front-matter delimiter.
+fn insert_validation_gate(rendered: &str) -> String {
+    let Some(rest) = rendered.strip_prefix("---\n") else {
+        return rendered.to_string();
+    };
+    match rest.find("\n---\n") {
+        Some(end) => format!(
+            "---\n{}\nvalidation:\n  gate: true{}",
+            &rest[..end],
+            &rest[end..]
+        ),
+        None => rendered.to_string(),
+    }
+}
+
+/// Single-repo GitLab projects: `workspace.slug` / `workspace.default_branch`
+/// let Symphony check the repository out at the workspace root before Codex
+/// starts (self-verification design §4.2). Other platforms keep the
+/// agent-cloned layout for now.
+fn build_single_repo_section(ctx: &WorkflowTemplateContext) -> String {
+    if !ctx.repos.is_empty() || ctx.platform != Platform::GitLab || ctx.project_slug.is_empty() {
+        return String::new();
+    }
+    if ctx
+        .hooks_after_create
+        .as_deref()
+        .is_some_and(clones_into_root)
+    {
+        // A legacy after_create that clones into `.` keeps the old layout.
+        return String::new();
+    }
+    format!(
+        "  slug: {}\n  default_branch: {}\n",
+        yaml_str(&ctx.project_slug),
+        yaml_str(&ctx.default_branch)
+    )
+}
+
+/// Mirrors rust-platform's `clones_into_workspace_root`.
+fn clones_into_root(script: &str) -> bool {
+    script.lines().any(|line| {
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        let Some(pos) = tokens
+            .windows(2)
+            .position(|w| w[0] == "git" && w[1] == "clone")
+        else {
+            return false;
+        };
+        let args: Vec<&str> = tokens[pos + 2..]
+            .iter()
+            .copied()
+            .take_while(|t| !matches!(*t, "&&" | "||" | ";" | "|"))
+            .collect();
+        matches!(args.last(), Some(&".") | Some(&"./"))
+    })
 }
 
 /// Alias of the implicit primary repository entry.
@@ -211,8 +279,8 @@ fn build_testing_status_map(testing_enabled: bool) -> String {
 
 fn build_testing_gate_section(testing_enabled: bool, platform: &Platform) -> String {
     if !testing_enabled {
-        return r#"12. Move the issue to `Human Review`.
-    - Fallback: if blocked by missing required tools/auth per the blocked-access escape hatch, include a blocker brief in the workpad.
+        return r#"12. Move the issue to `Human Review` according to the outcome rules of `App runtime validation (required)`.
+    - Fallback: if blocked by missing required tools/auth per the blocked-access escape hatch, include a blocker brief and the `symphony:blocked` marker in the workpad.
 13. For `Todo` issues that already had a PR/MR attached at kickoff:
     - Ensure all existing feedback was reviewed and resolved.
     - Ensure branch was pushed with any required updates.
@@ -248,7 +316,7 @@ fn build_testing_gate_section(testing_enabled: bool, platform: &Platform) -> Str
 13. Determine the target state using the **Testing Gate**:
     - If issue has any label in ["hotfix", "urgent", "docs-only"] → move to `Human Review`
     - If the diff only contains documentation/config files (no `.rs`/`.ts`/`.tsx`/`.js` changes) → move to `Human Review`
-    - Otherwise → move to `Testing`:
+    - Otherwise → move to `Testing` (the development-stage validation report must already be in the workpad; a baseline failure after 3 rounds goes to `Human Review` with the blocked marker instead):
 {}
     - After moving to `Testing`, immediately end your turn.
     - Fallback to `Human Review` if blocked by missing required tools/auth per the blocked-access escape hatch.
@@ -295,7 +363,7 @@ When the issue is in `In Progress` and the latest issue comment contains a `## T
    - Add missing tests
    - Fix the identified coverage gaps
 5. Update the workpad `### Test Points` section with what was fixed.
-6. Re-run validation, push changes.
+6. Re-run `App runtime validation (required)` (new round), push changes.
 7. Move back to `Testing`:
 {}
 8. Immediately end your turn after the state transition.
@@ -326,6 +394,7 @@ mod tests {
             testing_enabled: false,
             testing_max_turns: None,
             repos: vec![],
+            validation_gate: false,
         };
         let rendered = render_template(&ctx);
         assert!(rendered.contains("kind: github"));
@@ -356,6 +425,7 @@ mod tests {
             testing_enabled: true,
             testing_max_turns: None,
             repos: vec![],
+            validation_gate: false,
         };
         let rendered = render_template(&ctx);
         assert!(rendered.contains("Testing Gate"));
@@ -388,6 +458,7 @@ mod tests {
             testing_enabled: false,
             testing_max_turns: None,
             repos: vec![],
+            validation_gate: false,
         };
         let rendered = render_template(&ctx);
         assert!(rendered.contains("kind: gitlab"));
@@ -417,6 +488,7 @@ mod tests {
             testing_enabled: true,
             testing_max_turns: Some(12),
             repos: vec![],
+            validation_gate: false,
         };
         let rendered = render_test_template(&ctx);
         assert!(rendered.contains("kind: github"));
@@ -444,6 +516,7 @@ mod tests {
             testing_enabled: true,
             testing_max_turns: Some(10),
             repos: vec![],
+            validation_gate: false,
         };
         let rendered = render_test_template(&ctx);
         assert!(rendered.contains("kind: gitlab"));
@@ -481,6 +554,35 @@ mod single_repo_snapshots {
             "gitea_basic" => include_str!("snapshots/gitea_basic.md"),
             other => panic!("unknown snapshot {other}"),
         }
+    }
+
+    #[test]
+    fn validation_gate_and_single_repo_checkout_render() {
+        let mut ctx = super::snapshot_contexts().remove(0).1; // gitlab_basic
+        ctx.validation_gate = true;
+        let rendered = render_template(&ctx);
+        let fm_end = rendered[4..].find("\n---\n").unwrap() + 4;
+        let fm = &rendered[..fm_end];
+        assert!(fm.ends_with("validation:\n  gate: true"), "{fm}");
+        assert!(fm.contains("  slug: \"group/sub/project\"\n  default_branch: \"dev\"\n"));
+        // Multi-repo projects never render the single-repo checkout keys.
+        ctx.repos = vec![ResolvedRepo {
+            alias: "backend".to_string(),
+            slug: "JstAi/jxy".to_string(),
+            default_branch: "pre".to_string(),
+            mode: "read".to_string(),
+            checkout: "partial".to_string(),
+            merge_after: vec![],
+        }];
+        assert!(!render_template(&ctx).contains("  slug: \"group/sub/project\"\n  default_branch"));
+        // GitHub keeps the agent-cloned layout for now.
+        let gh = super::snapshot_contexts().remove(2).1;
+        assert!(!render_template(&gh).contains("\n  slug: "));
+        // The self-verification section exists and no dangling reference is left.
+        let out = render_template(&super::snapshot_contexts().remove(0).1);
+        assert!(out.contains("## App runtime validation (required)"));
+        assert!(!out.contains(".codex/skills/"));
+        assert!(out.contains("symphony-land"));
     }
 
     #[test]
@@ -548,6 +650,7 @@ fn snapshot_contexts() -> Vec<(&'static str, WorkflowTemplateContext)> {
         testing_enabled: false,
         testing_max_turns: None,
         repos: vec![],
+        validation_gate: false,
     };
     let mut gitlab_full = base(Platform::GitLab, "http://gitlab.example.com:8081");
     gitlab_full.hooks_after_create = Some("git clone http://example/x.git .\nnpm ci".to_string());

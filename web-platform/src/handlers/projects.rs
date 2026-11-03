@@ -322,6 +322,7 @@ pub async fn update_project(
         codex_sandbox: req.codex_sandbox,
         testing_enabled: req.testing_enabled,
         testing_max_turns: req.testing_max_turns,
+        validation_gate: req.validation_gate,
     };
 
     state.repo.update_project(id, &updates).await?;

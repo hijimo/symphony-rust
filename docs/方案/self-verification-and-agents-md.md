@@ -1,6 +1,6 @@
 # 实现阶段自验证与 AGENTS.md 加载修复方案
 
-> **状态**：设计已通过对抗验证（第 7 节，v7 结论无高风险），未实现。
+> **状态**：设计已通过对抗验证（第 7 节，v7 结论无高风险）；实现见第 8 节。
 >
 > **范围**：
 > 1. 实现阶段的测试改为在开发流程内完成（不再使用独立的 `Testing` 状态），并写死默认的前端、后端验证方案。
@@ -451,3 +451,20 @@ See `aigc-test/AGENTS.md` for reference only.
 | v5（2026-11-02） | 合并审查：2 个 P1 | 阻塞标记改为「只对写入它的 run 生效」：起始为 Todo/In Progress/Rework 时把旧标记改写为 `blocked-cleared`；阻塞识别和豁免只看本次 run 新写入的标记，人删 label 接受后不会被加回；已推送判断改为比较远端同名分支；「有改动」含未提交改动；SHA 统一 12 位 |
 | v6（2026-11-02） | 合并审查：1 个 P1 | 标记加 `run=<run_id>`，「本次有效」改为 run id 匹配，不再做 workpad 前后比较；改写旧标记在 `thread/start` 前完成；workpad 读写失败跳过识别；最后一次 push 后才写标记；轮次只在 Todo/Rework 重置；接受底线失败后 Merging 不再因同一失败阻塞；加 label 前复核状态；Linear 由 AI 改写旧标记 |
 | v7（2026-11-02） | 合并审查：**无高风险**（P2×3、P3×2） | 收口：heads 别名固定（single_root `primary`、legacy `repo`）；workpad 读写失败时加 `validation-missing` 提示；Linear 下只在 Todo/In Progress/Rework 起始时改写旧标记；状态复核失败照常加 label；e2e 目录只清理本项目 root。达到「无高风险」验收标准 |
+
+## 8. 实现说明
+
+| 设计项 | 实现位置 |
+|---|---|
+| 4.1 工作区根检查 | `rust-platform/src/workspace/root_guard.rs`（`main.rs` 启动时）、`web-platform/src/workspace_guard.rs`（web 启动时，覆盖 `editor/`）；web 默认根改为 `~/symphony-workspaces` |
+| D10 skills | `deploy/codex-skills/symphony-{commit,pull,push,land}`，`deploy/scripts/install-codex-skills.sh` 由 `dev.sh` 调用；模板按 skill 名引用 |
+| 4.2 single_root | `WorkspaceManager::prepare_single_root_workspace`（schema 3 / `layout: single_root`）、`repos::init_single_root`；web 模板为 GitLab 单仓库渲染 `workspace.slug/default_branch`（`after_create` 克隆到 `.` 时不渲染，保持旧布局） |
+| 4.3 AGENTS.md 注入 | 实现阶段 `agent/repo_instructions.rs`（多仓库、legacy `repo/`）；文档阶段 `sdlc/workspace.rs::repo_instructions` + `AgentSession.first_turn_prefix`（仅在新 thread 的首个 turn 前置） |
+| 3.4 安全规则 | `agent/post_run.rs::SAFETY_RULES` 作为 `thread/start` 的 `developerInstructions`；模板正文要求复制进子 Agent 提示词（实测子 Agent 不继承 developerInstructions） |
+| 3.3 E2E | `agent/validation.rs::write_e2e_env`（0700/0600，run 结束及启动时清理），`SYMPHONY_E2E_ENV_FILE`、`SYMPHONY_RUN_ID` 注入 app-server 进程 |
+| 3.5 runner 适配 | `codex_client.rs`：只认 `thread/start` 的主线程 id、子线程 terminal 事件不结束主 turn（仍转发刷新 stall 计时）、v2 server request 回 JSON-RPC `result` |
+| 3.5 阻塞识别 / 确定性检查 | `runner.rs::pre_run_cleanup` / `post_run_checks`、`agent/post_run.rs::gate_check`；`Tracker` / `IssueStateRefresher` 新增 workpad 与 label 接口（GitLab 实现）；项目字段 `validation_gate`（迁移 V019）渲染为 `validation.gate` |
+| 3.2 模板 | `web-platform/src/templates/workflow_{gitlab,github,gitea}.md` 的 `App runtime validation (required)` 章节；测试模板只复核未通过项 |
+
+**subagent 实测（2026-11-02，Codex 0.162.1 app-server）**：子线程的通知（`turn/started`、`item/*`、`turn/completed`）发到同一连接，`params.threadId` 为子线程 id；主线程 `wait` 期间最长 207 秒无主线程事件，但子线程事件持续到达；子 Agent 报告其 system/developer 指令中没有父线程的 `developerInstructions`，因此安全规则必须写进子 Agent 提示词。
+

@@ -27,7 +27,8 @@ fn body(tpl: &str) -> &str {
     &rest[end + 4..]
 }
 
-/// Templates as committed before multi-repo support (snapshot of `main`).
+/// Single-repo snapshot: the current templates with every `{% if is_multi_repo %}`
+/// block reduced to its `else` branch (regenerate when the templates change).
 const ORIGINALS: &[(&str, &str)] = &[
     (
         "gitlab",

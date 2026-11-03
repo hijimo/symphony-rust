@@ -1255,6 +1255,38 @@ impl IssueStateRefresher for TrackerStateRefresher {
             .await
             .map_err(|e| e.to_string())
     }
+
+    fn supports_workpad(&self) -> bool {
+        self.tracker.supports_workpad()
+    }
+
+    async fn fetch_workpad(&self, issue_id: &str) -> Result<Option<(u64, String)>, String> {
+        self.tracker
+            .fetch_workpad(issue_id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn update_workpad(&self, comment_id: u64, body: &str) -> Result<(), String> {
+        self.tracker
+            .update_workpad(comment_id, body)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn add_labels(&self, issue_id: &str, labels: &[String]) -> Result<(), String> {
+        self.tracker
+            .add_labels(issue_id, labels)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn remove_labels(&self, issue_id: &str, labels: &[String]) -> Result<(), String> {
+        self.tracker
+            .remove_labels(issue_id, labels)
+            .await
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// Fallback when no tracker is configured — issue is always considered active.

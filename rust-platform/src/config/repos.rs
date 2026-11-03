@@ -351,7 +351,7 @@ pub(crate) fn is_safe_ref(name: &str) -> bool {
 
 /// Detect hook commands that clone into the workspace root (`git clone <url> .`
 /// or `git clone <url>` followed by nothing that would land in cwd).
-fn clones_into_workspace_root(script: &str) -> bool {
+pub(crate) fn clones_into_workspace_root(script: &str) -> bool {
     script.lines().any(|line| {
         let tokens: Vec<&str> = line.split_whitespace().collect();
         let Some(pos) = tokens

@@ -95,6 +95,7 @@ export default function ProjectSettingsPage() {
   // Testing agent config state
   const [testingEnabled, setTestingEnabled] = useState(false);
   const [testingMaxTurns, setTestingMaxTurns] = useState(12);
+  const [validationGate, setValidationGate] = useState(false);
   const [testingConfigSaving, setTestingConfigSaving] = useState(false);
 
   const showSnack = (message: string, severity: 'success' | 'error') => {
@@ -117,6 +118,7 @@ export default function ProjectSettingsPage() {
       setCodexSandbox(p.codex_sandbox || 'workspace-write');
       setTestingEnabled(p.testing_enabled);
       setTestingMaxTurns(p.testing_max_turns);
+      setValidationGate(Boolean(p.validation_gate));
     } catch (err: any) {
       showSnack(err?.message || '加载项目失败', 'error');
     } finally {
@@ -284,9 +286,10 @@ export default function ProjectSettingsPage() {
       const updated = await updateProject(projectId, {
         testing_enabled: testingEnabled,
         testing_max_turns: testingMaxTurns,
+        validation_gate: validationGate,
       });
       setProject(updated);
-      showSnack('测试 Agent 配置已保存', 'success');
+      showSnack('验证配置已保存，重启项目服务后生效', 'success');
     } catch (err: any) {
       showSnack(err?.message || '保存失败', 'error');
     } finally {
@@ -297,7 +300,8 @@ export default function ProjectSettingsPage() {
   const testingConfigChanged =
     project !== null &&
     (testingEnabled !== project.testing_enabled ||
-      testingMaxTurns !== project.testing_max_turns);
+      testingMaxTurns !== project.testing_max_turns ||
+      validationGate !== Boolean(project.validation_gate));
 
   // Delete project
   const handleDelete = async () => {
@@ -523,8 +527,27 @@ export default function ProjectSettingsPage() {
             {/* Testing Agent Config */}
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3, maxWidth: 600, mt: 5 }}>
               <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                测试 Agent
+                验证与测试
               </Typography>
+              <Typography variant="body2" color="text.secondary">
+                开发 Agent 会在交付前用验证子 Agent 执行默认验证方案（构建、静态检查、单元/集成测试，条件满足时 API 测试和 E2E），并把验证表写进 workpad。
+              </Typography>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={validationGate}
+                    onChange={(e) => setValidationGate(e.target.checked)}
+                    inputProps={{ 'aria-label': '启用验证门禁' }}
+                  />
+                }
+                label="启用验证门禁"
+              />
+              <Typography variant="caption" color="text.secondary" sx={{ mt: -2 }}>
+                开启后，Issue 进入人工审核时 Symphony 会检查 workpad 中的验证表、提交是否已推送、底线步骤是否通过；不满足时加 validation-missing 标签。单仓库项目需使用新的工作区布局。
+              </Typography>
+              <Alert severity="warning" sx={{ py: 0 }}>
+                E2E：可在 Issue 描述中写 <code>## E2E</code> 段提供测试 token。token 会出现在 Issue、AI 提示词和会话记录中，只能使用开发环境、最小权限、短期有效的 token，用完作废。
+              </Alert>
               <FormControlLabel
                 control={
                   <Switch
@@ -532,7 +555,7 @@ export default function ProjectSettingsPage() {
                     onChange={(e) => setTestingEnabled(e.target.checked)}
                   />
                 }
-                label="启用测试 Agent"
+                label="启用独立测试 Agent（可选，只复核开发阶段未通过、未验证和跳过的项）"
               />
               <TextField
                 label="最大 Turns"

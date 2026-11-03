@@ -16,9 +16,13 @@ use crate::config::watcher::ConfigHolder;
 use crate::prompt::{BlockerContext, IssueContext, PromptEngine, RepoContext};
 use crate::workspace::repo_api::{GitlabRepoApi, RepoApi};
 use crate::workspace::repos::{RepoCheckoutContext, RepoState};
-use crate::workspace::{MultiRepoPrepare, WorkspaceError, WorkspaceManager, WorkspaceRunLease};
+use crate::workspace::{
+    MultiRepoPrepare, SingleRootPrepare, WorkspaceError, WorkspaceLayout, WorkspaceManager,
+    WorkspaceRunLease,
+};
 
-use super::codex_client::{CodexClient, CodexError, TurnResult};
+use super::codex_client::{CodexClient, CodexError, CodexStartOptions, TurnResult};
+use super::{post_run, repo_instructions, validation};
 use crate::models::CodexEventUpdate;
 
 /// Errors from agent runner operations.
@@ -147,6 +151,31 @@ pub trait IssueStateRefresher: Send + Sync {
     /// read-only integrity violation). Default: unsupported.
     async fn set_issue_state(&self, _issue_id: &str, _state: &str) -> Result<(), String> {
         Err("state writes not supported by this refresher".to_string())
+    }
+
+    /// Whether the workpad / label operations below are available.
+    fn supports_workpad(&self) -> bool {
+        false
+    }
+
+    /// Read the workpad comment: `(comment_id, body)`.
+    async fn fetch_workpad(&self, _issue_id: &str) -> Result<Option<(u64, String)>, String> {
+        Err("workpad not supported".to_string())
+    }
+
+    /// Replace the workpad comment body.
+    async fn update_workpad(&self, _comment_id: u64, _body: &str) -> Result<(), String> {
+        Err("workpad not supported".to_string())
+    }
+
+    /// Add plain labels.
+    async fn add_labels(&self, _issue_id: &str, _labels: &[String]) -> Result<(), String> {
+        Err("labels not supported".to_string())
+    }
+
+    /// Remove plain labels.
+    async fn remove_labels(&self, _issue_id: &str, _labels: &[String]) -> Result<(), String> {
+        Err("labels not supported".to_string())
     }
 }
 
@@ -340,7 +369,8 @@ impl AgentRunner {
         );
 
         // 1. Prepare an issue-id keyed workspace and hold the issue lock for
-        // the whole attempt.
+        // the whole attempt. Layout: multi-repo, single_root (Symphony checks
+        // the repository out at the root) or legacy (agent-cloned).
         let run_id = format!(
             "{}-{}-{}",
             WorkspaceManager::issue_id_path_key(&issue.id),
@@ -363,22 +393,46 @@ impl AgentRunner {
             );
             specs.clear();
         }
-        let (lease, multi) = if specs.is_empty() {
-            let lease = self
-                .workspace_mgr
-                .prepare_issue_workspace(
-                    &issue.id,
-                    &issue.identifier,
-                    &run_id,
-                    &service_instance_id,
-                )
-                .await?;
-            (lease, None)
+        let single_spec = service_config.workspace_single_repo.clone();
+        let (lease, multi, layout) = if specs.is_empty() {
+            let single_root = match &single_spec {
+                Some(spec) => {
+                    let ctx = self.checkout_context(&issue);
+                    let ping = self.activity_ping();
+                    self.workspace_mgr
+                        .prepare_single_root_workspace(SingleRootPrepare {
+                            issue_id: &issue.id,
+                            issue_identifier: &issue.identifier,
+                            run_id: &run_id,
+                            service_instance_id: &service_instance_id,
+                            checkout: &ctx,
+                            spec,
+                            on_progress: &ping,
+                        })
+                        .await?
+                }
+                None => None,
+            };
+            match single_root {
+                Some(lease) => (lease, None, WorkspaceLayout::SingleRoot),
+                None => {
+                    let lease = self
+                        .workspace_mgr
+                        .prepare_issue_workspace(
+                            &issue.id,
+                            &issue.identifier,
+                            &run_id,
+                            &service_instance_id,
+                        )
+                        .await?;
+                    (lease, None, WorkspaceLayout::Legacy)
+                }
+            }
         } else {
             let (lease, ctx, repos) = self
                 .prepare_multi_repo(&issue, &specs, &run_id, &service_instance_id)
                 .await?;
-            (lease, Some((ctx, repos)))
+            (lease, Some((ctx, repos)), WorkspaceLayout::MultiRepo)
         };
         let repo_contexts: Vec<RepoContext> =
             multi.as_ref().map(|(_, r)| r.clone()).unwrap_or_default();
@@ -396,11 +450,47 @@ impl AgentRunner {
         // 2. Run before_run hook (failure is fatal)
         self.workspace_mgr.run_before_run(&ws.path).await?;
 
+        // 2b. Self-verification pre-run (design §3.3–§3.5, §4.3).
+        let single_default = single_spec.as_ref().map(|s| s.default_branch.as_str());
+        let checked = post_run::writable_repos(&ws.path, layout, &repo_contexts, single_default);
+        self.pre_run_cleanup(&issue, &state_refresher).await;
+        let root = self.workspace_mgr.root().to_path_buf();
+        validation::cleanup_e2e(&root, &[]);
+        let mut env = vec![("SYMPHONY_RUN_ID".to_string(), run_id.clone())];
+        match validation::write_e2e_env(&root, &run_id, issue.description.as_deref()) {
+            Ok(Some((path, problems))) if problems.is_empty() => {
+                env.push((
+                    "SYMPHONY_E2E_ENV_FILE".to_string(),
+                    path.to_string_lossy().to_string(),
+                ));
+            }
+            Ok(Some((_, problems))) => {
+                tracing::warn!(issue_id = %issue.id, problems = ?problems, "E2E section rejected; no env file");
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(issue_id = %issue.id, error = %e, "failed to write E2E env file")
+            }
+        }
+        let instructions = self
+            .repo_instructions(
+                &ws.path,
+                layout,
+                &repo_contexts,
+                &issue,
+                single_spec.as_ref(),
+            )
+            .await;
+
         // 3. Start Codex app-server client
-        let mut client = match CodexClient::start(
+        let mut client = match CodexClient::start_with(
             &ws.path,
             &service_config.codex,
             self.cancel_token.child_token(),
+            CodexStartOptions {
+                env,
+                developer_instructions: Some(post_run::SAFETY_RULES.to_string()),
+            },
         )
         .await
         {
@@ -412,6 +502,7 @@ impl AgentRunner {
                     "failed to start codex client"
                 );
                 self.workspace_mgr.run_after_run(&ws.path).await;
+                validation::cleanup_e2e(&root, &[]);
                 return Err(AgentError::Codex(e));
             }
         };
@@ -430,12 +521,16 @@ impl AgentRunner {
                 &mut turn_number,
                 &state_refresher,
                 &repo_contexts,
+                instructions.as_deref(),
+                &run_id,
+                layout,
             )
             .await;
 
         // 5. Stop client and run after_run hook
         client.stop().await;
         self.workspace_mgr.run_after_run(&ws.path).await;
+        validation::cleanup_e2e(&root, &[]);
 
         // 5b. Read-only integrity check *after* the agent ran (design §5.3).
         if let Some((ctx, _)) = &multi {
@@ -460,6 +555,18 @@ impl AgentRunner {
             }
         }
 
+        // 5c. Blocked-marker recognition and the optional validation gate
+        // (design §3.5). Runs for every outcome, including cancelled runs.
+        self.post_run_checks(
+            &issue,
+            &run_id,
+            layout,
+            &checked,
+            service_config.validation_gate,
+            &state_refresher,
+        )
+        .await;
+
         match result {
             Ok(()) => {
                 tracing::info!(
@@ -482,6 +589,178 @@ impl AgentRunner {
         }
     }
 
+    /// Run-start cleanup (design §3.5): for runs starting in Todo / In Progress
+    /// / Rework, remove the self-verification labels and rewrite old blocked
+    /// markers to `blocked-cleared` before the agent starts.
+    async fn pre_run_cleanup(&self, issue: &AgentIssue, refresher: &Arc<dyn IssueStateRefresher>) {
+        if !refresher.supports_workpad() || !starts_development(&issue.state) {
+            return;
+        }
+        let labels: Vec<String> = validation::ALL_LABELS
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        if let Err(e) = refresher.remove_labels(&issue.id, &labels).await {
+            tracing::warn!(issue_id = %issue.id, error = %e, "failed to remove self-verification labels");
+        }
+        match refresher.fetch_workpad(&issue.id).await {
+            Ok(Some((comment_id, body))) => {
+                if let Some(cleared) = validation::clear_blocked_markers(&body) {
+                    if let Err(e) = refresher.update_workpad(comment_id, &cleared).await {
+                        tracing::warn!(issue_id = %issue.id, error = %e, "failed to clear blocked markers");
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(issue_id = %issue.id, error = %e, "failed to read workpad at run start")
+            }
+        }
+    }
+
+    /// AGENTS.md block for layouts where Codex cannot load it by itself
+    /// (multi-repo and legacy `repo/`). `None` for single_root.
+    async fn repo_instructions(
+        &self,
+        workspace: &std::path::Path,
+        layout: WorkspaceLayout,
+        repos: &[RepoContext],
+        issue: &AgentIssue,
+        single: Option<&crate::config::service_config::SingleRepoSpec>,
+    ) -> Option<String> {
+        let sources: Vec<repo_instructions::RepoInstructionSource> = match layout {
+            WorkspaceLayout::SingleRoot => return None,
+            WorkspaceLayout::MultiRepo => repos
+                .iter()
+                .map(|r| repo_instructions::RepoInstructionSource {
+                    path: r.path.clone(),
+                    slug: r.slug.clone(),
+                    writable: r.writable,
+                    default_branch: r.default_branch.clone(),
+                })
+                .collect(),
+            WorkspaceLayout::Legacy => {
+                // Agent-cloned at the root: Codex loads it itself.
+                if workspace.join(".git").exists() || !workspace.join("repo").join(".git").exists()
+                {
+                    return None;
+                }
+                let spec = single?;
+                let ctx = self.checkout_context(issue);
+                if let Err(e) = crate::workspace::repos::refresh_legacy_repo(
+                    &ctx,
+                    &workspace.join("repo"),
+                    &spec.slug,
+                    &spec.default_branch,
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, "legacy repo/: refreshing default branch failed");
+                }
+                vec![repo_instructions::RepoInstructionSource {
+                    path: "repo".to_string(),
+                    slug: spec.slug.clone(),
+                    writable: true,
+                    default_branch: spec.default_branch.clone(),
+                }]
+            }
+        };
+        repo_instructions::build(workspace, &sources, &repo_instructions::new_nonce()).await
+    }
+
+    /// Blocked-marker recognition (always) and the validation gate (when
+    /// enabled), after the agent stopped (design §3.5).
+    async fn post_run_checks(
+        &self,
+        issue: &AgentIssue,
+        run_id: &str,
+        layout: WorkspaceLayout,
+        repos: &[post_run::CheckedRepo],
+        gate_enabled: bool,
+        refresher: &Arc<dyn IssueStateRefresher>,
+    ) {
+        if !refresher.supports_workpad() {
+            return;
+        }
+        let state = match refresher.refresh_issue_state(&issue.id).await {
+            Ok(Some(i)) => Some(i.state),
+            _ => None,
+        };
+        // Humans re-scheduled the issue meanwhile: leave labels alone.
+        if state
+            .as_deref()
+            .is_some_and(|s| is_state(s, &["todo", "rework"]))
+        {
+            return;
+        }
+        let workpad = match refresher.fetch_workpad(&issue.id).await {
+            Ok(Some((_, body))) => body,
+            Ok(None) => String::new(),
+            Err(e) => {
+                tracing::warn!(issue_id = %issue.id, error = %e, "failed to read workpad after run; skipping blocked recognition");
+                let _ = refresher
+                    .add_labels(
+                        &issue.id,
+                        &[validation::LABEL_VALIDATION_MISSING.to_string()],
+                    )
+                    .await;
+                return;
+            }
+        };
+        let heads = post_run::current_heads(repos).await;
+        let markers = validation::blocked_markers(&workpad);
+        if let Some(marker) = validation::effective_blocked_marker(&markers, run_id, &heads) {
+            tracing::info!(issue_id = %issue.id, reason = %marker.reason, "blocked marker recognized");
+            if let Err(e) = refresher
+                .add_labels(&issue.id, &[marker.label().to_string()])
+                .await
+            {
+                tracing::warn!(issue_id = %issue.id, error = %e, "failed to add blocked label");
+            }
+            return; // exempt from the gate
+        }
+        if !gate_enabled || layout == WorkspaceLayout::Legacy {
+            return;
+        }
+        let started_dev = starts_development(&issue.state);
+        let ended_review = state
+            .as_deref()
+            .is_some_and(|s| is_state(s, &["human review", "testing"]));
+        if !(started_dev && ended_review) {
+            return;
+        }
+        let ctx = self.checkout_context(issue);
+        let outcome = post_run::gate_check(&workpad, repos, |dir, branch| {
+            let ctx = ctx.clone();
+            async move {
+                crate::workspace::repos::refresh_single_root(&ctx, &dir, &branch)
+                    .await
+                    .is_ok()
+            }
+        })
+        .await;
+        if let post_run::GateOutcome::Failed(problems) = outcome {
+            tracing::warn!(issue_id = %issue.id, problems = ?problems, "validation gate failed");
+            let _ = refresher
+                .add_labels(
+                    &issue.id,
+                    &[validation::LABEL_VALIDATION_MISSING.to_string()],
+                )
+                .await;
+            if let Ok(Some((comment_id, body))) = refresher.fetch_workpad(&issue.id).await {
+                let note = format!(
+                    "{body}\n\n### Symphony validation gate\n{}\n",
+                    problems
+                        .iter()
+                        .map(|p| format!("- {p}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                );
+                let _ = refresher.update_workpad(comment_id, &note).await;
+            }
+        }
+    }
+
     /// Internal turn loop implementation.
     #[allow(clippy::too_many_arguments)]
     async fn run_turn_loop(
@@ -493,6 +772,9 @@ impl AgentRunner {
         turn_number: &mut u32,
         state_refresher: &Arc<dyn IssueStateRefresher>,
         repos: &[RepoContext],
+        repo_instructions: Option<&str>,
+        run_id: &str,
+        layout: WorkspaceLayout,
     ) -> Result<(), AgentError> {
         loop {
             // Check cancellation before each turn
@@ -507,10 +789,25 @@ impl AgentRunner {
 
             // Build prompt for this turn
             let prompt_context = current_issue.to_prompt_context();
-            let prompt = self
+            let mut prompt = self
                 .prompt_engine
-                .render_with_repos(&prompt_context, attempt, *turn_number, max_turns, repos)
+                .render_with_repos_ext(
+                    &prompt_context,
+                    attempt,
+                    *turn_number,
+                    max_turns,
+                    repos,
+                    &crate::prompt::RunGlobals {
+                        run_id: run_id.to_string(),
+                        workspace_layout: layout.as_str().to_string(),
+                    },
+                )
                 .map_err(|e| AgentError::PromptRender(e.to_string()))?;
+            if *turn_number == 1 {
+                if let Some(block) = repo_instructions {
+                    prompt = format!("{block}\n{prompt}");
+                }
+            }
 
             tracing::info!(
                 issue_id = %current_issue.id,
@@ -598,5 +895,30 @@ impl AgentRunner {
 
             *turn_number += 1;
         }
+    }
+}
+
+fn is_state(state: &str, names: &[&str]) -> bool {
+    let n = state.trim().to_lowercase().replace(['_', '-'], " ");
+    names.iter().any(|x| *x == n)
+}
+
+/// Runs starting in these states belong to development (not Merging).
+fn starts_development(state: &str) -> bool {
+    is_state(state, &["todo", "in progress", "rework"])
+}
+
+#[cfg(test)]
+mod self_verification_tests {
+    use super::*;
+
+    #[test]
+    fn state_helpers_normalize() {
+        assert!(starts_development("In Progress"));
+        assert!(starts_development("in_progress"));
+        assert!(starts_development("Todo"));
+        assert!(!starts_development("Merging"));
+        assert!(is_state("Human Review", &["human review"]));
+        assert!(is_state("human_review", &["human review"]));
     }
 }

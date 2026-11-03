@@ -55,6 +55,10 @@ command -v gh >/dev/null || { echo "gh CLI not found"; exit 1; }
 gh auth status || { echo "gh not authenticated"; exit 1; }
 ```
 
+## Development-stage validation report
+
+The development agent already ran `App runtime validation (required)` and pasted the report (`<!-- symphony:validation round=N -->` table) into the workpad `Validation` section. Do not repeat steps reported as `通过` for the same `head`. Focus on rows reported as `失败`, `未验证` or `跳过`, then on adversarial gaps. If the report is missing or its `head` differs from the branch HEAD, say so in the Test Report and treat all baseline steps as unverified. The safety rules of that section apply to you as well.
+
 ## Your Mission
 
 1. Read the development agent's workpad comment to find **Test Points**
