@@ -2,7 +2,9 @@
 //! the pre-multi-repo prompt in single-repo mode and (b) render the
 //! multi-repo instructions when repos are configured (design §6).
 
-use symphony_platform::prompt::{BlockerContext, IssueContext, PromptEngine, RepoContext};
+use symphony_platform::prompt::{
+    BlockerContext, IssueContext, PromptEngine, RepoContext, RunGlobals,
+};
 
 const TEMPLATES: &[(&str, &str)] = &[
     (
@@ -27,7 +29,8 @@ fn body(tpl: &str) -> &str {
     &rest[end + 4..]
 }
 
-/// Templates as committed before multi-repo support (snapshot of `main`).
+/// Single-repo snapshot: the current templates with every `{% if is_multi_repo %}`
+/// block reduced to its `else` branch (regenerate when the templates change).
 const ORIGINALS: &[(&str, &str)] = &[
     (
         "gitlab",
@@ -139,5 +142,44 @@ fn multi_repo_prompt_renders_repo_list_and_rules() {
                 "{name}: url_encode"
             );
         }
+    }
+}
+
+#[test]
+fn single_root_layout_and_run_id_render() {
+    for (name, tpl) in TEMPLATES {
+        let engine = PromptEngine::compile(&web_render(body(tpl))).unwrap();
+        let run = |layout: &str| {
+            engine
+                .render_with_repos_ext(
+                    &issue(),
+                    None,
+                    1,
+                    20,
+                    &[],
+                    &RunGlobals {
+                        run_id: "i-1375-0-42".into(),
+                        workspace_layout: layout.into(),
+                    },
+                )
+                .unwrap()
+        };
+        let single = run("single_root");
+        assert!(
+            single
+                .contains("Symphony has already checked the repository out at the workspace root"),
+            "{name}"
+        );
+        assert!(
+            single.contains("symphony:blocked run=i-1375-0-42 "),
+            "{name}"
+        );
+        // The marker value is rendered; the env var is only a cross-check.
+        assert!(!single.contains("run=$SYMPHONY_RUN_ID"), "{name}");
+        let legacy = run("legacy");
+        assert!(
+            !legacy.contains("Symphony has already checked the repository out"),
+            "{name}"
+        );
     }
 }

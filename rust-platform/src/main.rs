@@ -80,6 +80,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Configuration validated successfully");
 
+    // 6b. The workspace root must not live inside a git repository, or every
+    // Codex session would load that repository's AGENTS.md / skills
+    // (self-verification design §4.1). `workspace.root` is not hot-reloaded.
+    if let Err(e) = symphony_platform::workspace::root_guard::ensure_outside_git(
+        &service_config.workspace_root,
+        "workspace root",
+    )
+    .await
+    {
+        tracing::error!(error = %e, "workspace root check failed");
+        return Err(e.into());
+    }
+
     // 7. Construct PromptEngine from prompt template
     let prompt_template = if workflow.prompt_template.is_empty() {
         symphony_platform::prompt::DEFAULT_PROMPT.to_string()
@@ -140,6 +153,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             e
         })?;
+
+    // Drop E2E env files left by aborted runs. The testing worker shares this
+    // root, so directories of issues that are running elsewhere are kept.
+    symphony_platform::agent::validation::cleanup_e2e_idle(&service_config.workspace_root);
 
     // Startup workspace cleanup (SPEC Section 8.6)
     // In a full integration, terminal issue identifiers would come from the tracker.

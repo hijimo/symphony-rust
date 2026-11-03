@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::platform::{FetchOptions, IssueId, Platform};
+use crate::platform::{CommentId, FetchOptions, IssueId, Platform};
 
 use super::{BlockerRef, Tracker, TrackerError, TrackerIssue};
 
@@ -27,6 +27,16 @@ fn platform_error_to_tracker_error(e: crate::error::PlatformError) -> TrackerErr
         status,
         body: e.to_string(),
     }
+}
+
+fn parse_issue_id(issue_id: &str) -> Result<IssueId, TrackerError> {
+    issue_id
+        .parse::<u64>()
+        .map(IssueId)
+        .map_err(|_| TrackerError::ApiStatus {
+            status: 0,
+            body: format!("invalid issue_id: {issue_id}"),
+        })
 }
 
 fn normalize_tracker_state(state: &str) -> String {
@@ -161,13 +171,41 @@ impl Tracker for GitlabTrackerAdapter {
     }
 
     async fn set_workflow_state(&self, issue_id: &str, state: &str) -> Result<(), TrackerError> {
-        let id: u64 = issue_id.parse().map_err(|_| TrackerError::ApiStatus {
-            status: 0,
-            body: format!("invalid issue_id: {}", issue_id),
-        })?;
-
         self.platform
-            .set_workflow_state(IssueId(id), state)
+            .set_workflow_state(parse_issue_id(issue_id)?, state)
+            .await
+            .map_err(platform_error_to_tracker_error)
+    }
+
+    fn supports_workpad(&self) -> bool {
+        true
+    }
+
+    async fn fetch_workpad(&self, issue_id: &str) -> Result<Option<(u64, String)>, TrackerError> {
+        self.platform
+            .find_workpad_comment(parse_issue_id(issue_id)?)
+            .await
+            .map(|o| o.map(|(id, body)| (id.0, body)))
+            .map_err(platform_error_to_tracker_error)
+    }
+
+    async fn update_workpad(&self, comment_id: u64, body: &str) -> Result<(), TrackerError> {
+        self.platform
+            .update_comment(CommentId(comment_id), body)
+            .await
+            .map_err(platform_error_to_tracker_error)
+    }
+
+    async fn add_labels(&self, issue_id: &str, labels: &[String]) -> Result<(), TrackerError> {
+        self.platform
+            .add_labels(parse_issue_id(issue_id)?, labels)
+            .await
+            .map_err(platform_error_to_tracker_error)
+    }
+
+    async fn remove_labels(&self, issue_id: &str, labels: &[String]) -> Result<(), TrackerError> {
+        self.platform
+            .remove_labels(parse_issue_id(issue_id)?, labels)
             .await
             .map_err(platform_error_to_tracker_error)
     }

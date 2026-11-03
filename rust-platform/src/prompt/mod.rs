@@ -108,7 +108,46 @@ impl PromptEngine {
         max_turns: u32,
         repos: &[RepoContext],
     ) -> Result<String, PromptError> {
-        let globals = build_globals(issue, attempt, turn_number, max_turns, repos);
+        self.render_with_repos_ext(
+            issue,
+            attempt,
+            turn_number,
+            max_turns,
+            repos,
+            &RunGlobals::default(),
+        )
+    }
+
+    /// Like [`render_with_repos`](Self::render_with_repos) plus per-run
+    /// globals `run_id` and `workspace_layout` (self-verification design).
+    pub fn render_with_repos_ext(
+        &self,
+        issue: &IssueContext,
+        attempt: Option<u32>,
+        turn_number: u32,
+        max_turns: u32,
+        repos: &[RepoContext],
+        run: &RunGlobals,
+    ) -> Result<String, PromptError> {
+        let mut globals = build_globals(issue, attempt, turn_number, max_turns, repos);
+        globals.insert(
+            KString::from_static("run_id"),
+            LiquidValue::Scalar(run.run_id.clone().into()),
+        );
+        let layout = if run.workspace_layout.is_empty() {
+            if repos.is_empty() {
+                "legacy"
+            } else {
+                "multi_repo"
+            }
+            .to_string()
+        } else {
+            run.workspace_layout.clone()
+        };
+        globals.insert(
+            KString::from_static("workspace_layout"),
+            LiquidValue::Scalar(layout.into()),
+        );
 
         if turn_number > 1 {
             if let Some(ref cont_tmpl) = self.continuation_template {
@@ -155,6 +194,15 @@ pub struct BlockerContext {
     pub id: Option<String>,
     pub identifier: Option<String>,
     pub state: Option<String>,
+}
+
+/// Per-run prompt globals.
+#[derive(Debug, Clone, Default)]
+pub struct RunGlobals {
+    /// Symphony run id (also exported as `SYMPHONY_RUN_ID`).
+    pub run_id: String,
+    /// `single_root` / `legacy` / `multi_repo`.
+    pub workspace_layout: String,
 }
 
 /// One repository as seen by the prompt (design §6.1).
@@ -624,6 +672,27 @@ mod tests {
         // Strict mode: referencing repos in single-repo mode does not error.
         let engine = PromptEngine::compile("{{ primary_repo.path }}|{{ repos.size }}").unwrap();
         assert_eq!(engine.render(&issue, None, 1, 20).unwrap(), ".|1");
+    }
+
+    #[test]
+    fn run_globals_are_exposed() {
+        let engine = PromptEngine::compile("{{ run_id }} {{ workspace_layout }}").unwrap();
+        let out = engine
+            .render_with_repos_ext(
+                &make_test_issue(),
+                None,
+                1,
+                5,
+                &[],
+                &RunGlobals {
+                    run_id: "r-1".into(),
+                    workspace_layout: "single_root".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(out, "r-1 single_root");
+        let out = engine.render(&make_test_issue(), None, 1, 5).unwrap();
+        assert_eq!(out, " legacy");
     }
 
     #[test]

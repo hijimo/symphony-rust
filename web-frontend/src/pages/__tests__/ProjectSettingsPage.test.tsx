@@ -110,6 +110,79 @@ describe('ProjectSettingsPage', () => {
     });
   });
 
+  it('saves the validation gate switch with the testing config', async () => {
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      http.put('*/api/projects/:id', async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          success: true,
+          retCode: 'SUCCESS',
+          retMsg: 'ok',
+          data: {
+            id: 1,
+            name: 'My GitLab Project',
+            git_url: 'https://gitlab.com/a/b.git',
+            platform: 'gitlab',
+            namespace: 'a',
+            repo_name: 'b',
+            default_branch: 'main',
+            service_status: 'stopped',
+            testing_enabled: false,
+            testing_max_turns: 12,
+            validation_gate: true,
+          },
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderProjectSettings();
+    await waitFor(() => {
+      expect(screen.getByText('项目设置 - My GitLab Project')).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('tab', { name: 'Agent 配置' }));
+    expect(screen.getByText(/token 会出现在 Issue、AI 提示词和会话记录中/)).toBeInTheDocument();
+    const gate = screen.getByRole('checkbox', { name: '启用验证门禁' });
+    expect(gate).not.toBeChecked();
+    await user.click(gate);
+    const saves = screen.getAllByRole('button', { name: '保存' });
+    await user.click(saves[saves.length - 1]);
+    await waitFor(() => expect(body).not.toBeNull());
+    expect(body).toMatchObject({ validation_gate: true });
+  });
+
+  it('reads back a saved validation gate from GET', async () => {
+    server.use(
+      http.get('*/api/projects/:id', () =>
+        HttpResponse.json({
+          success: true,
+          retCode: 'SUCCESS',
+          retMsg: 'ok',
+          data: {
+            id: 1,
+            name: 'My GitLab Project',
+            gitUrl: 'https://gitlab.com/a/b.git',
+            platform: 'gitlab',
+            namespace: 'a',
+            repoName: 'b',
+            defaultBranch: 'main',
+            serviceStatus: 'stopped',
+            testingEnabled: true,
+            testingMaxTurns: 12,
+            validationGate: true,
+          },
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderProjectSettings();
+    await waitFor(() => {
+      expect(screen.getByText('项目设置 - My GitLab Project')).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('tab', { name: 'Agent 配置' }));
+    expect(screen.getByRole('checkbox', { name: '启用验证门禁' })).toBeChecked();
+  });
+
   it('related repos tab renders the editor', async () => {
     server.use(
       http.get('*/api/projects/:id/repos', () =>

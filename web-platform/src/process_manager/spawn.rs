@@ -174,6 +174,7 @@ pub async fn spawn_symphony(
             testing_enabled: project.testing_enabled,
             testing_max_turns: Some(project.testing_max_turns),
             repos,
+            validation_gate: project.validation_gate,
         };
         templates::render_template(&ctx)
     };
@@ -327,6 +328,7 @@ pub async fn spawn_test_symphony(
         testing_enabled: project.testing_enabled,
         testing_max_turns: Some(project.testing_max_turns),
         repos: vec![],
+        validation_gate: project.validation_gate,
     };
     let workflow_content = templates::render_test_template(&ctx);
 

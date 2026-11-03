@@ -141,6 +141,8 @@ pub struct Project {
     pub testing_service_pid: Option<i64>,
     pub testing_service_instance_id: Option<String>,
     pub testing_service_generation: i64,
+    /// Deterministic self-verification gate (rendered as `validation.gate`).
+    pub validation_gate: bool,
 }
 
 /// Data required to create a new project.
@@ -174,6 +176,7 @@ pub struct ProjectUpdate {
     pub codex_sandbox: Option<String>,
     pub testing_enabled: Option<bool>,
     pub testing_max_turns: Option<i64>,
+    pub validation_gate: Option<bool>,
 }
 
 /// Service status update payload.
@@ -254,6 +257,7 @@ pub struct UpdateProjectRequest {
     pub codex_sandbox: Option<String>,
     pub testing_enabled: Option<bool>,
     pub testing_max_turns: Option<i64>,
+    pub validation_gate: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

@@ -143,6 +143,12 @@ pub struct AgentSession {
     /// Workspace-relative writable directory (e.g. `docs/changes/12`).
     writable_rel: String,
     developer_instructions: String,
+    /// Prepended to the first turn of every new Codex thread (repository
+    /// AGENTS.md block, self-verification design §4.3).
+    first_turn_prefix: Option<String>,
+    /// Set when the current process started a fresh thread; consumed by the
+    /// next turn.
+    needs_prefix: std::sync::atomic::AtomicBool,
     config: AgentConfig,
     semaphore: Arc<Semaphore>,
     process: Mutex<Option<Process>>,
@@ -390,6 +396,10 @@ impl AgentSession {
         if thread_id.is_none() {
             let v = process.request("thread/start", base).await?;
             thread_id = extract_thread_id(&v);
+            // Fresh thread (including resume fallback): inject repository
+            // instructions into its first turn.
+            self.needs_prefix
+                .store(true, std::sync::atomic::Ordering::SeqCst);
         }
         let thread_id = thread_id.ok_or_else(|| {
             WebPlatformError::ExternalService("codex 未返回 thread id".to_string())
@@ -718,6 +728,17 @@ impl AgentSession {
             t.last_event = Some(Instant::now());
         }
         let thread_id = self.thread_id().unwrap_or_default();
+        let text = match &self.first_turn_prefix {
+            Some(prefix)
+                if self
+                    .needs_prefix
+                    .swap(false, std::sync::atomic::Ordering::SeqCst) =>
+            {
+                format!("{prefix}\n{text}")
+            }
+            _ => text.to_string(),
+        };
+        let text = text.as_str();
         let start = {
             let guard = self.process.lock().await;
             match guard.as_ref() {
@@ -838,6 +859,8 @@ pub struct SessionSpec {
     pub writable_rel: String,
     pub developer_instructions: String,
     pub thread_id: Option<String>,
+    /// See [`AgentSession::first_turn_prefix`].
+    pub first_turn_prefix: Option<String>,
 }
 
 impl AgentManager {
@@ -884,6 +907,8 @@ impl AgentManager {
             cwd: spec.cwd,
             writable_rel: spec.writable_rel,
             developer_instructions: spec.developer_instructions,
+            first_turn_prefix: spec.first_turn_prefix,
+            needs_prefix: std::sync::atomic::AtomicBool::new(false),
             config: self.config.lock().unwrap().clone(),
             semaphore: self.semaphore.clone(),
             process: Mutex::new(None),
