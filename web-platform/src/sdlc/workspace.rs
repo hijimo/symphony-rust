@@ -746,6 +746,46 @@ impl WorkspaceService {
         Ok(content_version(content.as_bytes()))
     }
 
+    /// Write raw bytes (uploaded attachment). Same rules as [`write_file`]:
+    /// writable directories only; refuses to replace an existing file unless
+    /// `overwrite`. Returns the new version.
+    pub async fn write_bytes(
+        &self,
+        spec: &WorkspaceSpec,
+        rel: &str,
+        bytes: &[u8],
+        overwrite: bool,
+        writable: &[String],
+    ) -> Result<String, WebPlatformError> {
+        if !Self::is_writable(writable, rel) {
+            return Err(WebPlatformError::ForbiddenWithReason(format!(
+                "{rel} 不在可写范围内"
+            )));
+        }
+        let path = self.resolve(spec, rel)?;
+        if let Ok(meta) = tokio::fs::symlink_metadata(&path).await {
+            if meta.is_dir() {
+                return Err(WebPlatformError::BadRequest(format!("{rel} 是目录")));
+            }
+            if !overwrite {
+                return Err(WebPlatformError::Conflict(format!("{rel} 已存在")));
+            }
+        }
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| WebPlatformError::Internal(e.to_string()))?;
+        }
+        let tmp = path.with_extension("symphony-tmp");
+        tokio::fs::write(&tmp, bytes)
+            .await
+            .map_err(|e| WebPlatformError::Internal(e.to_string()))?;
+        tokio::fs::rename(&tmp, &path)
+            .await
+            .map_err(|e| WebPlatformError::Internal(e.to_string()))?;
+        Ok(content_version(bytes))
+    }
+
     pub async fn search(
         &self,
         spec: &WorkspaceSpec,
