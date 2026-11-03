@@ -24,7 +24,7 @@ Symphony 目前覆盖 Playbook 的 **Build 后半段到 Merge**：Issue 进入 T
 | Design：spec.md | 无 | 整个阶段缺失 |
 | Build：plan.md（plan mode） | 计划写在 workpad 评论里，agent 自写自执行 | 没有“计划被接受前不实现”的闸门；计划不入库，无法与 diff 对照 |
 | Build：实现 | Codex / teamwork 在隔离工作区实现 | 基本具备 |
-| Test：自验证、verifier | Validation、Testing 阶段、teamwork reviewer | 基本具备 |
+| Test：自验证、verifier | Validation（仅提示词要求）；Testing 阶段已实现但未启用；teamwork reviewer 未接入 | 2026-11-02 修订：只有命令行测试在执行，API、E2E、截图证据缺失，见 [self-verification-and-agents-md.md](./self-verification-and-agents-md.md) |
 | Deploy：AI 审查 PR | 部分具备 | 不对照 spec / plan；没有 REVIEW.md |
 | Deploy：code owner 批准 | Human Review → Merging | 具备 |
 | Deploy：生产发布 | 不在 Symphony 范围 | 由目标项目 CI/CD 负责 |
