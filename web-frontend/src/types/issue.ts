@@ -24,6 +24,8 @@ export interface AIGenerateRequest {
   prompt: string;
   title?: string;
   context?: string;
+  /** Output template; `intent` returns an intent.md draft. Defaults to the issue format. */
+  template?: 'issue' | 'intent';
 }
 
 export interface IssueDetail {
