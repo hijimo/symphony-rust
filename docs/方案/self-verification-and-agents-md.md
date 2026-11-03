@@ -283,7 +283,7 @@ Draft 与合并：人批准即视为接受 workpad 中列出的失败、未验�
 - server request（approval、tool call）按 JSON-RPC `result` 回复（v2 协议），原样回写请求的 `id`（数字或字符串）；子线程发来的请求同样回复，避免挂起。
 - stall：`on_codex_update` 对所有事件都会刷新计时（`orchestrator/mod.rs:896`）。如果实测发现子线程通知不发到主连接，则为启用验证的项目调大 `stall_timeout_ms`（例如 900 秒），并确认 `turn_timeout_ms`（默认 1 小时）足够。
 
-**确定性检查（PR-3a，项目级开关 `validation_gate`，默认关闭）**：
+**确定性检查（PR-3a，项目级开关 `validation_gate`，默认打开，2026-11-03 需求方决定；最初设计为默认关闭）**：
 
 - 开关由 web-platform 渲染进 WORKFLOW front matter（`validation.gate: true|false`），rust-platform 启动时读取，不支持热重载。
 - 适用范围：多仓库和 single_root 单仓库。legacy 单仓库布局和 Linear tracker 固定跳过，在 workpad 注明「布局不支持确定性检查」。单仓库项目在 PR-2 上线后才能打开开关。
@@ -296,7 +296,7 @@ Draft 与合并：人批准即视为接受 workpad 中列出的失败、未验�
   3. runner 自己执行 `git diff --name-only origin/<base>...HEAD`，按 3.2.2 的规则算出必需的底线步骤，表中这些行都存在且结果为「通过」。
 - 不满足时：**不改变 Issue 状态**，加 `validation-missing` label，在 workpad 追加检查结果。不移回 active 状态，避免与编排器的重试形成循环。
 - 已知局限：Symphony 使用真人账号 token，workpad 评论无法区分 AI 和人写的；检查只能发现遗漏和不一致，不能防止 AI 伪造报告（需求方已接受提示词约束，第 6 节）。
-- 上线：开关默认关闭；PR-3b 的模板部署且 worker 重启后，再对项目逐个打开；`workflow_content` 为自定义内容的项目合并新章节后再打开。
+- 上线：开关默认打开（迁移 V020 把已有项目打开，新建项目写入 1）；需要时在项目设置中逐个关闭；`workflow_content` 为自定义内容的项目合并新章节后再打开。
 
 ### 3.6 Testing 状态
 

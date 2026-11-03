@@ -433,8 +433,8 @@ impl ProjectRepository for SqliteRepository {
         tokio::task::spawn_blocking(move || {
             let conn = pool.get()?;
             conn.execute(
-                "INSERT INTO projects (name, description, git_url, platform, platform_host, namespace, repo_name, default_branch, workflow_template, workflow_content, created_by)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO projects (name, description, git_url, platform, platform_host, namespace, repo_name, default_branch, workflow_template, workflow_content, created_by, validation_gate)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1)",
                 rusqlite::params![
                     project.name,
                     project.description,
