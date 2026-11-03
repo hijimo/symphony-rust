@@ -23,7 +23,9 @@ state, re-validation of baseline steps). Then:
    `gh pr checks --watch`). Do not change product code while landing: if a
    pipeline or a baseline step fails because of this change, write a
    `reason=validation` blocked marker as the workflow describes and move the
-   issue back to `Human Review`. Items the human accepted are not re-fixed.
+   issue back to `Human Review`. Items the human accepted (failed steps of the
+   last report and pipeline failures listed in the blocked brief) are not
+   re-fixed and do not block again.
 5. Do not merge while actionable review comments are unanswered.
 6. Merge:
    - GitLab: `glab mr merge <iid> --squash --yes --auto-merge=false`.

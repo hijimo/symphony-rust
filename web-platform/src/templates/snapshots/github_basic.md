@@ -63,7 +63,7 @@ Instructions:
 
 Work only in the provided repository copy. Do not touch any other path.
 {% if workspace_layout == "legacy" %}
-Clone the repository into the workspace root (`git clone <url> .`) or into `repo/`; Symphony reads the branch head from one of these two locations for the validation records.
+If neither the workspace root nor `repo/` is already a git checkout, clone the repository into `repo/` (never a second copy). Symphony reads the branch head only from the root (alias `primary`) or `repo/` (alias `repo`).
 {% endif %}{% if workspace_layout == "single_root" %}
 Symphony has already checked the repository out at the workspace root (detached at `origin/dev`). Do not clone it again and do not change its remote; create your working branch from `origin/dev`.
 If the workpad contains `### Symphony notice: instruction files changed`, copy that notice into the PR description.
@@ -294,7 +294,7 @@ Baseline steps (never skipped; a failure means the issue cannot be handed off as
 Run `git diff --name-only origin/<base>...HEAD` in each writable repository.
 - Docs: `*.md`, `docs/**` (except `*.sql`) -> no steps, but still write the report with one row per changed repository, for example `| primary | <head> | 纯文档 | — | — | 跳过 | docs only |`.
 - Build/dependency config: `package.json`, lock files, `vite.config.*`, `tsconfig*`, `eslint*`, `*.csproj`, `*.sln*`, `Directory.*.props`, `settings/**`, `appsettings*.json`, CI config -> all baseline steps of every stack the repository has (frontend and backend when both are present).
-- Tests: `**/__tests__/**`, `**/*.test.*`, `**/*.spec.*`, `e2e/**`, `**/*.Test/**`, `**/*.Tests/**` -> run them, plus F1 F3 (frontend) or B1 B5 (backend).
+- Tests: `**/__tests__/**`, `**/*.test.*`, `**/*.spec.*`, `e2e/**`, `**/*.Test/**`, `**/*.Tests/**` -> run them, plus F1 F3 for a frontend stack and B1 B5 for a backend stack (both when the repository has both).
 - Frontend style (`*.css`, `*.less`, `*.scss`) -> F1 F2 F3, F5 if E2E data exists.
 - Frontend logic -> F1 F2 F3 F4, F5 if E2E data exists.
 - Backend logic -> B1 B2 B5, B3 if storage is touched; backend API changes also B4 when it can be started safely.
@@ -422,7 +422,7 @@ Symphony turns it into an env file and exposes only its path as `$SYMPHONY_E2E_E
 {% else %}5. When the issue is in `Merging`:
    - If the issue has the `validation-blocked` label, move it back to `Human Review` with a short note and stop. A human removing that label means the blocked items are accepted.
    - If the PR is a draft, mark it ready first: `gh pr ready <pr_number>`.
-   - After merging `origin/dev` or any new commit, re-run the baseline steps. If a human removed the `validation-blocked` label (or a human comment accepts the blocked items), the steps reported `失败` in the last report before that are accepted: only steps that passed in that report must still pass. Otherwise every baseline step must pass. If a step that must pass fails, do not fix and do not merge: write a `reason=validation` blocked marker (after the last push) and move the issue to `Human Review`.
+   - After merging `origin/dev` or any new commit, re-run the baseline steps. If a human removed the `validation-blocked` label (the workpad still has a `symphony:blocked` marker but the issue has no such label) or a human comment accepts the blocked items, the steps reported `失败` in the last report before that, and pipeline failures listed in the blocked brief, are accepted: only steps that passed in that report must still pass. Otherwise every baseline step must pass. If a step that must pass fails, do not fix and do not merge: write a `reason=validation` blocked marker (after the last push) and move the issue to `Human Review`.
    - Then follow the `symphony-land` skill in a loop until the PR is merged. Do not call `gh pr merge` directly.
 {% endif %}6. After merge is complete, move the issue to `Done`:
    ```bash

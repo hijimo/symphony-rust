@@ -802,10 +802,14 @@ impl AgentRunner {
             }
             return; // exempt from the gate
         }
-        if heads.len() < repos.len() && markers.iter().any(|m| m.run == run_id) {
-            // This run wrote a marker but Symphony cannot read the HEAD of
-            // every writable repository (for example a legacy workspace
-            // cloned into another directory): never drop it silently.
+        // A marker that is not effective must not vanish silently: either
+        // this run wrote one Symphony cannot verify (HEAD of a writable
+        // repository unreadable, heads or run id wrong), or - for runs that
+        // started in development, whose old markers were cleared before the
+        // agent started - any remaining active marker was written this run.
+        let unverifiable = (heads.len() < repos.len() && markers.iter().any(|m| m.run == run_id))
+            || (starts_development(&issue.state) && !markers.is_empty());
+        if unverifiable {
             tracing::warn!(issue_id = %issue.id, "blocked marker of this run cannot be verified; flagging");
             let _ = refresher
                 .add_labels(

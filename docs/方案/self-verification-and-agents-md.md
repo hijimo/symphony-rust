@@ -506,3 +506,5 @@ See `aigc-test/AGENTS.md` for reference only.
 - GitLab 的 workpad CommentId 由 `issue_iid * 1_000_000 + note_id` 组合而成，note id 超过 100 万时会与相邻 Issue 冲突；本机 GitLab 当前 note id 远低于该值。
 - run 被 abort（进程被杀）时 E2E env 文件留到下次 rust-platform 启动时清理。
 - `workflow_content` 为自定义内容的项目不会获得新章节，打开 `validation_gate` 前需人工合并模板。
+- Gitea 自验证 label 在启动时创建；token 无创建 label 权限、或仓库 label 超过 30 个（`list_labels` 分页参数与 Gitea 不符，原有问题）时可能创建失败，此时阻塞标记只记 warn，Merging 只能靠人查看 workpad。本机当前没有 Gitea 项目。
+- 起始为 Todo / In Progress / Rework 的 run 结束时，workpad 中仍有未改写的阻塞标记但没有一个本次有效（heads、run id 写错），加 `validation-missing` 提示人工检查。
