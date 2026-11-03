@@ -26,6 +26,8 @@ async fn test_create_project_success() {
     assert_eq!(body["data"]["repoName"], "my-repo");
     assert_eq!(body["data"]["name"], "my-repo");
     assert_eq!(body["data"]["myRole"], "owner");
+    // The validation gate is on for new projects.
+    assert_eq!(body["data"]["validationGate"], true);
     assert!(body["data"]["id"].as_i64().unwrap() > 0);
 }
 
