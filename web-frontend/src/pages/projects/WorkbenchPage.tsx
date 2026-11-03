@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Alert, Box, Button, CircularProgress, Snackbar, Tab, Tabs, Typography, useMediaQuery } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import { Group, Panel, Separator } from 'react-resizable-panels';
@@ -16,13 +16,23 @@ export default function WorkbenchPage() {
   const projectId = Number(id);
   const issueIid = Number(iid);
   const navigate = useNavigate();
-  const { init, dispose, loading, error, flow, notices, dismissNotice } = useWorkbenchStore();
+  const { init, dispose, loading, error, flow, notices, dismissNotice, pushNotice } = useWorkbenchStore();
   const [selection, setSelection] = useState<SelectionRef | null>(null);
+  const location = useLocation();
+  const uploadErrors = (location.state as { uploadErrors?: string[] } | null)?.uploadErrors;
 
   useEffect(() => {
     if (projectId && issueIid) void init(projectId, issueIid);
     return () => dispose();
   }, [projectId, issueIid, init, dispose]);
+
+  // Attachments chosen on "新建需求" that failed to upload after creation.
+  useEffect(() => {
+    if (uploadErrors?.length) {
+      pushNotice('error', `附件上传失败，请在左侧文件树重新上传：${uploadErrors.join('；')}`);
+      navigate('.', { replace: true, state: null });
+    }
+  }, [uploadErrors, pushNotice, navigate]);
 
   // Warn before closing the tab with unsaved edits (verify B I1).
   useEffect(() => {
