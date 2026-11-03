@@ -15,7 +15,12 @@ import { useWorkbenchStore } from '../../store/workbenchStore';
 // test here; replace the panels with plain containers.
 vi.mock('react-resizable-panels', () => {
   const Box = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>;
-  return { Group: Box, Panel: Box, Separator: () => <div /> };
+  return {
+    Group: Box,
+    Panel: Box,
+    Separator: () => <div />,
+    useDefaultLayout: () => ({ defaultLayout: undefined, onLayoutChanged: () => undefined }),
+  };
 });
 
 const INTENT = `docs/changes/${IID}/intent.md`;
