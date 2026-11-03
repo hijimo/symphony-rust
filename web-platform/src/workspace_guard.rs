@@ -36,6 +36,7 @@ pub async fn ensure_outside_git(root: &Path, what: &str) -> Result<(), String> {
         .env("LC_ALL", "C")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_CEILING_DIRECTORIES")
         .output()
         .await
         .map_err(|e| format!("cannot verify {what}: failed to run git: {e}"))?;

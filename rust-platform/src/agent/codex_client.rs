@@ -179,6 +179,8 @@ fn server_request_response(event: &serde_json::Value) -> Option<serde_json::Valu
             "contentItems": [{"type": "inputText", "text": "tool not available in Symphony"}]
         }),
         "item/tool/requestUserInput" => serde_json::json!({ "answers": {} }),
+        // MCP servers asking the user for input: nobody is there to answer.
+        "mcpServer/elicitation/request" => serde_json::json!({ "action": "decline" }),
         _ => {
             return Some(serde_json::json!({
                 "jsonrpc": "2.0",
@@ -358,6 +360,12 @@ mod tests {
         assert_eq!(r["id"], "abc");
         assert_eq!(r["result"]["success"], false);
         assert_eq!(r["result"]["contentItems"][0]["type"], "inputText");
+
+        let elicit = json!({"id":9,"method":"mcpServer/elicitation/request","params":{}});
+        assert_eq!(
+            server_request_response(&elicit).unwrap()["result"]["action"],
+            "decline"
+        );
 
         let unknown = json!({"id":7,"method":"account/chatgptAuthTokens/refresh","params":{}});
         let r = server_request_response(&unknown).unwrap();

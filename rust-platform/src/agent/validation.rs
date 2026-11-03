@@ -449,15 +449,35 @@ pub fn write_e2e_env(
     Ok(Some((file, Vec::new())))
 }
 
-/// Remove E2E run directories that do not belong to a running run.
+/// Remove every E2E run directory (process start: no run is active).
 pub fn cleanup_e2e(workspace_root: &Path, keep: &[&str]) {
+    cleanup_e2e_matching(workspace_root, keep, |_| true);
+}
+
+/// Remove the E2E directory of one run.
+pub fn remove_e2e_run(workspace_root: &Path, run_id: &str) {
+    let _ = std::fs::remove_dir_all(e2e_root(workspace_root).join(run_id));
+}
+
+/// Remove stale E2E directories left by earlier runs of the same issue
+/// (aborted / crashed). Run ids start with `<issue_id_path_key>-`, and an
+/// issue has at most one active run (issue lock), so this never touches
+/// other issues' running directories.
+pub fn cleanup_e2e_for_issue(workspace_root: &Path, issue_key: &str, keep_run: &str) {
+    let prefix = format!("{issue_key}-");
+    cleanup_e2e_matching(workspace_root, &[keep_run], |name| {
+        name.starts_with(&prefix)
+    });
+}
+
+fn cleanup_e2e_matching(workspace_root: &Path, keep: &[&str], select: impl Fn(&str) -> bool) {
     let root = e2e_root(workspace_root);
     let Ok(entries) = std::fs::read_dir(&root) else {
         return;
     };
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
-        if !keep.contains(&name.as_str()) {
+        if select(&name) && !keep.contains(&name.as_str()) {
             let _ = std::fs::remove_dir_all(e.path());
         }
     }
@@ -669,6 +689,15 @@ trailing text
         assert!(write_e2e_env(tmp.path(), "run-3", Some("no e2e"))
             .unwrap()
             .is_none());
+
+        // Per-issue sweep keeps other issues' runs.
+        std::fs::create_dir_all(e2e_root(tmp.path()).join("i-31-0-1")).unwrap();
+        std::fs::create_dir_all(e2e_root(tmp.path()).join("i-32-0-9")).unwrap();
+        cleanup_e2e_for_issue(tmp.path(), "i-31", "i-31-0-2");
+        assert!(!e2e_root(tmp.path()).join("i-31-0-1").exists());
+        assert!(e2e_root(tmp.path()).join("i-32-0-9").exists());
+        remove_e2e_run(tmp.path(), "i-32-0-9");
+        assert!(!e2e_root(tmp.path()).join("i-32-0-9").exists());
 
         std::fs::create_dir_all(e2e_root(tmp.path()).join("stale")).unwrap();
         cleanup_e2e(tmp.path(), &["run-1"]);

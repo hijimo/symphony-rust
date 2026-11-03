@@ -137,7 +137,11 @@ fn insert_validation_gate(rendered: &str) -> String {
 /// starts (self-verification design §4.2). Other platforms keep the
 /// agent-cloned layout for now.
 fn build_single_repo_section(ctx: &WorkflowTemplateContext) -> String {
-    if !ctx.repos.is_empty() || ctx.platform != Platform::GitLab || ctx.project_slug.is_empty() {
+    if !ctx.repos.is_empty()
+        || ctx.platform != Platform::GitLab
+        || ctx.project_slug.trim().is_empty()
+        || ctx.default_branch.trim().is_empty()
+    {
         return String::new();
     }
     if ctx

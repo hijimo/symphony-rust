@@ -22,7 +22,8 @@ state, re-validation of baseline steps). Then:
    fixed; items the human accepted in the workpad are not re-fixed.
 5. Do not merge while actionable review comments are unanswered.
 6. Merge:
-   - GitLab: `glab mr merge <iid> --squash --yes`.
-   - GitHub: `gh pr merge --squash`.
+   - GitLab: `glab mr merge <iid> --squash --yes --auto-merge=false`.
+   - GitHub: `gh pr merge --squash` (without `--auto`).
+   - Gitea: `gitea_api POST "${REPO_PATH}/pulls/<index>/merge" -d '{"Do":"squash"}'`.
    If mergeability is unknown, wait and check again; never enable auto-merge.
 7. Report the merged request URL.

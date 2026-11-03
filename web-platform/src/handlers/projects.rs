@@ -41,6 +41,14 @@ pub struct ProjectResponse {
     pub created_by: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
+    pub hooks_after_create: Option<String>,
+    pub hooks_before_remove: Option<String>,
+    pub codex_command: Option<String>,
+    pub codex_approval_policy: Option<String>,
+    pub codex_sandbox: Option<String>,
+    pub testing_enabled: bool,
+    pub testing_max_turns: i64,
+    pub validation_gate: bool,
 }
 
 impl ProjectResponse {
@@ -65,6 +73,14 @@ impl ProjectResponse {
             created_by: project.created_by,
             created_at: project.created_at.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             updated_at: project.updated_at.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            hooks_after_create: project.hooks_after_create,
+            hooks_before_remove: project.hooks_before_remove,
+            codex_command: project.codex_command,
+            codex_approval_policy: project.codex_approval_policy,
+            codex_sandbox: project.codex_sandbox,
+            testing_enabled: project.testing_enabled,
+            testing_max_turns: project.testing_max_turns,
+            validation_gate: project.validation_gate,
         }
     }
 

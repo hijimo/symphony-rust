@@ -103,6 +103,75 @@ pub async fn current_heads(repos: &[CheckedRepo]) -> BTreeMap<String, String> {
     out
 }
 
+/// Instruction files Codex loads by itself in a single_root workspace.
+pub const INSTRUCTION_PATHS: [&str; 3] = ["AGENTS.md", "AGENTS.override.md", ".codex"];
+
+/// Heading of the workpad notice written when the branch changes
+/// instruction files (design §4.3, single-repo working-branch guard).
+pub const INSTRUCTION_NOTICE_HEADING: &str = "### Symphony notice: instruction files changed";
+
+/// Instruction files (`AGENTS.md`, `AGENTS.override.md`, `.codex/`) changed
+/// by this branch: `merge-base HEAD origin/<base>` compared with the working
+/// tree, so uncommitted and untracked changes count too. Changes that only
+/// exist on the default branch are not reported. `Err` when git cannot
+/// answer (for example `origin/<base>` is missing).
+pub async fn instruction_changes(dir: &Path, default_branch: &str) -> Result<Vec<String>, String> {
+    let base = format!("origin/{default_branch}");
+    let merge_base = git_out(dir, &["merge-base", "HEAD", &base])
+        .await
+        .ok_or_else(|| format!("git merge-base HEAD {base} failed"))?;
+    let mut args = vec!["diff", "--name-only", merge_base.as_str(), "--"];
+    args.extend(INSTRUCTION_PATHS);
+    let tracked = git_out(dir, &args)
+        .await
+        .ok_or_else(|| "git diff of instruction files failed".to_string())?;
+    let mut args = vec!["ls-files", "--others", "--exclude-standard", "--"];
+    args.extend(INSTRUCTION_PATHS);
+    let untracked = git_out(dir, &args)
+        .await
+        .ok_or_else(|| "git ls-files of instruction files failed".to_string())?;
+    let mut files: Vec<String> = tracked
+        .lines()
+        .chain(untracked.lines())
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
+/// Workpad body with the instruction-file notice set to `files`; `None`
+/// when the body already carries exactly this notice. An existing notice
+/// is replaced (it is always the last section Symphony writes).
+pub fn with_instruction_notice(body: &str, files: &[String]) -> Option<String> {
+    let notice = format!(
+        "{INSTRUCTION_NOTICE_HEADING}\nThis branch changes repository instruction files; \
+         reviewers must check them closely. Copy this notice into the MR description.\n{}\n",
+        files
+            .iter()
+            .map(|f| format!("- `{f}`"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let base = match body.find(INSTRUCTION_NOTICE_HEADING) {
+        Some(i) => {
+            let rest = &body[i + INSTRUCTION_NOTICE_HEADING.len()..];
+            let end = rest
+                .find("\n### ")
+                .map(|j| i + INSTRUCTION_NOTICE_HEADING.len() + j);
+            if body[i..end.unwrap_or(body.len())].trim_end() == notice.trim_end() {
+                return None;
+            }
+            let tail = end.map(|e| &body[e + 1..]).unwrap_or("");
+            format!("{}{}", &body[..i], tail)
+        }
+        None => body.to_string(),
+    };
+    Some(format!("{}\n\n{notice}", base.trim_end()))
+}
+
 /// Outcome of the deterministic gate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateOutcome {
@@ -131,18 +200,23 @@ where
     for repo in repos {
         let base = format!("origin/{}", repo.default_branch);
         let range = format!("{base}...HEAD");
-        let changed: Vec<String> = git_out(&repo.dir, &["diff", "--name-only", &range])
-            .await
-            .map(|s| {
-                s.lines()
-                    .map(str::to_string)
-                    .filter(|l| !l.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
-        let status = git_out(&repo.dir, &["status", "--porcelain"])
-            .await
-            .unwrap_or_default();
+        let Some(diff) = git_out(&repo.dir, &["diff", "--name-only", &range]).await else {
+            // Never treat "git could not answer" as "nothing changed".
+            problems.push(format!(
+                "{}: cannot diff against {base} (missing ref or git error)",
+                repo.alias
+            ));
+            continue;
+        };
+        let changed: Vec<String> = diff
+            .lines()
+            .map(str::to_string)
+            .filter(|l| !l.is_empty())
+            .collect();
+        let Some(status) = git_out(&repo.dir, &["status", "--porcelain"]).await else {
+            problems.push(format!("{}: git status failed", repo.alias));
+            continue;
+        };
         if changed.is_empty() && status.is_empty() {
             continue; // untouched repository: not pushed, not checked
         }
@@ -285,6 +359,19 @@ mod tests {
             gate_check("nothing", &repo(&ws), fetch).await,
             GateOutcome::Failed(_)
         ));
+        // A missing base ref is a problem, not "untouched".
+        let mut r = repo(&ws);
+        r[0].default_branch = "missing".into();
+        let GateOutcome::Failed(p) = gate_check(
+            "## Codex Workpad\n<!-- symphony:validation round=1 -->\n",
+            &r,
+            fetch,
+        )
+        .await
+        else {
+            panic!()
+        };
+        assert!(p.iter().any(|x| x.contains("cannot diff")), "{p:?}");
     }
 
     #[tokio::test]
@@ -346,6 +433,59 @@ mod tests {
             panic!()
         };
         assert!(p.iter().any(|x| x.contains("uncommitted")), "{p:?}");
+    }
+
+    #[tokio::test]
+    async fn instruction_changes_only_reports_this_branch() {
+        let (_t, ws) = setup();
+        let seed = ws.parent().unwrap().join("seed");
+        git(&ws, &["checkout", "-q", "-b", "issue-1", "origin/main"]);
+        assert!(instruction_changes(&ws, "main").await.unwrap().is_empty());
+
+        // A change that lands on the default branch only is not reported.
+        std::fs::write(seed.join("AGENTS.md"), "upstream").unwrap();
+        git(&seed, &["add", "."]);
+        git(&seed, &["commit", "-qm", "upstream"]);
+        let origin = ws.parent().unwrap().join("origin.git");
+        git(
+            &seed,
+            &["push", "-q", origin.to_str().unwrap(), "HEAD:main"],
+        );
+        git(&ws, &["fetch", "-q", "origin"]);
+        assert!(instruction_changes(&ws, "main").await.unwrap().is_empty());
+
+        // Committed, uncommitted and untracked branch changes are reported.
+        std::fs::write(ws.join("AGENTS.md"), "mine").unwrap();
+        git(&ws, &["add", "AGENTS.md"]);
+        git(&ws, &["commit", "-qm", "c"]);
+        std::fs::create_dir_all(ws.join(".codex")).unwrap();
+        std::fs::write(ws.join(".codex/config.toml"), "x").unwrap();
+        std::fs::write(ws.join("AGENTS.override.md"), "y").unwrap();
+        assert_eq!(
+            instruction_changes(&ws, "main").await.unwrap(),
+            vec![
+                ".codex/config.toml".to_string(),
+                "AGENTS.md".to_string(),
+                "AGENTS.override.md".to_string()
+            ]
+        );
+        assert!(instruction_changes(&ws, "missing").await.is_err());
+    }
+
+    #[test]
+    fn instruction_notice_is_idempotent_and_replaced() {
+        let files = vec!["AGENTS.md".to_string()];
+        let once = with_instruction_notice("## Codex Workpad\nnotes", &files).unwrap();
+        assert!(once.contains(INSTRUCTION_NOTICE_HEADING) && once.contains("`AGENTS.md`"));
+        assert!(with_instruction_notice(&once, &files).is_none());
+        let more = vec!["AGENTS.md".to_string(), ".codex/x".to_string()];
+        let twice = with_instruction_notice(&once, &more).unwrap();
+        assert_eq!(twice.matches(INSTRUCTION_NOTICE_HEADING).count(), 1);
+        assert!(twice.contains("`.codex/x`") && twice.starts_with("## Codex Workpad\nnotes"));
+        // A later section written after the notice is kept.
+        let with_tail = format!("{once}\n### Symphony validation gate\n- p\n");
+        let r = with_instruction_notice(&with_tail, &more).unwrap();
+        assert!(r.contains("### Symphony validation gate") && r.contains("`.codex/x`"));
     }
 
     #[tokio::test]

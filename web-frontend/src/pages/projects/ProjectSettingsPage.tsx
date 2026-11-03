@@ -468,7 +468,11 @@ export default function ProjectSettingsPage() {
               </Typography>
               <TextField
                 label="after_create"
-                helperText="Agent workspace 创建后执行的脚本（如 git clone、依赖安装）"
+                helperText={
+                  project?.platform === 'gitlab'
+                    ? 'Agent workspace 创建后执行的脚本（如依赖安装）。GitLab 项目的仓库由 Symphony 检出到工作区根目录，这里不要再 git clone'
+                    : 'Agent workspace 创建后执行的脚本（如 git clone、依赖安装）'
+                }
                 value={hooksAfterCreate}
                 onChange={(e) => setHooksAfterCreate(e.target.value)}
                 fullWidth

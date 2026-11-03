@@ -296,7 +296,15 @@ impl AgentRunner {
         specs: &[RepoSpec],
         run_id: &str,
         service_instance_id: &str,
-    ) -> Result<(WorkspaceRunLease, RepoCheckoutContext, Vec<RepoContext>), AgentError> {
+    ) -> Result<
+        (
+            WorkspaceRunLease,
+            RepoCheckoutContext,
+            Vec<RepoContext>,
+            std::collections::BTreeSet<String>,
+        ),
+        AgentError,
+    > {
         let ctx = self.checkout_context(issue);
         let ping = self.activity_ping();
         let (lease, mut state) = self
@@ -344,7 +352,14 @@ impl AgentRunner {
         }
 
         let contexts = repo_contexts(specs, &state.repos);
-        Ok((lease, ctx, contexts))
+        // Repositories whose refresh failed this run (stale `origin/<base>`).
+        let stale = state
+            .repos
+            .iter()
+            .filter(|(_, r)| r.last_error.is_some())
+            .map(|(alias, _)| alias.clone())
+            .collect();
+        Ok((lease, ctx, contexts, stale))
     }
 
     /// Execute one complete worker attempt (SPEC Section 16.5).
@@ -394,6 +409,7 @@ impl AgentRunner {
             specs.clear();
         }
         let single_spec = service_config.workspace_single_repo.clone();
+        let mut stale_repos = std::collections::BTreeSet::new();
         let (lease, multi, layout) = if specs.is_empty() {
             let single_root = match &single_spec {
                 Some(spec) => {
@@ -429,9 +445,10 @@ impl AgentRunner {
                 }
             }
         } else {
-            let (lease, ctx, repos) = self
+            let (lease, ctx, repos, stale) = self
                 .prepare_multi_repo(&issue, &specs, &run_id, &service_instance_id)
                 .await?;
+            stale_repos = stale;
             (lease, Some((ctx, repos)), WorkspaceLayout::MultiRepo)
         };
         let repo_contexts: Vec<RepoContext> =
@@ -454,8 +471,10 @@ impl AgentRunner {
         let single_default = single_spec.as_ref().map(|s| s.default_branch.as_str());
         let checked = post_run::writable_repos(&ws.path, layout, &repo_contexts, single_default);
         self.pre_run_cleanup(&issue, &state_refresher).await;
+        self.instruction_guard(&issue, layout, &checked, &state_refresher)
+            .await;
         let root = self.workspace_mgr.root().to_path_buf();
-        validation::cleanup_e2e(&root, &[]);
+        validation::cleanup_e2e_for_issue(&root, &lease.issue_id_path_key, &run_id);
         let mut env = vec![("SYMPHONY_RUN_ID".to_string(), run_id.clone())];
         match validation::write_e2e_env(&root, &run_id, issue.description.as_deref()) {
             Ok(Some((path, problems))) if problems.is_empty() => {
@@ -479,6 +498,7 @@ impl AgentRunner {
                 &repo_contexts,
                 &issue,
                 single_spec.as_ref(),
+                &stale_repos,
             )
             .await;
 
@@ -502,7 +522,7 @@ impl AgentRunner {
                     "failed to start codex client"
                 );
                 self.workspace_mgr.run_after_run(&ws.path).await;
-                validation::cleanup_e2e(&root, &[]);
+                validation::remove_e2e_run(&root, &run_id);
                 return Err(AgentError::Codex(e));
             }
         };
@@ -530,7 +550,7 @@ impl AgentRunner {
         // 5. Stop client and run after_run hook
         client.stop().await;
         self.workspace_mgr.run_after_run(&ws.path).await;
-        validation::cleanup_e2e(&root, &[]);
+        validation::remove_e2e_run(&root, &run_id);
 
         // 5b. Read-only integrity check *after* the agent ran (design §5.3).
         if let Some((ctx, _)) = &multi {
@@ -554,6 +574,9 @@ impl AgentRunner {
                 return Err(AgentError::ReadOnlyViolation(violations.join("; ")));
             }
         }
+
+        self.instruction_guard(&issue, layout, &checked, &state_refresher)
+            .await;
 
         // 5c. Blocked-marker recognition and the optional validation gate
         // (design §3.5). Runs for every outcome, including cancelled runs.
@@ -603,17 +626,69 @@ impl AgentRunner {
         if let Err(e) = refresher.remove_labels(&issue.id, &labels).await {
             tracing::warn!(issue_id = %issue.id, error = %e, "failed to remove self-verification labels");
         }
+        // If old blocked markers cannot be cleared they could exempt this
+        // run from the gate, so flag the issue instead (design §3.5).
+        let flag_missing = || async {
+            let _ = refresher
+                .add_labels(
+                    &issue.id,
+                    &[validation::LABEL_VALIDATION_MISSING.to_string()],
+                )
+                .await;
+        };
         match refresher.fetch_workpad(&issue.id).await {
             Ok(Some((comment_id, body))) => {
                 if let Some(cleared) = validation::clear_blocked_markers(&body) {
                     if let Err(e) = refresher.update_workpad(comment_id, &cleared).await {
                         tracing::warn!(issue_id = %issue.id, error = %e, "failed to clear blocked markers");
+                        flag_missing().await;
                     }
                 }
             }
             Ok(None) => {}
             Err(e) => {
-                tracing::warn!(issue_id = %issue.id, error = %e, "failed to read workpad at run start")
+                tracing::warn!(issue_id = %issue.id, error = %e, "failed to read workpad at run start");
+                flag_missing().await;
+            }
+        }
+    }
+
+    /// Single-repo working-branch guard (design §4.3): in single_root Codex
+    /// loads `AGENTS.md` / `.codex/` from the working tree, which the agent
+    /// can edit. Changes introduced by this branch are never reverted; they
+    /// are flagged in the workpad so reviewers check them.
+    async fn instruction_guard(
+        &self,
+        issue: &AgentIssue,
+        layout: WorkspaceLayout,
+        repos: &[post_run::CheckedRepo],
+        refresher: &Arc<dyn IssueStateRefresher>,
+    ) {
+        if layout != WorkspaceLayout::SingleRoot || !refresher.supports_workpad() {
+            return;
+        }
+        let Some(repo) = repos.first() else { return };
+        let files = match post_run::instruction_changes(&repo.dir, &repo.default_branch).await {
+            Ok(f) if f.is_empty() => return,
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(issue_id = %issue.id, error = %e, "instruction-file guard skipped");
+                return;
+            }
+        };
+        tracing::warn!(issue_id = %issue.id, files = ?files, "branch changes instruction files");
+        match refresher.fetch_workpad(&issue.id).await {
+            Ok(Some((comment_id, body))) => {
+                if let Some(updated) = post_run::with_instruction_notice(&body, &files) {
+                    if let Err(e) = refresher.update_workpad(comment_id, &updated).await {
+                        tracing::warn!(issue_id = %issue.id, error = %e, "failed to write instruction-file notice");
+                    }
+                }
+            }
+            // No workpad yet: the agent creates it; the next check writes the notice.
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(issue_id = %issue.id, error = %e, "failed to read workpad for instruction-file notice")
             }
         }
     }
@@ -627,6 +702,7 @@ impl AgentRunner {
         repos: &[RepoContext],
         issue: &AgentIssue,
         single: Option<&crate::config::service_config::SingleRepoSpec>,
+        stale: &std::collections::BTreeSet<String>,
     ) -> Option<String> {
         let sources: Vec<repo_instructions::RepoInstructionSource> = match layout {
             WorkspaceLayout::SingleRoot => return None,
@@ -637,6 +713,7 @@ impl AgentRunner {
                     slug: r.slug.clone(),
                     writable: r.writable,
                     default_branch: r.default_branch.clone(),
+                    refreshed: !stale.contains(&r.alias),
                 })
                 .collect(),
             WorkspaceLayout::Legacy => {
@@ -647,7 +724,7 @@ impl AgentRunner {
                 }
                 let spec = single?;
                 let ctx = self.checkout_context(issue);
-                if let Err(e) = crate::workspace::repos::refresh_legacy_repo(
+                let refreshed = match crate::workspace::repos::refresh_legacy_repo(
                     &ctx,
                     &workspace.join("repo"),
                     &spec.slug,
@@ -655,13 +732,18 @@ impl AgentRunner {
                 )
                 .await
                 {
-                    tracing::warn!(error = %e, "legacy repo/: refreshing default branch failed");
-                }
+                    Ok(_) => true,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "legacy repo/: refreshing default branch failed");
+                        false
+                    }
+                };
                 vec![repo_instructions::RepoInstructionSource {
                     path: "repo".to_string(),
                     slug: spec.slug.clone(),
                     writable: true,
                     default_branch: spec.default_branch.clone(),
+                    refreshed,
                 }]
             }
         };

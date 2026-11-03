@@ -403,8 +403,8 @@ impl ServiceConfig {
         )?;
 
         let workspace_single_repo = match (
-            get_optional_string(&workspace, "slug"),
-            get_optional_string(&workspace, "default_branch"),
+            get_optional_string(&workspace, "slug").filter(|v| !v.trim().is_empty()),
+            get_optional_string(&workspace, "default_branch").filter(|v| !v.trim().is_empty()),
         ) {
             (Some(slug), Some(branch)) if !slug.is_empty() && !branch.is_empty() => {
                 if !workspace_repos.is_empty() {

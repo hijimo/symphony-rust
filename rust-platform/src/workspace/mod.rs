@@ -319,7 +319,11 @@ impl WorkspaceManager {
                     reason: "workspace_multi_repo_not_migrated".to_string(),
                 });
             }
-            if metadata.schema_version == 3 {
+            // A ready single_root workspace (schema 3) can be reused by a
+            // worker without checkout config, e.g. the testing agent whose
+            // workflow has no `workspace.slug`. Unfinished ones still need
+            // the checkout config to be re-entered.
+            if metadata.schema_version == 3 && metadata.init_status != "ready" {
                 return Err(WorkspaceError::ManualRecoveryRequired {
                     reason: "workspace_single_root_requires_checkout_config".to_string(),
                 });
@@ -830,6 +834,9 @@ impl WorkspaceManager {
                         return Err(e);
                     }
                     metadata.after_create_fingerprint = Some(script_fingerprint(script));
+                    // Persist right away: a crash before `ready` must not
+                    // run a non-idempotent after_create a second time.
+                    write_workspace_metadata(&metadata_path, metadata.clone()).await?;
                 }
             }
             metadata.init_status = "ready".to_string();

@@ -22,7 +22,14 @@ pub enum GitProbe {
 
 /// Nearest existing ancestor of `path` (the path itself when it exists).
 fn nearest_existing(path: &Path) -> Option<PathBuf> {
-    let mut cur = Some(path);
+    // Resolve relative roots against the process cwd first, otherwise
+    // `parent()` runs out at "" without reaching an existing directory.
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let mut cur = Some(abs.as_path());
     while let Some(p) = cur {
         if p.exists() {
             return Some(p.canonicalize().unwrap_or_else(|_| p.to_path_buf()));
@@ -44,6 +51,7 @@ pub async fn probe(path: &Path) -> GitProbe {
         .env("LC_ALL", "C")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_CEILING_DIRECTORIES")
         .output()
         .await
     {
@@ -58,6 +66,9 @@ pub async fn probe(path: &Path) -> GitProbe {
                 .args(["rev-parse", "--show-toplevel"])
                 .current_dir(&dir)
                 .env("LC_ALL", "C")
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_CEILING_DIRECTORIES")
                 .output()
                 .await
                 .ok()

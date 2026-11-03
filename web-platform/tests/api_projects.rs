@@ -309,6 +309,45 @@ async fn test_update_project_owner() {
 }
 
 #[tokio::test]
+async fn test_update_project_validation_config_round_trips() {
+    let app = common::TestApp::new().await;
+    let create_body = app
+        .create_test_project("https://github.com/owner/gate-proj", &app.admin_token)
+        .await;
+    let project_id = app.get_project_id(&create_body);
+
+    let resp = app
+        .put(
+            &format!("/api/projects/{}", project_id),
+            &json!({
+                "testing_enabled": true,
+                "testing_max_turns": 12,
+                "validation_gate": true,
+                "codex_sandbox": "danger-full-access"
+            }),
+            Some(&app.admin_token),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["data"]["validationGate"], true);
+
+    // A later GET must echo the saved values, otherwise the settings page
+    // would read `false` and silently turn the gate off on the next save.
+    let resp = app
+        .get(
+            &format!("/api/projects/{}", project_id),
+            Some(&app.admin_token),
+        )
+        .await;
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["data"]["validationGate"], true);
+    assert_eq!(body["data"]["testingEnabled"], true);
+    assert_eq!(body["data"]["testingMaxTurns"], 12);
+    assert_eq!(body["data"]["codexSandbox"], "danger-full-access");
+}
+
+#[tokio::test]
 async fn test_update_project_member_forbidden() {
     let app = common::TestApp::new().await;
 

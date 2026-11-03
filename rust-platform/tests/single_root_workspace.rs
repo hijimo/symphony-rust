@@ -274,3 +274,18 @@ async fn legacy_ready_workspace_without_git_keeps_running() {
     drop(again);
     assert!(prepare(&fx, &mgr, "r").await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn ready_single_root_is_reused_by_worker_without_checkout_config() {
+    // The testing agent's workflow carries no `workspace.slug`, so it enters
+    // through `prepare_issue_workspace`; a ready single_root must be reused.
+    let fx = fixture();
+    let mgr = WorkspaceManager::new(fx.root.clone(), HooksConfig::default());
+    let ws = prepare(&fx, &mgr, "r1").await.unwrap().unwrap();
+    let lease = mgr
+        .prepare_issue_workspace("8", "#8", "test-r1", "test")
+        .await
+        .expect("ready single_root is reusable");
+    assert_eq!(lease.workspace.path, ws);
+    assert!(lease.workspace.path.join(".git").is_dir());
+}

@@ -23,6 +23,9 @@ pub struct RepoInstructionSource {
     pub slug: String,
     pub writable: bool,
     pub default_branch: String,
+    /// `origin/<default_branch>` was refreshed in this run. When it was not,
+    /// the local ref may be stale, so only the path is given (design §4.3).
+    pub refreshed: bool,
 }
 
 /// Content read for one repository.
@@ -167,7 +170,7 @@ pub async fn build(
 ) -> Option<String> {
     let mut docs = Vec::with_capacity(sources.len());
     for src in sources {
-        let doc = if src.writable {
+        let doc = if src.writable && src.refreshed {
             read_default_branch_doc(&workspace.join(&src.path), &src.default_branch).await
         } else {
             RepoDoc::PathOnly
@@ -216,7 +219,19 @@ mod tests {
             slug: format!("g/{path}"),
             writable,
             default_branch: "main".to_string(),
+            refreshed: true,
         }
+    }
+
+    #[tokio::test]
+    async fn refresh_failure_gives_path_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        repo_with(tmp.path(), "fe", &[("AGENTS.md", "FE-RULES-ORIGIN\n")]);
+        let mut s = src("fe", true);
+        s.refreshed = false;
+        let out = build(tmp.path(), &[s], "n1").await.unwrap();
+        assert!(!out.contains("FE-RULES-ORIGIN"), "{out}");
+        assert!(out.contains("fe/AGENTS.md"), "{out}");
     }
 
     #[tokio::test]

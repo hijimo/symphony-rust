@@ -151,6 +151,38 @@ describe('ProjectSettingsPage', () => {
     expect(body).toMatchObject({ validation_gate: true });
   });
 
+  it('reads back a saved validation gate from GET', async () => {
+    server.use(
+      http.get('*/api/projects/:id', () =>
+        HttpResponse.json({
+          success: true,
+          retCode: 'SUCCESS',
+          retMsg: 'ok',
+          data: {
+            id: 1,
+            name: 'My GitLab Project',
+            gitUrl: 'https://gitlab.com/a/b.git',
+            platform: 'gitlab',
+            namespace: 'a',
+            repoName: 'b',
+            defaultBranch: 'main',
+            serviceStatus: 'stopped',
+            testingEnabled: true,
+            testingMaxTurns: 12,
+            validationGate: true,
+          },
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderProjectSettings();
+    await waitFor(() => {
+      expect(screen.getByText('项目设置 - My GitLab Project')).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('tab', { name: 'Agent 配置' }));
+    expect(screen.getByRole('checkbox', { name: '启用验证门禁' })).toBeChecked();
+  });
+
   it('related repos tab renders the editor', async () => {
     server.use(
       http.get('*/api/projects/:id/repos', () =>
