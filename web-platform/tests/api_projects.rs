@@ -26,6 +26,8 @@ async fn test_create_project_success() {
     assert_eq!(body["data"]["repoName"], "my-repo");
     assert_eq!(body["data"]["name"], "my-repo");
     assert_eq!(body["data"]["myRole"], "owner");
+    // The validation gate is on for new projects.
+    assert_eq!(body["data"]["validationGate"], true);
     assert!(body["data"]["id"].as_i64().unwrap() > 0);
 }
 
@@ -306,6 +308,45 @@ async fn test_update_project_owner() {
     assert_eq!(body["data"]["name"], "Updated Name");
     assert_eq!(body["data"]["description"], "New description");
     assert_eq!(body["data"]["maxConcurrentAgents"], 5);
+}
+
+#[tokio::test]
+async fn test_update_project_validation_config_round_trips() {
+    let app = common::TestApp::new().await;
+    let create_body = app
+        .create_test_project("https://github.com/owner/gate-proj", &app.admin_token)
+        .await;
+    let project_id = app.get_project_id(&create_body);
+
+    let resp = app
+        .put(
+            &format!("/api/projects/{}", project_id),
+            &json!({
+                "testing_enabled": true,
+                "testing_max_turns": 12,
+                "validation_gate": true,
+                "codex_sandbox": "danger-full-access"
+            }),
+            Some(&app.admin_token),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["data"]["validationGate"], true);
+
+    // A later GET must echo the saved values, otherwise the settings page
+    // would read `false` and silently turn the gate off on the next save.
+    let resp = app
+        .get(
+            &format!("/api/projects/{}", project_id),
+            Some(&app.admin_token),
+        )
+        .await;
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["data"]["validationGate"], true);
+    assert_eq!(body["data"]["testingEnabled"], true);
+    assert_eq!(body["data"]["testingMaxTurns"], 12);
+    assert_eq!(body["data"]["codexSandbox"], "danger-full-access");
 }
 
 #[tokio::test]

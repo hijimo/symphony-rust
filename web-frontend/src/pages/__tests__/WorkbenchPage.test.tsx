@@ -324,4 +324,48 @@ describe('WorkbenchPage', () => {
     await new Promise((r) => setTimeout(r, 100));
     expect(MockSocket.instances.filter((s) => s.readyState !== 3)).toHaveLength(0);
   });
+
+  it('uploads a file into a new subdirectory of the documents directory', async () => {
+    const user = userEvent.setup();
+    const uploads: { path: string; overwrite: string; size: number }[] = [];
+    server.use(
+      http.post(`${base}/upload`, async ({ request }) => {
+        const url = new URL(request.url);
+        const body = await request.arrayBuffer();
+        uploads.push({
+          path: url.searchParams.get('path') ?? '',
+          overwrite: url.searchParams.get('overwrite') ?? '',
+          size: body.byteLength,
+        });
+        return HttpResponse.json({ success: true, retCode: '0', retMsg: 'ok', data: { path: url.searchParams.get('path'), version: 'v9', commitSha: 'abc' } });
+      }),
+      ...workbenchHandlers(makeFlow(), calls),
+    );
+    renderPage();
+    await ready();
+    await user.click(screen.getByRole('button', { name: '上传文件' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.type(within(dialog).getByLabelText('目录'), 'assets/评分');
+    const file = new File([new Uint8Array([0x50, 0x4b, 3, 4, 0, 1])], '评分标准.xlsx');
+    await user.upload(within(dialog).getByLabelText('选择文件'), file);
+    expect(within(dialog).getByText(/评分标准\.xlsx/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: '上传' }));
+    await waitFor(() => expect(uploads).toHaveLength(1));
+    expect(uploads[0]).toEqual({ path: `docs/changes/${IID}/assets/评分/评分标准.xlsx`, overwrite: 'false', size: 6 });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('refuses invalid directories and document file names before uploading', async () => {
+    const user = userEvent.setup();
+    server.use(...workbenchHandlers(makeFlow(), calls));
+    renderPage();
+    await ready();
+    await user.click(screen.getByRole('button', { name: '上传文件' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.upload(within(dialog).getByLabelText('选择文件'), new File(['x'], 'plan.md'));
+    expect(within(dialog).getByText(/不能上传覆盖/)).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: '上传' })).toBeDisabled();
+    await user.type(within(dialog).getByLabelText('目录'), '../x');
+    expect(within(dialog).getByText(/目录不能包含/)).toBeInTheDocument();
+  });
 });

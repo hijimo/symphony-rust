@@ -80,6 +80,9 @@ else
 fi
 echo ""
 
+# 安装 Symphony worker 使用的 skills（symphony-commit/pull/push/land）
+"$PROJECT_ROOT/deploy/scripts/install-codex-skills.sh" || echo -e "${YELLOW}Skills install failed${NC}"
+
 # 编译后端和被后端拉起的 Symphony worker
 echo -e "${YELLOW}Building backend and Symphony worker...${NC}"
 cargo build -p web-platform -p symphony-platform 2>&1

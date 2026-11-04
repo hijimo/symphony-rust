@@ -55,6 +55,7 @@ pub async fn get_workflow(
             testing_enabled: project.testing_enabled,
             testing_max_turns: Some(project.testing_max_turns),
             repos,
+            validation_gate: project.validation_gate,
         };
         templates::render_template(&ctx)
     };
@@ -134,6 +135,7 @@ pub async fn update_workflow(
             testing_enabled: project.testing_enabled,
             testing_max_turns: Some(project.testing_max_turns),
             repos,
+            validation_gate: project.validation_gate,
         };
         templates::render_template(&ctx)
     };
@@ -189,6 +191,7 @@ pub async fn reset_workflow(
         testing_enabled: project.testing_enabled,
         testing_max_turns: Some(project.testing_max_turns),
         repos,
+        validation_gate: project.validation_gate,
     };
     let content = templates::render_template(&ctx);
 

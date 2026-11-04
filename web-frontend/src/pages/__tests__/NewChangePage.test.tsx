@@ -173,4 +173,38 @@ describe('NewChangePage', () => {
     expect(await screen.findByText('项目创建者未配置 GitLab Token')).toBeInTheDocument();
     expect(screen.queryByTestId('location')).not.toBeInTheDocument();
   });
+
+  it('uploads chosen attachments into the new flow after creating it', async () => {
+    const user = userEvent.setup();
+    const uploads: string[] = [];
+    server.use(
+      http.post('*/api/projects/7/changes/31/upload', ({ request }) => {
+        uploads.push(new URL(request.url).searchParams.get('path') ?? '');
+        return HttpResponse.json({ success: true, retCode: '0', retMsg: 'ok', data: { path: '', version: 'v1', commitSha: 'a' } });
+      }),
+    );
+    renderPage();
+    await user.upload(screen.getByLabelText('添加附件'), new File(['PK'], '评分标准.xlsx'));
+    expect(screen.getByText(/评分标准\.xlsx/)).toBeInTheDocument();
+    const dir = screen.getByLabelText('附件目录');
+    await user.clear(dir);
+    await user.type(dir, 'assets/评分');
+    await user.type(screen.getByRole('textbox', { name: '标题' }), '评分模块');
+    await user.click(screen.getByRole('button', { name: '创建并进入工作台' }));
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/projects/7/changes/31'));
+    expect(uploads).toEqual(['docs/changes/12/assets/评分/评分标准.xlsx']);
+  });
+
+  it('blocks creation while the attachment directory is invalid', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.upload(screen.getByLabelText('添加附件'), new File(['x'], 'a.pdf'));
+    const dir = screen.getByLabelText('附件目录');
+    await user.clear(dir);
+    await user.type(dir, '../x');
+    await user.type(screen.getByRole('textbox', { name: '标题' }), 'T');
+    expect(screen.getByRole('button', { name: '创建并进入工作台' })).toBeDisabled();
+    await user.click(screen.getByLabelText('移除 a.pdf'));
+    expect(screen.getByRole('button', { name: '创建并进入工作台' })).toBeEnabled();
+  });
 });

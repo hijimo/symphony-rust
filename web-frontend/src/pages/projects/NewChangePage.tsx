@@ -6,13 +6,17 @@ import {
   Button,
   Card,
   CardContent,
+  Chip,
   CircularProgress,
   TextField,
   Typography,
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import AttachFileIcon from '@mui/icons-material/AttachFile';
+import CloseIcon from '@mui/icons-material/Close';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
-import { startFlow } from '../../api/changes';
+import { startFlow, uploadFile } from '../../api/changes';
+import { MAX_UPLOAD_BYTES, normalizeSubdir, uploadTarget } from '../../components/workbench/UploadDialog';
 import { useIssueStore } from '../../store/issueStore';
 
 const INTENT_HEADING = /^#\s*Intent\s*:.*$/m;
@@ -60,6 +64,12 @@ export default function NewChangePage() {
   const [idea, setIdea] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [files, setFiles] = useState<File[]>([]);
+  const [subdir, setSubdir] = useState('assets');
+  const dir = normalizeSubdir(subdir);
+  const tooBig = files.filter((f) => f.size > MAX_UPLOAD_BYTES);
+  const docClash = dir === '' && files.some((f) => ['intent.md', 'spec.md', 'plan.md'].includes(f.name));
+  const filesOk = files.length === 0 || (dir !== null && tooBig.length === 0 && !docClash);
 
   useEffect(() => {
     if (aiStatus === 'done' && generatedTitle && !title) setTitle(generatedTitle);
@@ -77,7 +87,20 @@ export default function NewChangePage() {
         summary: idea.trim() || undefined,
         initialContent: toIntentBody(title.trim(), idea, aiStatus === 'done' ? generatedContent : ''),
       });
-      navigate(`/projects/${projectId}/changes/${v.flow.issueIid}`, { replace: true });
+      const iid = v.flow.issueIid;
+      // Attachments need the flow's workspace, so they go in after creation.
+      const failed: string[] = [];
+      for (const f of files) {
+        try {
+          await uploadFile(projectId, iid, uploadTarget(v.writableDir, dir ?? '', f.name), f);
+        } catch (e) {
+          failed.push(`${f.name}：${(e as Error).message}`);
+        }
+      }
+      navigate(`/projects/${projectId}/changes/${iid}`, {
+        replace: true,
+        state: failed.length ? { uploadErrors: failed } : undefined,
+      });
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -126,12 +149,56 @@ export default function NewChangePage() {
               {generatedContent}
             </Box>
           )}
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+              <Button variant="outlined" component="label" startIcon={<AttachFileIcon />} disabled={busy}>
+                添加附件
+                <input
+                  hidden
+                  multiple
+                  type="file"
+                  aria-label="添加附件"
+                  onChange={(e) => {
+                    const picked = Array.from(e.target.files ?? []);
+                    setFiles((fs) => [...fs.filter((f) => !picked.some((p) => p.name === f.name)), ...picked]);
+                    e.target.value = '';
+                  }}
+                />
+              </Button>
+              {files.map((f) => (
+                <Chip
+                  key={f.name}
+                  size="small"
+                  label={`${f.name}（${(f.size / 1024).toFixed(1)} KB）`}
+                  onDelete={() => setFiles((fs) => fs.filter((x) => x !== f))}
+                  deleteIcon={<CloseIcon aria-label={`移除 ${f.name}`} />}
+                />
+              ))}
+            </Box>
+            {files.length > 0 && (
+              <TextField
+                size="small"
+                label="附件目录"
+                value={subdir}
+                onChange={(e) => setSubdir(e.target.value)}
+                error={dir === null}
+                helperText={
+                  dir === null
+                    ? '目录不能包含 ..、. 或以 . 开头的名称'
+                    : `创建后保存到本需求文档目录下的 ${dir ? `${dir}/` : '根目录'}，可在工作台继续上传或调整`
+                }
+                inputProps={{ 'aria-label': '附件目录' }}
+              />
+            )}
+            {tooBig.length > 0 && <Alert severity="error">单个文件不能超过 10MB：{tooBig.map((f) => f.name).join('、')}</Alert>}
+            {docClash && <Alert severity="error">intent.md / spec.md / plan.md 不能作为附件</Alert>}
+          </Box>
           <TextField label="标题" value={title} onChange={(e) => setTitle(e.target.value)} required inputProps={{ maxLength: 200 }} />
           {error && <Alert severity="error">{error}</Alert>}
           <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
             <Button
               variant="contained"
-              disabled={busy || !title.trim() || aiStatus === 'generating'}
+              disabled={busy || !title.trim() || aiStatus === 'generating' || !filesOk}
               onClick={create}
               startIcon={busy ? <CircularProgress size={16} color="inherit" /> : undefined}
             >

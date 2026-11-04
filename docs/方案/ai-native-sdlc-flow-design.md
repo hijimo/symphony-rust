@@ -24,7 +24,7 @@ Symphony 目前覆盖 Playbook 的 **Build 后半段到 Merge**：Issue 进入 T
 | Design：spec.md | 无 | 整个阶段缺失 |
 | Build：plan.md（plan mode） | 计划写在 workpad 评论里，agent 自写自执行 | 没有“计划被接受前不实现”的闸门；计划不入库，无法与 diff 对照 |
 | Build：实现 | Codex / teamwork 在隔离工作区实现 | 基本具备 |
-| Test：自验证、verifier | Validation（仅提示词要求）；Testing 阶段已实现但未启用；teamwork reviewer 未接入 | 2026-11-02 修订：只有命令行测试在执行，API、E2E、截图证据缺失，见 [self-verification-and-agents-md.md](./self-verification-and-agents-md.md) |
+| Test：自验证、verifier | 开发阶段由验证子 Agent 执行默认验证方案；Testing 阶段可选，只复核未通过项；teamwork reviewer 未接入 | 见 [self-verification-and-agents-md.md](./self-verification-and-agents-md.md) |
 | Deploy：AI 审查 PR | 部分具备 | 不对照 spec / plan；没有 REVIEW.md |
 | Deploy：code owner 批准 | Human Review → Merging | 具备 |
 | Deploy：生产发布 | 不在 Symphony 范围 | 由目标项目 CI/CD 负责 |
@@ -36,7 +36,7 @@ Symphony 目前覆盖 Playbook 的 **Build 后半段到 Merge**：Issue 进入 T
 
 ```text
               ┌──────────── 文档阶段（新增）────────────┐   ┌──── 实现阶段（现有，小改）────┐
-入口 ──► Intent ──► Intent Review ──► Spec ──► Spec Review ──► Plan ──► Plan Review ──► Todo ──► In Progress ──► Testing ──► Human Review ──► Merging ──► Done
+入口 ──► Intent ──► Intent Review ──► Spec ──► Spec Review ──► Plan ──► Plan Review ──► Todo ──► In Progress ──►（Testing，可选）──► Human Review ──► Merging ──► Done
           人+AI       G1 产品负责人     AI 起草   G2 产品负责人   AI 起草   G3 工程师        （读取 plan.md）           对照 spec/plan     code owner
           工作台                                  +政策负责人                                                       的审查
              ▲              │打回                 │打回                  │打回

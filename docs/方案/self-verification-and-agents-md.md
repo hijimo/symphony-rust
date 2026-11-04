@@ -1,6 +1,6 @@
 # 实现阶段自验证与 AGENTS.md 加载修复方案
 
-> **状态**：设计已通过对抗验证（第 7 节，v7 结论无高风险），未实现。
+> **状态**：设计已通过对抗验证（第 7 节，v7 结论无高风险）；实现见第 8 节。
 >
 > **范围**：
 > 1. 实现阶段的测试改为在开发流程内完成（不再使用独立的 `Testing` 状态），并写死默认的前端、后端验证方案。
@@ -174,7 +174,7 @@ F5 说明：
 - 不稳定：依赖开发环境数据的用例失败时重试一次，报告中区分「环境原因」和「代码原因」。
 - 用例筛选靠 tag，不靠 AI 判断：需要登录的用例标 `@auth`，会写共享开发环境数据的标 `@writes-shared`。没有 E2E 信息时用 `--grep-invert @auth` 排除；`@writes-shared` 用例必须使用带 Issue 编号的唯一前缀并在结束时清理，否则不运行。仓库尚未打 tag 时，F5 只运行 AI 本次新增、且符合上述约束的用例，其余标为「跳过：仓库未标注 E2E tag」。F5 写过的数据记录在报告中。
 - 产物：运行时加 `--trace=off`，`--output` 指向 3.3 的 run 目录（随 run 结束删除），**不得提交** `test-results/`、`playwright-report/`；提交前检查暂存区。
-- 截图只截业务页面，截图前确认页面上没有 token、手机号等个人信息，用 `glab api --method POST projects/:id/uploads -F file=@<png>` 上传，把返回的 markdown 写进 MR 描述；上传失败标为「截图未上传」。本期不做像素级基线对比。
+- 截图只截业务页面，截图前确认页面上没有 token、手机号等个人信息，用 `glab api --method POST projects/:id/uploads --form "file=@<png>"` 上传（`-F` 会把 `@` 当作普通字符串，不是 multipart 上传），把返回的 markdown 写进 MR 描述；上传失败标为「截图未上传」。本期不做像素级基线对比。
 - 仓库已有、不需要登录的 E2E 用例照常运行。
 
 #### 3.2.5 证据与报告
@@ -283,7 +283,7 @@ Draft 与合并：人批准即视为接受 workpad 中列出的失败、未验�
 - server request（approval、tool call）按 JSON-RPC `result` 回复（v2 协议），原样回写请求的 `id`（数字或字符串）；子线程发来的请求同样回复，避免挂起。
 - stall：`on_codex_update` 对所有事件都会刷新计时（`orchestrator/mod.rs:896`）。如果实测发现子线程通知不发到主连接，则为启用验证的项目调大 `stall_timeout_ms`（例如 900 秒），并确认 `turn_timeout_ms`（默认 1 小时）足够。
 
-**确定性检查（PR-3a，项目级开关 `validation_gate`，默认关闭）**：
+**确定性检查（PR-3a，项目级开关 `validation_gate`，默认打开，2026-11-03 需求方决定；最初设计为默认关闭）**：
 
 - 开关由 web-platform 渲染进 WORKFLOW front matter（`validation.gate: true|false`），rust-platform 启动时读取，不支持热重载。
 - 适用范围：多仓库和 single_root 单仓库。legacy 单仓库布局和 Linear tracker 固定跳过，在 workpad 注明「布局不支持确定性检查」。单仓库项目在 PR-2 上线后才能打开开关。
@@ -296,7 +296,7 @@ Draft 与合并：人批准即视为接受 workpad 中列出的失败、未验�
   3. runner 自己执行 `git diff --name-only origin/<base>...HEAD`，按 3.2.2 的规则算出必需的底线步骤，表中这些行都存在且结果为「通过」。
 - 不满足时：**不改变 Issue 状态**，加 `validation-missing` label，在 workpad 追加检查结果。不移回 active 状态，避免与编排器的重试形成循环。
 - 已知局限：Symphony 使用真人账号 token，workpad 评论无法区分 AI 和人写的；检查只能发现遗漏和不一致，不能防止 AI 伪造报告（需求方已接受提示词约束，第 6 节）。
-- 上线：开关默认关闭；PR-3b 的模板部署且 worker 重启后，再对项目逐个打开；`workflow_content` 为自定义内容的项目合并新章节后再打开。
+- 上线：开关默认打开（迁移 V020 把已有项目打开，新建项目写入 1）；需要时在项目设置中逐个关闭；`workflow_content` 为自定义内容的项目合并新章节后再打开。
 
 ### 3.6 Testing 状态
 
@@ -451,3 +451,60 @@ See `aigc-test/AGENTS.md` for reference only.
 | v5（2026-11-02） | 合并审查：2 个 P1 | 阻塞标记改为「只对写入它的 run 生效」：起始为 Todo/In Progress/Rework 时把旧标记改写为 `blocked-cleared`；阻塞识别和豁免只看本次 run 新写入的标记，人删 label 接受后不会被加回；已推送判断改为比较远端同名分支；「有改动」含未提交改动；SHA 统一 12 位 |
 | v6（2026-11-02） | 合并审查：1 个 P1 | 标记加 `run=<run_id>`，「本次有效」改为 run id 匹配，不再做 workpad 前后比较；改写旧标记在 `thread/start` 前完成；workpad 读写失败跳过识别；最后一次 push 后才写标记；轮次只在 Todo/Rework 重置；接受底线失败后 Merging 不再因同一失败阻塞；加 label 前复核状态；Linear 由 AI 改写旧标记 |
 | v7（2026-11-02） | 合并审查：**无高风险**（P2×3、P3×2） | 收口：heads 别名固定（single_root `primary`、legacy `repo`）；workpad 读写失败时加 `validation-missing` 提示；Linear 下只在 Todo/In Progress/Rework 起始时改写旧标记；状态复核失败照常加 label；e2e 目录只清理本项目 root。达到「无高风险」验收标准 |
+
+## 8. 实现说明
+
+| 设计项 | 实现位置 |
+|---|---|
+| 4.1 工作区根检查 | `rust-platform/src/workspace/root_guard.rs`（`main.rs` 启动时）、`web-platform/src/workspace_guard.rs`（web 启动时，覆盖 `editor/`）；web 默认根改为 `~/symphony-workspaces` |
+| D10 skills | `deploy/codex-skills/symphony-{commit,pull,push,land}`，`deploy/scripts/install-codex-skills.sh` 由 `dev.sh` 调用；模板按 skill 名引用 |
+| 4.2 single_root | `WorkspaceManager::prepare_single_root_workspace`（schema 3 / `layout: single_root`）、`repos::init_single_root`；web 模板为 GitLab 单仓库渲染 `workspace.slug/default_branch`（`after_create` 克隆到 `.` 时不渲染，保持旧布局） |
+| 4.3 AGENTS.md 注入 | 实现阶段 `agent/repo_instructions.rs`（多仓库、legacy `repo/`）；文档阶段 `sdlc/workspace.rs::repo_instructions` + `AgentSession.first_turn_prefix`（仅在新 thread 的首个 turn 前置） |
+| 3.4 安全规则 | `agent/post_run.rs::SAFETY_RULES` 作为 `thread/start` 的 `developerInstructions`；模板正文要求复制进子 Agent 提示词（实测子 Agent 不继承 developerInstructions） |
+| 3.3 E2E | `agent/validation.rs::write_e2e_env`（0700/0600，run 结束及启动时清理），`SYMPHONY_E2E_ENV_FILE`、`SYMPHONY_RUN_ID` 注入 app-server 进程 |
+| 3.5 runner 适配 | `codex_client.rs`：只认 `thread/start` 的主线程 id、子线程 terminal 事件不结束主 turn（仍转发刷新 stall 计时）、v2 server request 回 JSON-RPC `result` |
+| 3.5 阻塞识别 / 确定性检查 | `runner.rs::pre_run_cleanup` / `post_run_checks`、`agent/post_run.rs::gate_check`；`Tracker` / `IssueStateRefresher` 新增 workpad 与 label 接口（GitLab 实现）；项目字段 `validation_gate`（迁移 V019）渲染为 `validation.gate` |
+| 3.2 模板 | `web-platform/src/templates/workflow_{gitlab,github,gitea}.md` 的 `App runtime validation (required)` 章节；测试模板只复核未通过项 |
+
+**subagent 实测（2026-11-02，Codex 0.162.1 app-server）**：子线程的通知（`turn/started`、`item/*`、`turn/completed`）发到同一连接，`params.threadId` 为子线程 id；主线程 `wait` 期间最长 207 秒无主线程事件，但子线程事件持续到达；子 Agent 报告其 system/developer 指令中没有父线程的 `developerInstructions`，因此安全规则必须写进子 Agent 提示词。
+
+**与设计的偏差和补充（实现阶段验证后修订，2026-11-03）**：
+
+- **根目录有文件但无 `.git` 的旧工作区（4.2 表格末行）**：没有按设计返回 `workspace_not_ready:no_git`，保持继续运行并记 warn。原因：GitHub / Gitea 单仓库本期仍由 AI 自行 clone（4.2 范围），AI 可能 clone 到其他子目录名；报错会让这些进行中的 Issue 直接停住。single_root 布局不受影响：它从不接管这类工作区（返回 legacy 路径），且启动前强制检查 `<cwd>/.git`。
+- **测试 Agent 进入 single_root 工作区**：`workflow_test_*` 没有 `workspace.slug`，走旧的 `prepare_issue_workspace`。该路径现在复用 `schema 3 + ready` 的工作区；`schema 3` 未完成初始化时仍返回 `workspace_single_root_requires_checkout_config`。
+- **单仓库工作分支防护（4.3）**：`post_run::instruction_changes` 比较 `merge-base HEAD origin/<base>` 与工作树（含未提交、未跟踪文件），只看 `AGENTS.md`、`AGENTS.override.md`、`.codex/`。runner 在 Codex 启动前（刷新默认分支后）和 run 结束后各检查一次，有改动时在 workpad 末尾写 `### Symphony notice: instruction files changed`（幂等，列表变化时替换）；模板要求 AI 把它复制进 MR 描述。git 无法回答时只记 warn。
+- **远端刷新失败**：多仓库按 `RepoState.last_error`、legacy `repo/` 按本次刷新结果，刷新失败的仓库在 AGENTS.md 注入中只给路径（`RepoInstructionSource.refreshed`）。
+- **阻塞标记**：模板写 `run={{ run_id }}`（提示词渲染时替换为本次 run id），不依赖 AI 读取 `$SYMPHONY_RUN_ID`。
+- **完成条件**：模板不再要求 pipeline green，改为「不因本次改动失败，或已在 workpad 和 MR 描述中列出」。
+- **合并命令**：`glab mr merge` 加 `--auto-merge=false`（glab 1.123 默认开启 auto-merge）；Gitea Draft 用 `gitea_api PATCH .../pulls/<index>` 改标题前缀 `WIP: `（本机未安装 `tea`）。
+- **确定性检查**：`git diff origin/<base>...HEAD` 或 `git status` 失败时记为问题，不再当作「未改动」跳过。
+- **run 开始时 workpad 读写失败**：加 `validation-missing` label（旧标记可能未被改写）。
+- **after_create**：成功后立即把 fingerprint 写入 marker，避免初始化中断后重复执行。
+- **根目录检查**：清除 `GIT_CEILING_DIRECTORIES`，相对路径先基于 `current_dir` 转为绝对路径。
+- **MCP elicitation**：`mcpServer/elicitation/request` 回复 `{"action":"decline"}`。
+- **Docker 镜像**：复制 `deploy/codex-skills` 并以 `symphony` 用户运行安装脚本。
+
+**第二轮实现验证（3 个 agent，2026-11-03）后的修订**：
+
+- Merging 重跑底线：人删 `validation-blocked`（或评论接受）后，删除前最后一份报告中为 `失败` 的底线视为已接受，重跑只要求那份报告中 `通过` 的步骤仍通过（对应 3.5「之前通过的底线没有变成失败」）。
+- 自验证 label 由 `ensure_workflow_labels` 在启动时创建（Gitea 的加 label 接口只接受已存在的 label id）。
+- 子 Agent 只跑步骤、写报告，不 commit、push、改 MR/Issue/workpad、写标记或改 label。
+- 纯文档改动也写报告行；构建配置改动跑仓库所有技术栈的底线（与 runner 计算一致）。
+- 阻塞标记的 `run` 与 `$SYMPHONY_RUN_ID` 交叉核对；heads 逗号分隔不留空格。本次 run 写了标记、但 runner 读不全可写仓库 HEAD 时加 `validation-missing`。
+- 只读仓库违规时，先做阻塞识别和 gate，再移交 Human Review。
+- gate 失败说明替换 workpad 中已有小节，不重复追加。
+- `symphony-land` 在 Merging 中不改业务代码，失败时写阻塞标记。
+- `after_create` 中只要有 `git clone`（含克隆到子目录）就不渲染 single_root。
+- 开发模板渲染 `turn_timeout_ms: 14400000`（4 小时）：实现和验证 subagent 在同一个 turn 内；空闲仍由 stall 超时（子线程事件会刷新）兜住。
+- 子线程事件转发时去掉 token 用量，避免打乱按会话计算的增量。
+- E2E：变量名拒绝 `PATH`、`NODE_OPTIONS`、`BASH_ENV`、`*_PROXY`、`*_URL`、`*_HOST`、`PLAYWRIGHT_*`、`GIT_*`、`SYMPHONY_*` 等；值中含非本地 URL 时拒绝；日志中的字段名截断到 `=` 前。启动清理只删除 run id 格式且 issue 锁空闲的目录（开发和测试 worker 共用 root），不跟随符号链接。
+- 测试 Agent 复用 ready 的 schema 2（多仓库）和 schema 3 工作区，与引入 schema 3 前的行为一致。
+- schema 1 只有 marker 的工作区升级时保留 after_create fingerprint；读目录出错时不视为空工作区。
+
+**已知限制（不在本期修复）**：
+
+- GitLab 的 workpad CommentId 由 `issue_iid * 1_000_000 + note_id` 组合而成，note id 超过 100 万时会与相邻 Issue 冲突；本机 GitLab 当前 note id 远低于该值。
+- run 被 abort（进程被杀）时 E2E env 文件留到下次 rust-platform 启动时清理。
+- `workflow_content` 为自定义内容的项目不会获得新章节，打开 `validation_gate` 前需人工合并模板。
+- Gitea 自验证 label 在启动时创建；token 无创建 label 权限、或仓库 label 超过 30 个（`list_labels` 分页参数与 Gitea 不符，原有问题）时可能创建失败，此时阻塞标记只记 warn，Merging 只能靠人查看 workpad。本机当前没有 Gitea 项目。
+- 起始为 Todo / In Progress / Rework 的 run 结束时，workpad 中仍有未改写的阻塞标记但没有一个本次有效（heads、run id 写错），加 `validation-missing` 提示人工检查。

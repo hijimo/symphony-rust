@@ -295,6 +295,27 @@ pub async fn write_file(
 }
 
 #[derive(Debug, Deserialize)]
+pub struct UploadQuery {
+    pub path: String,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// POST .../upload?path=&overwrite= — raw file body (attachment, <= 10MB).
+pub async fn upload_file(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path((project_id, iid)): Path<(i64, i64)>,
+    Query(q): Query<UploadQuery>,
+    body: axum::body::Bytes,
+) -> ApiResult {
+    let ctx = ctx(&state, &claims, project_id).await?;
+    let flow = service::load_flow(&state, &ctx.project, iid).await?;
+    let r = service::upload_file(&ctx, &flow, &q.path, &body, q.overwrite).await?;
+    ok(json!({"path": q.path, "version": r.version, "commitSha": r.commit_sha}))
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SearchQuery {
     pub q: String,
     #[serde(default = "default_mode")]

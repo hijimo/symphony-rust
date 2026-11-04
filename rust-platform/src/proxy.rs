@@ -178,6 +178,26 @@ fn mask_username(username: &str) -> String {
 
 #[cfg(test)]
 pub(crate) mod test_support {
+    /// Run a local git command for unit tests (deterministic identity);
+    /// panics on failure and returns trimmed stdout.
+    pub(crate) fn test_git(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
     use std::collections::HashMap;
     use std::ffi::{OsStr, OsString};
     use std::sync::OnceLock;

@@ -534,3 +534,14 @@ teamwork:
 | 模板选择权限 | 能打 label 的人能在已声明模板之间切换；风险有限，暂不做额外权限控制 |
 | 可观测性 | 本期只有 `teamwork_poll` 摘要与日志；结构化指标（团队耗时、轮次、各结果占比、token 成本）待定 |
 | 默认路由 | 默认 SWE Light，`teamwork:full` 才走 General，待确认 |
+
+## 附：必须继承的自验证约定（2026-11）
+
+teamwork 落地并移除 `Testing` 时，reviewer 必须继承 [self-verification-and-agents-md.md](./self-verification-and-agents-md.md) 的以下内容，不得削弱：
+
+- 3.1 规则优先级与底线步骤；
+- 3.2 默认验证方案（改动类型路径规则、后端 B1–B5、前端 F1–F5）；
+- 3.3 E2E 数据处理与 3.4 安全规则；
+- 3.2.5 验证报告格式（`symphony:validation` 表）；
+- 3.5 结果处理、阻塞标记（`symphony:blocked run=... heads=...`）、label 生命周期与确定性检查。
+

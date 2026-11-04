@@ -545,3 +545,113 @@ async fn save_reports_label_mismatch_without_rewriting() {
     assert!(labels.contains(&"Todo".to_string()), "{labels:?}");
     assert!(!labels.iter().any(|l| l.starts_with("doc:")), "{labels:?}");
 }
+
+async fn upload(
+    app: &SdlcApp,
+    iid: i64,
+    path: &str,
+    bytes: Vec<u8>,
+    overwrite: bool,
+) -> (StatusCode, Value) {
+    let resp = app
+        .client
+        .post(app.url(&format!(
+            "{}/{iid}/upload?path={}&overwrite={overwrite}",
+            app.base(),
+            urlencoding::encode(path)
+        )))
+        .bearer_auth(&app.token)
+        .header("Content-Type", "application/octet-stream")
+        .body(bytes)
+        .send()
+        .await
+        .unwrap();
+    let st = StatusCode::from_u16(resp.status().as_u16()).unwrap();
+    (st, resp.json().await.unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn upload_attachment_into_new_subdirectory_and_commit() {
+    let app = SdlcApp::new().await;
+    let iid = start_full(&app).await;
+    // Binary content (xlsx is a zip: starts with "PK\x03\x04", contains NULs).
+    let xlsx: Vec<u8> = b"PK\x03\x04\x00\x00scoring".to_vec();
+    let path = format!("docs/changes/{iid}/assets/评分标准.xlsx");
+    let (st, v) = upload(&app, iid, &path, xlsx.clone(), false).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert!(v["data"]["commitSha"].is_string(), "{v}");
+    let ws = app.primary_ws(iid);
+    assert_eq!(std::fs::read(ws.join(&path)).unwrap(), xlsx);
+    // Committed and pushed to the docs branch on the remote.
+    let out = std::process::Command::new("git")
+        .args(["log", "-1", "--name-only", "--format=%s"])
+        .current_dir(&ws)
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("assets/"),
+        "{out:?}"
+    );
+    // The tree lists the new directory and the file is binary, read-only in the editor.
+    let (_, t) = app
+        .get(&format!(
+            "{}/{iid}/tree?path={}",
+            app.base(),
+            urlencoding::encode(&format!("docs/changes/{iid}/assets"))
+        ))
+        .await;
+    assert_eq!(t["data"][0]["name"], "评分标准.xlsx", "{t}");
+
+    // Existing file: rejected unless overwrite.
+    let (st, _) = upload(&app, iid, &path, b"PK\x03\x04v2".to_vec(), false).await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    let (st, v) = upload(&app, iid, &path, b"PK\x03\x04v2".to_vec(), true).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+}
+
+#[tokio::test]
+async fn upload_is_limited_to_the_issue_directory() {
+    let app = SdlcApp::new().await;
+    let iid = start_full(&app).await;
+    let bad = [
+        "README.md".to_string(),
+        format!("docs/changes/{iid}/../x.bin"),
+        format!("docs/changes/{iid}/.hidden"),
+        format!("docs/changes/{iid}/intent.md"),
+    ];
+    for p in bad {
+        let (st, v) = upload(&app, iid, &p, b"x".to_vec(), true).await;
+        assert!(st.is_client_error(), "{p}: {st} {v}");
+    }
+    let (st, _) = upload(
+        &app,
+        iid,
+        &format!("docs/changes/{iid}/empty.txt"),
+        vec![],
+        false,
+    )
+    .await;
+    assert!(st.is_client_error());
+    // Files with credentials are refused and not left behind.
+    let p = format!("docs/changes/{iid}/leak.txt");
+    let (st, v) = upload(
+        &app,
+        iid,
+        &p,
+        b"-----BEGIN RSA PRIVATE KEY-----\nabc\n".to_vec(),
+        false,
+    )
+    .await;
+    assert!(st.is_client_error(), "{v}");
+    assert!(!app.primary_ws(iid).join(&p).exists());
+    // Over 10MB is refused.
+    let (st, _) = upload(
+        &app,
+        iid,
+        &format!("docs/changes/{iid}/big.bin"),
+        vec![1u8; 10 * 1024 * 1024 + 1],
+        false,
+    )
+    .await;
+    assert!(st.is_client_error());
+}
