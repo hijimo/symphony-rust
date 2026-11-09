@@ -173,7 +173,8 @@ pub fn last_validation_block(text: &str) -> Option<(u32, Vec<ValidationRow>)> {
             break;
         }
         started = true;
-        let cells: Vec<&str> = t.trim_matches('|').split('|').map(str::trim).collect();
+        let cells = table_cells(t);
+        let cells: Vec<&str> = cells.iter().map(String::as_str).collect();
         // | 仓库 | head | 类型 | 步骤 | 命令（来源） | 结果 | 备注 |
         if cells.len() < 6 || cells[0] == "仓库" || cells[0].starts_with("---") {
             continue;
@@ -188,6 +189,31 @@ pub fn last_validation_block(text: &str) -> Option<(u32, Vec<ValidationRow>)> {
         }
     }
     Some((round, rows))
+}
+
+/// Cells of one Markdown table row (GFM): a `|` escaped as `\|` belongs to
+/// the cell (e.g. `dotnet test --filter "A\|B"`), it is not a separator.
+fn table_cells(row: &str) -> Vec<String> {
+    let inner = row.trim();
+    let inner = inner.strip_prefix('|').unwrap_or(inner);
+    let mut cells = Vec::new();
+    let mut cur = String::new();
+    let mut chars = inner.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&'|') => {
+                cur.push('|');
+                chars.next();
+            }
+            '|' => cells.push(std::mem::take(&mut cur).trim().to_string()),
+            _ => cur.push(c),
+        }
+    }
+    // Trailing text after the last `|` (no closing pipe) is still a cell.
+    if !cur.trim().is_empty() {
+        cells.push(cur.trim().to_string());
+    }
+    cells
 }
 
 // ------------------------------------------------ change-type classification
@@ -675,6 +701,25 @@ trailing text
         assert_eq!(rows[1].step, "F5");
         assert_eq!(rows[1].result, StepResult::Skipped);
         assert!(last_validation_block("nothing").is_none());
+    }
+
+    #[test]
+    fn escaped_pipes_stay_inside_their_cell() {
+        // Row from jst-ai-studio#39: the command contains GFM-escaped pipes.
+        let wp = r#"<!-- symphony:validation round=1 -->
+| 仓库 | head | 类型 | 步骤 | 命令（来源） | 结果 | 备注 |
+|---|---|---|---|---|---|---|
+| jxyai | 76cd547f93bb | 后端逻辑 | B5 | dotnet test Jxy.Test --filter "FullyQualifiedName~WaterInvalidLabor\|FullyQualifiedName~WaterIssueCluster\|FullyQualifiedName~WaterOpsStatApi"（AGENTS.md） | 通过 | 261/261 |
+| jxyai | 76cd547f93bb | 后端逻辑 | B1 | a \| b | 通过 |
+"#;
+        let (_, rows) = last_validation_block(wp).unwrap();
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(rows[0].step, "B5");
+        assert_eq!(rows[0].result, StepResult::Passed);
+        assert_eq!(rows[1].step, "B1");
+        assert_eq!(rows[1].result, StepResult::Passed);
+        assert_eq!(table_cells(r"| a \| b | c |"), vec!["a | b", "c"]);
+        assert_eq!(table_cells("| a | | c"), vec!["a", "", "c"]);
     }
 
     #[test]
