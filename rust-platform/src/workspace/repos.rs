@@ -654,6 +654,10 @@ impl RepoCheckout<'_> {
                 .await
                 .map_err(|e| WorkspaceError::Io { source: e })?;
         }
+        // The validation sub-agent may write `.symphony/` inside a repository;
+        // it must never show up as an uncommitted change or be committed.
+        // Applied on every refresh, so existing workspaces are fixed too.
+        write_info_exclude_lines(dest, MULTI_REPO_EXCLUDES).await?;
         if !repo.writable() {
             make_files_readonly(dest).await;
         }
@@ -842,6 +846,9 @@ fn pre_push_whitelist(base: &str) -> String {
 /// Files that must never be committed from a `single_root` workspace.
 const SINGLE_ROOT_EXCLUDES: &[&str] = &["/.symphony-workspace.json", "/.symphony/"];
 
+/// Files that must never be committed from a multi-repo checkout.
+const MULTI_REPO_EXCLUDES: &[&str] = &["/.symphony/"];
+
 /// Initialize (or re-enter) a `single_root` checkout in place: the issue
 /// workspace root itself becomes the repository (self-verification design §4.2).
 ///
@@ -981,6 +988,11 @@ pub async fn refresh_legacy_repo(
 }
 
 async fn write_info_exclude(dir: &Path) -> Result<(), WorkspaceError> {
+    write_info_exclude_lines(dir, SINGLE_ROOT_EXCLUDES).await
+}
+
+/// Append missing `lines` to `.git/info/exclude` (idempotent).
+async fn write_info_exclude_lines(dir: &Path, lines: &[&str]) -> Result<(), WorkspaceError> {
     let info = dir.join(".git").join("info");
     tokio::fs::create_dir_all(&info)
         .await
@@ -988,7 +1000,7 @@ async fn write_info_exclude(dir: &Path) -> Result<(), WorkspaceError> {
     let path = info.join("exclude");
     let mut text = tokio::fs::read_to_string(&path).await.unwrap_or_default();
     let mut changed = false;
-    for line in SINGLE_ROOT_EXCLUDES {
+    for line in lines {
         if !text.lines().any(|l| l.trim() == *line) {
             if !text.is_empty() && !text.ends_with('\n') {
                 text.push('\n');

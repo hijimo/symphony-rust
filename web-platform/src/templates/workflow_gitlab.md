@@ -266,7 +266,7 @@ Use this only when completion is blocked by missing required tools or missing au
 
 ## App runtime validation (required)
 
-If your message starts with `SYMPHONY-VALIDATION-V1`, you are the validation sub-agent: only run the steps and write `.symphony/validation.md`. Never commit, push, edit the MR, the issue or the workpad, write blocked markers or change labels; `Outcome` and `Running the sub-agent` are for the main agent.
+If your message starts with `SYMPHONY-VALIDATION-V1`, you are the validation sub-agent: only run the steps and write the report to `.symphony/validation.md` at the workspace root (the directory you started in, not inside a repository). Never commit, push, edit the MR, the issue or the workpad, write blocked markers or change labels; `Outcome` and `Running the sub-agent` are for the main agent.
 
 Verify every change before handing it off. Run the steps below through a **validation sub-agent** (Codex `spawn_agent`) so the checks get a fresh context; you stay responsible for fixing code, the workpad and the MR.
 
@@ -334,7 +334,7 @@ Symphony turns it into an env file and exposes only its path as `$SYMPHONY_E2E_E
 1. After implementing and committing locally, call `spawn_agent`. Its message must start with `SYMPHONY-VALIDATION-V1` and contain, unchanged, this whole section plus the paths of `plan.md` / `spec.md` (you may append notes, never remove text). Sub-agents do not inherit your instructions, so the safety rules must be in that message.
 2. Wait with `wait_agent` using a timeout of at most 240000 ms per call; call it again until the sub-agent finishes.
 3. The sub-agent may add or change test files and may temporarily change product code for B2 defect injection; afterwards `git diff -- <non-test paths>` must be empty. You commit the sub-agent's new tests, then validate again (new round).
-4. The sub-agent writes its report to `.symphony/validation.md` (never committed) in this exact format, and you paste it unchanged into the workpad `Validation` section:
+4. The sub-agent writes its report to `.symphony/validation.md` at the workspace root (not inside a repository; never committed) in this exact format, and you paste it unchanged into the workpad `Validation` section:
 
 ```text
 <!-- symphony:validation round=<n> -->

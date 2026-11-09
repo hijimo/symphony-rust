@@ -214,6 +214,35 @@ async fn first_attempt_checks_out_every_repo_with_guards() {
 }
 
 #[tokio::test]
+async fn validation_report_inside_a_repo_is_ignored_by_git() {
+    // The validation sub-agent may write `.symphony/validation.md` inside a
+    // repository; it must not count as an uncommitted change (gate false
+    // positive on jst-ai-studio#39-#41) nor be committable.
+    let f = fixture();
+    let mgr = WorkspaceManager::new(f.root.clone(), HooksConfig::default());
+    let (lease, _) = prepare(&mgr, &f, &specs(), "run-1").await.unwrap();
+    let ws = lease.workspace.path.clone();
+    for repo in ["frontend", "backend"] {
+        let dir = ws.join(repo).join(".symphony");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("validation.md"), "report").unwrap();
+        assert_eq!(
+            git(&ws.join(repo), &["status", "--porcelain"]),
+            "",
+            "{repo}"
+        );
+    }
+    // Existing workspaces get the exclude on their next refresh, idempotently.
+    let exclude = ws.join("frontend/.git/info/exclude");
+    std::fs::write(&exclude, "# custom\n").unwrap();
+    drop(lease);
+    let (_lease, _) = prepare(&mgr, &f, &specs(), "run-2").await.unwrap();
+    let text = std::fs::read_to_string(&exclude).unwrap();
+    assert!(text.starts_with("# custom\n"), "{text}");
+    assert_eq!(text.matches("/.symphony/").count(), 1, "{text}");
+}
+
+#[tokio::test]
 async fn readonly_repo_push_is_refused_and_writable_whitelist_enforced() {
     let f = fixture();
     let mgr = WorkspaceManager::new(f.root.clone(), HooksConfig::default());
