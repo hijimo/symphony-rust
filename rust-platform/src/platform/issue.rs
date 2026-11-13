@@ -101,6 +101,16 @@ pub enum CommentMode {
     Append,
 }
 
+/// A file directly inside a repository directory on some ref.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RepoFile {
+    pub name: String,
+    /// Path relative to the repository root.
+    pub path: String,
+    /// Git blob SHA of the file on that ref.
+    pub blob_sha: String,
+}
+
 /// Platform capabilities that may differ between GitHub and GitLab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
