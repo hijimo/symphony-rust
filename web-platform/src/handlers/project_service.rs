@@ -316,6 +316,7 @@ pub async fn start_service(
         started_at: now,
         status: ServiceStatus::Running,
         restart_count: 0,
+        api_port: spawn_result.api_port,
     };
     state.process_manager.set_state(project_id, process_state);
 
@@ -354,6 +355,7 @@ pub async fn start_service(
                     started_at: now,
                     status: ServiceStatus::Running,
                     restart_count: 0,
+                    api_port: test_result.api_port,
                 };
                 state.process_manager.set_test_state(project_id, test_state);
 
@@ -666,6 +668,7 @@ pub async fn restart_service(
         started_at: now,
         status: ServiceStatus::Running,
         restart_count: 0,
+        api_port: spawn_result.api_port,
     };
     state.process_manager.set_state(project_id, process_state);
 
@@ -719,6 +722,7 @@ pub async fn restart_service(
                     started_at: now,
                     status: ServiceStatus::Running,
                     restart_count: 0,
+                    api_port: test_result.api_port,
                 };
                 state.process_manager.set_test_state(project_id, test_state);
 

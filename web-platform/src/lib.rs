@@ -176,6 +176,8 @@ pub struct AppState {
     pub platform_host_semaphores: Arc<PlatformHostSemaphores>,
     /// AI-native SDLC document flow and workbench.
     pub sdlc: crate::sdlc::SdlcState,
+    /// Last polled `/api/v1/state` of each running Symphony instance.
+    pub runtime_state: Arc<crate::services::runtime_state::RuntimeStateCache>,
 }
 
 /// Per-platform-host semaphore registry for limiting concurrent API calls to the same host.

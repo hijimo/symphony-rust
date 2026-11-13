@@ -41,6 +41,7 @@ async fn test_global_concurrency_counts_running_child_processes() {
                 started_at: Utc::now(),
                 status: ServiceStatus::Running,
                 restart_count: 0,
+                api_port: None,
             },
         );
     }
@@ -71,6 +72,7 @@ async fn test_global_concurrency_counts_running_child_processes() {
             started_at: Utc::now(),
             status: ServiceStatus::Failed,
             restart_count: 0,
+            api_port: None,
         },
     );
 

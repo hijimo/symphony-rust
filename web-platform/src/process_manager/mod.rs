@@ -17,6 +17,9 @@ pub struct ProcessState {
     pub started_at: DateTime<Utc>,
     pub status: ServiceStatus,
     pub restart_count: u32,
+    /// Loopback port of the child's `/api/v1/state` server (None for
+    /// placeholder states and processes started before it was assigned).
+    pub api_port: Option<u16>,
 }
 
 /// Manages Symphony child processes for all projects.

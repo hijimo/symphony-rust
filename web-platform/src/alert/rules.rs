@@ -703,6 +703,7 @@ mod tests {
                 started_at: Utc::now(),
                 status: crate::models::ServiceStatus::Running,
                 restart_count: 0,
+                api_port: None,
             },
         );
 
@@ -739,6 +740,7 @@ mod tests {
                 started_at: Utc::now(),
                 status: crate::models::ServiceStatus::Running,
                 restart_count: 0,
+                api_port: None,
             },
         );
 

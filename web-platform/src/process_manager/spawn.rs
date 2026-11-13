@@ -16,6 +16,8 @@ pub struct SpawnResult {
     pub pid: u32,
     pub child: tokio::process::Child,
     pub proxy_config_version: String,
+    /// Loopback port passed as `--port` for the child's state API.
+    pub api_port: Option<u16>,
 }
 
 /// System config key listing extra env var names passed through to workers.
@@ -92,6 +94,21 @@ async fn apply_env_whitelist(cmd: &mut Command, repo: &SqliteRepository) {
     };
     cmd.env_clear();
     cmd.envs(filter_worker_env(std::env::vars(), &extra));
+}
+
+/// Give the child a loopback port for `GET /api/v1/state` (P2 design §3 F1).
+/// Allocation failure only disables runtime state for this process.
+fn add_state_api_port(cmd: &mut Command) -> Option<u16> {
+    match crate::services::runtime_state::allocate_local_port() {
+        Ok(port) => {
+            cmd.arg("--port").arg(port.to_string());
+            Some(port)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "No free port for the Symphony state API");
+            None
+        }
+    }
 }
 
 pub async fn spawn_symphony(
@@ -186,6 +203,7 @@ pub async fn spawn_symphony(
 
     let mut cmd = Command::new(symphony_bin);
     cmd.arg("WORKFLOW.md");
+    let api_port = add_state_api_port(&mut cmd);
     cmd.current_dir(&workspace_dir);
     apply_env_whitelist(&mut cmd, repo).await;
     cmd.env("RUST_LOG", "info");
@@ -251,6 +269,7 @@ pub async fn spawn_symphony(
         pid,
         child,
         proxy_config_version,
+        api_port,
     })
 }
 
@@ -341,6 +360,7 @@ pub async fn spawn_test_symphony(
 
     let mut cmd = Command::new(symphony_bin);
     cmd.arg("WORKFLOW_TEST.md");
+    let api_port = add_state_api_port(&mut cmd);
     cmd.current_dir(&workspace_dir);
     apply_env_whitelist(&mut cmd, repo).await;
     cmd.env("RUST_LOG", "info");
@@ -406,6 +426,7 @@ pub async fn spawn_test_symphony(
         pid,
         child,
         proxy_config_version,
+        api_port,
     })
 }
 
