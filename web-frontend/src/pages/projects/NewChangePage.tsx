@@ -18,6 +18,7 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import { startFlow, uploadFile } from '../../api/changes';
 import { MAX_UPLOAD_BYTES, normalizeSubdir, uploadTarget } from '../../components/workbench/UploadDialog';
 import { useIssueStore } from '../../store/issueStore';
+import { aiGenerateIssue } from '../../api/aiGenerate';
 
 const INTENT_HEADING = /^#\s*Intent\s*:.*$/m;
 
@@ -54,6 +55,47 @@ export function toIntentBody(title: string, idea: string, generated: string): st
   ].join('\n');
 }
 
+/** How long 创建 waits for an automatic AI draft before falling back. */
+export const AUTO_DRAFT_TIMEOUT_MS = 30000;
+
+/**
+ * Generate an intent draft for `idea` (used by 创建 when no draft exists yet).
+ * Resolves with the draft, or with `error` set when generation fails or
+ * takes longer than `timeoutMs`; never rejects.
+ */
+export function generateIntentDraft(
+  projectId: number,
+  idea: string,
+  timeoutMs = AUTO_DRAFT_TIMEOUT_MS,
+): Promise<{ content: string; title: string; error: string | null }> {
+  const controller = new AbortController();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (r: { content: string; title: string; error: string | null }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      controller.abort();
+      resolve(r);
+    };
+    const timer = setTimeout(
+      () => finish({ content: '', title: '', error: `AI 生成超过 ${Math.round(timeoutMs / 1000)} 秒未完成` }),
+      timeoutMs,
+    );
+    aiGenerateIssue(
+      projectId,
+      { prompt: idea, template: 'intent' },
+      {
+        onChunk: () => {},
+        onDone: (content, title) =>
+          finish(content.trim() ? { content, title: title ?? '', error: null } : { content: '', title: '', error: 'AI 返回内容为空' }),
+        onError: (error) => finish({ content: '', title: '', error }),
+      },
+      controller.signal,
+    ).catch((e: unknown) => finish({ content: '', title: '', error: (e as Error)?.message || 'AI 服务不可用' }));
+  });
+}
+
 /** "新建需求": quick description → intent.md draft → workbench (§2 入口). */
 export default function NewChangePage() {
   const { id } = useParams<{ id: string }>();
@@ -63,6 +105,7 @@ export default function NewChangePage() {
   const [title, setTitle] = useState('');
   const [idea, setIdea] = useState('');
   const [busy, setBusy] = useState(false);
+  const [drafting, setDrafting] = useState(false);
   const [error, setError] = useState('');
   const [files, setFiles] = useState<File[]>([]);
   const [subdir, setSubdir] = useState('assets');
@@ -81,11 +124,22 @@ export default function NewChangePage() {
     setBusy(true);
     setError('');
     try {
+      // No finished draft yet: generate one now so intent.md follows the
+      // template instead of only carrying the raw idea (fallback on failure).
+      let draft = aiStatus === 'done' ? generatedContent : '';
+      let draftError: string | null = null;
+      if (!draft.trim() && idea.trim().length >= 5) {
+        setDrafting(true);
+        const r = await generateIntentDraft(projectId, idea.trim());
+        setDrafting(false);
+        draft = r.content;
+        draftError = r.error;
+      }
       const v = await startFlow(projectId, {
         track: 'full',
         title: title.trim(),
         summary: idea.trim() || undefined,
-        initialContent: toIntentBody(title.trim(), idea, aiStatus === 'done' ? generatedContent : ''),
+        initialContent: toIntentBody(title.trim(), idea, draft),
       });
       const iid = v.flow.issueIid;
       // Attachments need the flow's workspace, so they go in after creation.
@@ -97,13 +151,17 @@ export default function NewChangePage() {
           failed.push(`${f.name}：${(e as Error).message}`);
         }
       }
+      const state: { uploadErrors?: string[]; draftError?: string } = {};
+      if (failed.length) state.uploadErrors = failed;
+      if (draftError) state.draftError = draftError;
       navigate(`/projects/${projectId}/changes/${iid}`, {
         replace: true,
-        state: failed.length ? { uploadErrors: failed } : undefined,
+        state: Object.keys(state).length ? state : undefined,
       });
     } catch (e) {
       setError((e as Error).message);
     } finally {
+      setDrafting(false);
       setBusy(false);
     }
   };
@@ -119,7 +177,7 @@ export default function NewChangePage() {
       <Card sx={{ maxWidth: 800, border: '1px solid #c3c6d7' }}>
         <CardContent sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
           <Typography variant="body2" color="text.secondary">
-            用一句话描述想法，AI 会按 intent 模板生成草稿；创建后进入文档工作台继续完善（路径 track:full）。
+            用一句话描述想法，AI 会按 intent 模板生成草稿（没有先点「AI 生成草稿」时，创建时会自动生成，最多等 30 秒）；创建后进入文档工作台继续完善（路径 track:full）。
           </Typography>
           <TextField
             label="想法"
@@ -202,7 +260,7 @@ export default function NewChangePage() {
               onClick={create}
               startIcon={busy ? <CircularProgress size={16} color="inherit" /> : undefined}
             >
-              创建并进入工作台
+              {drafting ? 'AI 正在生成 intent 草稿…' : '创建并进入工作台'}
             </Button>
           </Box>
         </CardContent>

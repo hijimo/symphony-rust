@@ -3,12 +3,12 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { ThemeProvider } from '@mui/material/styles';
 import { http, HttpResponse } from 'msw';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import theme from '../../theme';
 import { server } from '../../test/mocks/server';
 import { makeFlow } from '../../test/workbenchFixtures';
 import { useIssueStore } from '../../store/issueStore';
-import NewChangePage, { toIntentBody } from '../projects/NewChangePage';
+import NewChangePage, { generateIntentDraft, toIntentBody } from '../projects/NewChangePage';
 
 const originalIssue = useIssueStore.getState();
 
@@ -79,6 +79,13 @@ describe('toIntentBody', () => {
   });
 });
 
+const AI_URL = '*/api/projects/7/issues/ai-generate';
+function sse(events: object[]) {
+  const body = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
+  return new HttpResponse(body, { headers: { 'Content-Type': 'text/event-stream' } });
+}
+const AI_DOC = '# Intent: AI 标题\n\n## Problem\nAI 写的问题\n\n## Proposed outcome\n好\n';
+
 describe('NewChangePage', () => {
   let bodies: Array<Record<string, unknown>>;
   beforeEach(() => {
@@ -116,8 +123,9 @@ describe('NewChangePage', () => {
     expect(gen).toBeEnabled();
   });
 
-  it('creates a track:full flow with intent initial content and navigates to the workbench', async () => {
+  it('creates a track:full flow with the fallback intent when the AI fails', async () => {
     const user = userEvent.setup();
+    server.use(http.post(AI_URL, () => sse([{ type: 'error', error: 'AI 服务不可用' }])));
     renderPage();
     await user.type(screen.getByRole('textbox', { name: '想法' }), '客户想在门户里看到理赔进度');
     await user.type(screen.getByRole('textbox', { name: '标题' }), '  理赔进度  ');
@@ -134,6 +142,37 @@ describe('NewChangePage', () => {
     expect(ic).toContain('# Intent: 理赔进度');
     expect(ic).toContain('## Problem\n客户想在门户里看到理赔进度');
     expect(ic).toContain('## Constraints');
+  });
+
+  it('generates the AI draft automatically when creating without one', async () => {
+    const user = userEvent.setup();
+    let aiCalls = 0;
+    server.use(
+      http.post(AI_URL, () => {
+        aiCalls += 1;
+        return sse([{ type: 'done', content: AI_DOC, title: 'AI 标题' }]);
+      }),
+    );
+    renderPage();
+    await user.type(screen.getByRole('textbox', { name: '想法' }), '客户想在门户里看到理赔进度');
+    await user.type(screen.getByRole('textbox', { name: '标题' }), '理赔进度');
+    await user.click(screen.getByRole('button', { name: '创建并进入工作台' }));
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(aiCalls).toBe(1);
+    // The AI document is kept, with the user's title.
+    expect(bodies[0].initialContent).toBe(toIntentBody('理赔进度', '客户想在门户里看到理赔进度', AI_DOC));
+    expect(String(bodies[0].initialContent)).toContain('## Problem\nAI 写的问题');
+  });
+
+  it('skips the automatic draft when the idea is shorter than 5 characters', async () => {
+    const user = userEvent.setup();
+    let aiCalls = 0;
+    server.use(http.post(AI_URL, () => { aiCalls += 1; return sse([]); }));
+    renderPage();
+    await user.type(screen.getByRole('textbox', { name: '标题' }), 'T');
+    await user.click(screen.getByRole('button', { name: '创建并进入工作台' }));
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(aiCalls).toBe(0);
   });
 
   it('uses the AI draft once generation is done and pre-fills the title', async () => {
@@ -206,5 +245,35 @@ describe('NewChangePage', () => {
     expect(screen.getByRole('button', { name: '创建并进入工作台' })).toBeDisabled();
     await user.click(screen.getByLabelText('移除 a.pdf'));
     expect(screen.getByRole('button', { name: '创建并进入工作台' })).toBeEnabled();
+  });
+});
+
+describe('generateIntentDraft', () => {
+  beforeEach(() => {
+    localStorage.setItem('token', 'mock-token');
+    localStorage.setItem('expiresAt', '2099-01-01T00:00:00Z');
+  });
+
+  it('returns the draft and title on success', async () => {
+    server.use(http.post(AI_URL, () => sse([{ type: 'done', content: AI_DOC, title: 'T' }])));
+    expect(await generateIntentDraft(7, '想法想法想法')).toEqual({ content: AI_DOC, title: 'T', error: null });
+  });
+
+  it('reports errors and empty drafts instead of throwing', async () => {
+    server.use(http.post(AI_URL, () => sse([{ type: 'error', error: '超时了' }])));
+    expect((await generateIntentDraft(7, '想法想法想法')).error).toBe('超时了');
+    server.use(http.post(AI_URL, () => sse([{ type: 'done', content: '  ' }])));
+    expect((await generateIntentDraft(7, '想法想法想法')).error).toBe('AI 返回内容为空');
+  });
+
+  it('gives up after the timeout', async () => {
+    server.use(http.post(AI_URL, async () => { await new Promise((r) => setTimeout(r, 500)); return sse([]); }));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const p = generateIntentDraft(7, '想法想法想法', 100);
+    await vi.advanceTimersByTimeAsync(150);
+    const r = await p;
+    vi.useRealTimers();
+    expect(r.error).toContain('未完成');
+    expect(r.content).toBe('');
   });
 });

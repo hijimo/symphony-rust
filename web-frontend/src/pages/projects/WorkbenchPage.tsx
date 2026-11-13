@@ -23,20 +23,26 @@ export default function WorkbenchPage() {
   const { init, dispose, loading, error, flow, notices, dismissNotice, pushNotice } = useWorkbenchStore();
   const [selection, setSelection] = useState<SelectionRef | null>(null);
   const location = useLocation();
-  const uploadErrors = (location.state as { uploadErrors?: string[] } | null)?.uploadErrors;
+  const navState = location.state as { uploadErrors?: string[]; draftError?: string } | null;
+  const uploadErrors = navState?.uploadErrors;
+  const draftError = navState?.draftError;
 
   useEffect(() => {
     if (projectId && issueIid) void init(projectId, issueIid);
     return () => dispose();
   }, [projectId, issueIid, init, dispose]);
 
-  // Attachments chosen on "新建需求" that failed to upload after creation.
+  // Problems on "新建需求" after the flow was created (attachments, AI draft).
   useEffect(() => {
+    if (!uploadErrors?.length && !draftError) return;
     if (uploadErrors?.length) {
       pushNotice('error', `附件上传失败，请在左侧文件树重新上传：${uploadErrors.join('；')}`);
-      navigate('.', { replace: true, state: null });
     }
-  }, [uploadErrors, pushNotice, navigate]);
+    if (draftError) {
+      pushNotice('warning', `AI 草稿未生成（${draftError}），intent.md 只包含你的描述，可在右侧 AI 面板让 AI 按模板完善`);
+    }
+    navigate('.', { replace: true, state: null });
+  }, [uploadErrors, draftError, pushNotice, navigate]);
 
   // Warn before closing the tab with unsaved edits (verify B I1).
   useEffect(() => {
