@@ -24,7 +24,7 @@ pub struct DocTarget {
 }
 
 /// Issue number from `#42` (preferred) or a numeric id.
-fn issue_number(identifier: &str, id: &str) -> Option<u64> {
+pub fn issue_number(identifier: &str, id: &str) -> Option<u64> {
     let ident = identifier.trim().trim_start_matches('#');
     ident
         .parse::<u64>()

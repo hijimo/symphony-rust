@@ -529,3 +529,127 @@ async fn first_turn_prompt_lists_approved_change_docs() {
         "one lookup, default branch"
     );
 }
+
+/// Records plan-check side effects of a run that ends in Human Review.
+#[derive(Default)]
+struct PlanRefresher {
+    workpad: Mutex<String>,
+    added: Mutex<Vec<String>>,
+    pr_comments: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl IssueStateRefresher for PlanRefresher {
+    async fn refresh_issue_state(&self, id: &str) -> Result<Option<AgentIssue>, String> {
+        Ok(Some(issue(id, "Human Review", None)))
+    }
+    fn is_terminal_state(&self, _s: &str) -> bool {
+        false
+    }
+    fn is_active_state(&self, s: &str) -> bool {
+        matches!(s, "Todo" | "In Progress")
+    }
+    fn supports_workpad(&self) -> bool {
+        true
+    }
+    async fn fetch_workpad(&self, _id: &str) -> Result<Option<(u64, String)>, String> {
+        Ok(Some((1, self.workpad.lock().unwrap().clone())))
+    }
+    async fn update_workpad(&self, _c: u64, body: &str) -> Result<(), String> {
+        *self.workpad.lock().unwrap() = body.to_string();
+        Ok(())
+    }
+    async fn add_labels(&self, _id: &str, l: &[String]) -> Result<(), String> {
+        self.added.lock().unwrap().extend(l.iter().cloned());
+        Ok(())
+    }
+    async fn remove_labels(&self, _id: &str, _l: &[String]) -> Result<(), String> {
+        Ok(())
+    }
+    async fn find_open_pull_request(
+        &self,
+        slug: &str,
+        _branch: &str,
+    ) -> Result<Option<symphony_platform::platform::PullRequestRef>, String> {
+        Ok(Some(symphony_platform::platform::PullRequestRef {
+            repo_slug: slug.into(),
+            number: 3,
+            url: "u".into(),
+        }))
+    }
+    async fn upsert_pull_request_comment(
+        &self,
+        _pr: &symphony_platform::platform::PullRequestRef,
+        _marker: &str,
+        body: &str,
+        _mode: symphony_platform::platform::CommentMode,
+    ) -> Result<(), String> {
+        self.pr_comments.lock().unwrap().push(body.into());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn development_run_handing_off_runs_plan_deviation_check() {
+    let _g = ENV_LOCK.lock().await;
+    let e = env();
+    // Remote main already carries the approved plan.
+    let bare = e.host.join("acme/app.git");
+    std::fs::create_dir_all(&bare).unwrap();
+    git(&bare, &["init", "--bare", "-q", "--initial-branch=main"]);
+    let seed = e.host.join("seed-app");
+    std::fs::create_dir_all(seed.join("docs/changes/61")).unwrap();
+    git(&seed, &["init", "-q", "--initial-branch=main"]);
+    std::fs::write(
+        seed.join("docs/changes/61/plan.md"),
+        "## Files\n- src/planned.rs\n",
+    )
+    .unwrap();
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-qm", "docs"]);
+    git(
+        &seed,
+        &["push", "-q", bare.to_str().unwrap(), "HEAD:refs/heads/main"],
+    );
+
+    // The fake agent clones into the workspace root and commits an unplanned file.
+    let agent = format!(
+        "set -e\ngit init -q -b main .\ngit remote add origin '{}'\ngit fetch -q origin\n\
+         git checkout -q -b feat/61 origin/main\ngit remote set-head origin main\n\
+         mkdir -p src && echo 1 > src/other.rs\ngit add src\n\
+         git -c user.name=t -c user.email=t@e commit -qm work\n",
+        bare.display()
+    );
+    let r = runner(
+        &e,
+        ServiceConfig {
+            tracker_project_slug: "acme/app".into(),
+            ..ServiceConfig::default()
+        },
+        &agent,
+    );
+    let refresher = Arc::new(PlanRefresher::default());
+    *refresher.workpad.lock().unwrap() = "## Codex Workpad\n".into();
+    r.run_attempt(issue("61", "In Progress", None), None, refresher.clone())
+        .await
+        .unwrap();
+
+    assert!(
+        refresher
+            .added
+            .lock()
+            .unwrap()
+            .contains(&"plan-deviation".to_string()),
+        "labels: {:?}",
+        refresher.added.lock().unwrap()
+    );
+    let comments = refresher.pr_comments.lock().unwrap();
+    assert_eq!(comments.len(), 1);
+    assert!(comments[0].contains("`src/other.rs`"), "{}", comments[0]);
+    assert!(comments[0].contains("`src/planned.rs`"));
+    assert!(refresher
+        .workpad
+        .lock()
+        .unwrap()
+        .contains("### Symphony plan check"));
+}

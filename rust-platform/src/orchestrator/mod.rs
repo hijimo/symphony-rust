@@ -1299,6 +1299,30 @@ impl IssueStateRefresher for TrackerStateRefresher {
             .await
             .map_err(|e| e.to_string())
     }
+
+    async fn find_open_pull_request(
+        &self,
+        slug: &str,
+        branch: &str,
+    ) -> Result<Option<crate::platform::PullRequestRef>, String> {
+        self.tracker
+            .find_open_pull_request(slug, branch)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn upsert_pull_request_comment(
+        &self,
+        pr: &crate::platform::PullRequestRef,
+        marker: &str,
+        body: &str,
+        mode: crate::platform::CommentMode,
+    ) -> Result<(), String> {
+        self.tracker
+            .upsert_pull_request_comment(pr, marker, body, mode)
+            .await
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// Fallback when no tracker is configured — issue is always considered active.
