@@ -108,6 +108,26 @@ pub trait Tracker: Send + Sync {
     ) -> Result<Option<Vec<crate::platform::RepoFile>>, TrackerError> {
         Err(TrackerError::Unsupported("repository listing".to_string()))
     }
+
+    /// Open PR/MR for `branch` in repository `slug`.
+    async fn find_open_pull_request(
+        &self,
+        _slug: &str,
+        _branch: &str,
+    ) -> Result<Option<crate::platform::PullRequestRef>, TrackerError> {
+        Err(TrackerError::Unsupported("pull requests".to_string()))
+    }
+
+    /// Write a marker-identified PR/MR comment (see `Platform::upsert_pull_request_comment`).
+    async fn upsert_pull_request_comment(
+        &self,
+        _pr: &crate::platform::PullRequestRef,
+        _marker: &str,
+        _body: &str,
+        _mode: crate::platform::CommentMode,
+    ) -> Result<(), TrackerError> {
+        Err(TrackerError::Unsupported("pull requests".to_string()))
+    }
 }
 
 /// Unified issue source routing (Linear tracker vs Platform adapter).

@@ -187,6 +187,26 @@ pub trait IssueStateRefresher: Send + Sync {
     ) -> Result<Option<Vec<crate::platform::RepoFile>>, String> {
         Err("repository listing not supported".to_string())
     }
+
+    /// Open PR/MR for `branch` in repository `slug`.
+    async fn find_open_pull_request(
+        &self,
+        _slug: &str,
+        _branch: &str,
+    ) -> Result<Option<crate::platform::PullRequestRef>, String> {
+        Err("pull requests not supported".to_string())
+    }
+
+    /// Write a marker-identified PR/MR comment.
+    async fn upsert_pull_request_comment(
+        &self,
+        _pr: &crate::platform::PullRequestRef,
+        _marker: &str,
+        _body: &str,
+        _mode: crate::platform::CommentMode,
+    ) -> Result<(), String> {
+        Err("pull requests not supported".to_string())
+    }
 }
 
 /// Agent Runner — manages the full worker lifecycle for one issue.
@@ -591,6 +611,25 @@ impl AgentRunner {
         )
         .await;
 
+        // 5b'. Plan deviation check (P2 design §4 B2); annotates only.
+        // Legacy workspaces are cloned by the agent during the run, so the
+        // repository location is only known now.
+        let plan_repos = if layout == WorkspaceLayout::Legacy {
+            post_run::writable_repos(&ws.path, layout, &repo_contexts, None)
+        } else {
+            checked.clone()
+        };
+        self.plan_deviation_check(
+            &issue,
+            layout,
+            &plan_repos,
+            &repo_contexts,
+            single_spec.as_ref(),
+            &service_config.tracker_project_slug,
+            &state_refresher,
+        )
+        .await;
+
         // 5c. Read-only integrity check *after* the agent ran (design §5.3).
         if let Some((ctx, _)) = &multi {
             let violations = self
@@ -880,6 +919,73 @@ impl AgentRunner {
                     let _ = refresher.update_workpad(comment_id, &note).await;
                 }
             }
+        }
+    }
+
+    /// Compare the diff with `plan.md ## Files` when a development run
+    /// handed off for review (P2 design §4 B2).
+    #[allow(clippy::too_many_arguments)]
+    async fn plan_deviation_check(
+        &self,
+        issue: &AgentIssue,
+        layout: WorkspaceLayout,
+        checked: &[post_run::CheckedRepo],
+        repos: &[RepoContext],
+        single: Option<&crate::config::SingleRepoSpec>,
+        tracker_slug: &str,
+        refresher: &Arc<dyn IssueStateRefresher>,
+    ) {
+        if !refresher.supports_workpad() || !starts_development(&issue.state) {
+            return;
+        }
+        let ended_review = matches!(
+            refresher.refresh_issue_state(&issue.id).await,
+            Ok(Some(i)) if is_state(&i.state, &["human review", "testing"])
+        );
+        if !ended_review {
+            return;
+        }
+        let Some(target) = super::change_docs::doc_target(
+            &issue.identifier,
+            &issue.id,
+            repos,
+            single,
+            tracker_slug,
+        ) else {
+            return;
+        };
+        let Some(number) = super::change_docs::issue_number(&issue.identifier, &issue.id) else {
+            return;
+        };
+        let multi_repo = layout == WorkspaceLayout::MultiRepo;
+        let primary_alias = if multi_repo {
+            repos
+                .iter()
+                .find(|r| r.role == "primary")
+                .or_else(|| repos.first())
+                .map(|r| r.alias.clone())
+        } else {
+            checked.first().map(|r| r.alias.clone())
+        };
+        let Some(primary_alias) = primary_alias else {
+            return;
+        };
+        let input = super::plan_check::PlanCheckInput {
+            issue_id: &issue.id,
+            issue_number: number,
+            repos: checked,
+            multi_repo,
+            primary_alias: &primary_alias,
+            primary_slug: &target.slug,
+        };
+        if let Some(result) = super::plan_check::run(refresher.as_ref(), &input).await {
+            tracing::info!(
+                issue_id = %issue.id,
+                consistent = result.is_consistent(),
+                unplanned = result.unplanned.len(),
+                untouched = result.untouched.len(),
+                "plan deviation check finished"
+            );
         }
     }
 
