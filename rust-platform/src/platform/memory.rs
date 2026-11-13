@@ -12,8 +12,8 @@ use chrono::Utc;
 use tokio::sync::Mutex;
 
 use super::{
-    body_with_marker, Capability, Comment, CommentId, CommentMode, CreatePrParams, FetchOptions,
-    Issue, IssueId, Platform, PullRequest, PullRequestRef,
+    body_with_marker, sorted_files, Capability, Comment, CommentId, CommentMode, CreatePrParams,
+    FetchOptions, Issue, IssueId, Platform, PullRequest, PullRequestRef, RepoFile,
 };
 use crate::error::PlatformError;
 
@@ -38,6 +38,8 @@ pub struct MemoryState {
     pub open_pull_requests: HashMap<(String, String), PullRequestRef>,
     /// PR comments keyed by (repo_slug, number).
     pub pr_comments: HashMap<(String, u64), Vec<Comment>>,
+    /// Repository files keyed by (repo_slug, ref) → path → blob SHA.
+    pub repo_files: HashMap<(String, String), std::collections::BTreeMap<String, String>>,
     /// Pending faults keyed by method name.
     pub faults: HashMap<String, FaultConfig>,
     /// Call counts per method name.
@@ -124,6 +126,16 @@ impl MemoryAdapter {
         state.issues.get(&issue_id).map(|i| i.labels.clone())
     }
 
+    /// Seed a file at `path` on `git_ref` of `repo_slug`.
+    pub async fn seed_repo_file(&self, repo_slug: &str, git_ref: &str, path: &str, blob_sha: &str) {
+        let mut state = self.state.lock().await;
+        state
+            .repo_files
+            .entry((repo_slug.to_string(), git_ref.to_string()))
+            .or_default()
+            .insert(path.to_string(), blob_sha.to_string());
+    }
+
     /// Seed an open PR for `branch` in `repo_slug`.
     pub async fn seed_open_pull_request(&self, repo_slug: &str, branch: &str, number: u64) {
         let mut state = self.state.lock().await;
@@ -146,6 +158,7 @@ impl MemoryAdapter {
             pull_requests: state.pull_requests.clone(),
             open_pull_requests: state.open_pull_requests.clone(),
             pr_comments: state.pr_comments.clone(),
+            repo_files: state.repo_files.clone(),
             faults: state.faults.clone(),
             call_counts: state.call_counts.clone(),
         }
@@ -500,6 +513,37 @@ impl Platform for MemoryAdapter {
             is_system: false,
         });
         Ok(id)
+    }
+
+    async fn list_directory(
+        &self,
+        repo_slug: &str,
+        path: &str,
+        git_ref: &str,
+    ) -> Result<Option<Vec<RepoFile>>, PlatformError> {
+        if let Some(err) = self.check_fault("list_directory").await {
+            return Err(err);
+        }
+        let prefix = format!("{}/", path.trim_end_matches('/'));
+        let state = self.state.lock().await;
+        let Some(files) = state
+            .repo_files
+            .get(&(repo_slug.to_string(), git_ref.to_string()))
+        else {
+            return Ok(None);
+        };
+        let direct = files
+            .iter()
+            .filter_map(|(p, sha)| {
+                let name = p.strip_prefix(&prefix)?;
+                (!name.contains('/')).then(|| RepoFile {
+                    name: name.to_string(),
+                    path: p.clone(),
+                    blob_sha: sha.clone(),
+                })
+            })
+            .collect();
+        Ok(sorted_files(direct))
     }
 
     async fn validate_credentials(&self) -> Result<(), PlatformError> {

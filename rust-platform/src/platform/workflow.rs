@@ -413,6 +413,15 @@ mod tests {
             Ok(CommentId(1))
         }
 
+        async fn list_directory(
+            &self,
+            _repo_slug: &str,
+            _path: &str,
+            _git_ref: &str,
+        ) -> Result<Option<Vec<crate::platform::RepoFile>>, PlatformError> {
+            Ok(None)
+        }
+
         async fn validate_credentials(&self) -> Result<(), PlatformError> {
             Ok(())
         }

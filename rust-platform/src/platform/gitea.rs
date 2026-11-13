@@ -8,8 +8,9 @@ use crate::config::PlatformConfig;
 use crate::error::PlatformError;
 use crate::platform::http_client::HttpClient;
 use crate::platform::{
-    body_with_marker, split_owner_repo, Capability, Comment, CommentId, CommentMode,
-    CreatePrParams, FetchOptions, Issue, IssueId, Platform, PullRequest, PullRequestRef,
+    body_with_marker, encode_repo_path, parse_contents_listing, split_owner_repo, Capability,
+    Comment, CommentId, CommentMode, CreatePrParams, FetchOptions, Issue, IssueId, Platform,
+    PullRequest, PullRequestRef, RepoFile,
 };
 
 const MAX_PAGES: u32 = 10;
@@ -763,6 +764,31 @@ impl Platform for GiteaAdapter {
             .send_json(reqwest::Method::POST, &path, &[], Some(&payload))
             .await?;
         Ok(CommentId(created.id))
+    }
+
+    /// Gitea API: `GET /repos/:slug/contents/:path?ref=<ref>` (same shape as GitHub).
+    async fn list_directory(
+        &self,
+        repo_slug: &str,
+        path: &str,
+        git_ref: &str,
+    ) -> Result<Option<Vec<RepoFile>>, PlatformError> {
+        split_owner_repo(repo_slug)?;
+        let encoded = encode_repo_path(path)?;
+        let result: Result<serde_json::Value, _> = self
+            .http
+            .send_json(
+                reqwest::Method::GET,
+                &format!("/repos/{repo_slug}/contents/{encoded}"),
+                &[("ref", git_ref)],
+                None,
+            )
+            .await;
+        match result {
+            Ok(v) => Ok(parse_contents_listing(v)),
+            Err(PlatformError::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     async fn validate_credentials(&self) -> Result<(), PlatformError> {

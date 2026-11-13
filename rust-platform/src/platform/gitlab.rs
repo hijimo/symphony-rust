@@ -15,8 +15,9 @@ use crate::config::PlatformConfig;
 use crate::error::PlatformError;
 use crate::platform::http_client::HttpClient;
 use crate::platform::{
-    body_with_marker, validate_project_path, Capability, Comment, CommentId, CommentMode,
-    CreatePrParams, FetchOptions, Issue, IssueId, Platform, PullRequest, PullRequestRef,
+    body_with_marker, encode_repo_path, sorted_files, validate_project_path, Capability, Comment,
+    CommentId, CommentMode, CreatePrParams, FetchOptions, Issue, IssueId, Platform, PullRequest,
+    PullRequestRef, RepoFile,
 };
 
 /// GitLab adapter that communicates with the GitLab REST API v4.
@@ -74,6 +75,15 @@ struct GitlabMergeRequest {
 #[derive(Debug, Deserialize)]
 struct GitlabCurrentUser {
     username: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitlabTreeEntry {
+    id: String,
+    name: String,
+    path: String,
+    #[serde(rename = "type")]
+    entry_type: String,
 }
 
 /// `/projects/:path/merge_requests/:iid/notes` for a PR reference.
@@ -612,6 +622,46 @@ impl Platform for GitlabAdapter {
             )
             .await?;
         Ok(CommentId(note.id))
+    }
+
+    /// GitLab API: `GET /projects/:path/repository/tree?path=<path>&ref=<ref>`.
+    /// Only one page (100 entries) is read; change directories are small.
+    async fn list_directory(
+        &self,
+        repo_slug: &str,
+        path: &str,
+        git_ref: &str,
+    ) -> Result<Option<Vec<RepoFile>>, PlatformError> {
+        validate_project_path(repo_slug)?;
+        encode_repo_path(path)?;
+        let dir = path.strip_suffix('/').unwrap_or(path);
+        let result: Result<Vec<GitlabTreeEntry>, _> = self
+            .http
+            .send_json(
+                reqwest::Method::GET,
+                &format!(
+                    "/projects/{}/repository/tree",
+                    urlencoding::encode(repo_slug)
+                ),
+                &[("path", dir), ("ref", git_ref), ("per_page", "100")],
+                None,
+            )
+            .await;
+        match result {
+            Ok(entries) => Ok(sorted_files(
+                entries
+                    .into_iter()
+                    .filter(|e| e.entry_type == "blob")
+                    .map(|e| RepoFile {
+                        name: e.name,
+                        path: e.path,
+                        blob_sha: e.id,
+                    })
+                    .collect(),
+            )),
+            Err(PlatformError::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     async fn validate_credentials(&self) -> Result<(), PlatformError> {
