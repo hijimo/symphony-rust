@@ -432,6 +432,24 @@ impl ProjectRepository for SqliteRepository {
         let project = project.clone();
         tokio::task::spawn_blocking(move || {
             let conn = pool.get()?;
+            // `git_url` keeps the entered scheme, so the UNIQUE constraint
+            // alone would accept the same repository once as http and once
+            // as https: compare without the scheme first.
+            let bare = |u: &str| {
+                u.split_once("://")
+                    .map(|(_, rest)| rest.to_lowercase())
+                    .unwrap_or_else(|| u.to_lowercase())
+            };
+            let wanted = bare(&project.git_url);
+            let mut stmt = conn.prepare("SELECT git_url FROM projects")?;
+            let existing: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<std::result::Result<_, _>>()?;
+            if let Some(dup) = existing.iter().find(|u| bare(u) == wanted) {
+                return Err(WebPlatformError::Conflict(format!(
+                    "Project with git_url '{dup}' already exists"
+                )));
+            }
             conn.execute(
                 "INSERT INTO projects (name, description, git_url, platform, platform_host, namespace, repo_name, default_branch, workflow_template, workflow_content, created_by, validation_gate)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1)",

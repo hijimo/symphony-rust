@@ -82,6 +82,38 @@ async fn test_create_project_duplicate_url() {
 }
 
 #[tokio::test]
+async fn test_create_project_keeps_http_scheme_and_rejects_scheme_duplicates() {
+    let app = common::TestApp::new().await;
+    let resp = app
+        .post(
+            "/api/projects",
+            &json!({"git_url": "http://gitlab.example.com:8081/group/http-repo.git"}),
+            Some(&app.admin_token),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(
+        body["data"]["gitUrl"],
+        "http://gitlab.example.com:8081/group/http-repo"
+    );
+    assert_eq!(
+        body["data"]["platformHost"],
+        "http://gitlab.example.com:8081"
+    );
+
+    // The same repository with another scheme is a duplicate.
+    let resp = app
+        .post(
+            "/api/projects",
+            &json!({"git_url": "https://gitlab.example.com:8081/group/http-repo"}),
+            Some(&app.admin_token),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
 async fn test_create_project_no_auth() {
     let app = common::TestApp::new().await;
     let resp = app
