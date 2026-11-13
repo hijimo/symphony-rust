@@ -5,7 +5,7 @@
 >
 > **平台范围**：第一期支持 GitLab、GitHub（2026-10-27 修订：Gitea 移出第一期，web-platform 尚无 Gitea 平台客户端）。Gitea 与 Linear 项目一律按 `track:fast` 处理。
 >
-> **状态**：设计草案，未实现。第 11 节为决策记录，全部决策已确定。
+> **状态**：P1 已实现（#39）。第 11 节为决策记录，全部决策已确定。P2 及 P1 收尾见 [ai-native-sdlc-p2-design.md](./ai-native-sdlc-p2-design.md)。
 >
 > **审阅**：对抗审阅见 `docs/quality/ai-native-sdlc-design-review-2026-10-26.md`，本文已按其结论修订。
 >
@@ -106,9 +106,10 @@ draft ──提交审阅──► in_review ──批准──► approved ─�
                                           stale ──重新审阅──► in_review
 approved ──文档 MR 合并──► merged（见下文 merged 阶段）
 in_review ──拒绝──► rejected（终态；只有 intent 可被拒绝，拒绝即关闭 Issue）
-approved ──被新版本替代──► superseded（保留历史）
+merged ──人工退回（r2）──► 退回目标 in_review、下游 stale、上游 approved（同一条文档记录升 revision）
 ```
 
+- **不设 `superseded` 状态**（P2 决策 D8）：修订在同一条文档记录上原地升 revision，旧版本的批准由 `document_approvals.invalidated_at` 标记作废，历史保留在审批记录中。
 - **批准**记录：批准人、时间、闸门、文件 blob SHA、commit SHA。
 - **批准后被修改**（仅限文档 MR 合并前）：文件 SHA 与批准时不一致，文档自动退回 `in_review`，批准作废。
 - **SHA 以 blob 为准**：批准绑定文件 blob SHA，`commit_sha` 只作参考。文件内容不变，blob SHA 就不变，不受分支合并方式影响。
