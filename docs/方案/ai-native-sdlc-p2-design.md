@@ -114,16 +114,18 @@ flowchart TD
 
 ### F2 PR 查询与评论
 
-在 rust-platform 的 `Platform` trait（`platform/mod.rs`）新增两个方法，实现 GitHub、GitLab、Gitea 三个平台；`memory.rs` 提供测试实现。
+在 rust-platform 的 `Platform` trait（`platform/mod.rs`）新增三个方法，实现 GitHub、GitLab、Gitea 三个平台；`memory.rs` 提供测试实现。
 
 ```rust
 async fn find_open_pull_request(&self, repo_slug: &str, branch: &str)
     -> Result<Option<PullRequestRef>, PlatformError>;
-async fn upsert_pull_request_comment(&self, repo_slug: &str, pr: &PullRequestRef,
-    marker: &str, body: &str, mode: CommentMode) -> Result<(), PlatformError>;
+async fn list_pull_request_comments(&self, pr: &PullRequestRef)
+    -> Result<Vec<Comment>, PlatformError>;
+async fn upsert_pull_request_comment(&self, pr: &PullRequestRef,
+    marker: &str, body: &str, mode: CommentMode) -> Result<CommentId, PlatformError>;
 ```
 
-- `repo_slug` 显式传入，多仓库项目可以对每个仓库的 MR 操作。单仓库项目传项目 slug。
+- `PullRequestRef { repo_slug, number, url }`。`repo_slug` 显式给出，多仓库项目可以对每个仓库的 MR 操作；单仓库项目用项目 slug。放进 URL 前先校验格式。
 - `CommentMode::Upsert`：找到正文包含 `marker` 的评论就更新，否则新建，用于偏离检查。`CommentMode::Append`：每次新建，用于 AI 审查，保留每轮记录。
 - GitHub / Gitea 的 PR 评论走 issue comments 接口；GitLab 走 MR notes 接口。
 - 分支名来源：多仓库用 `RepoState.branch`；single_root / legacy 用 `git symbolic-ref --short -q HEAD`，与 `gate_check` 的取法一致。
