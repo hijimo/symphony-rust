@@ -41,10 +41,14 @@ fn build_thread_start_request(
     workspace_path: &Path,
     approval_policy: Option<&serde_json::Value>,
     sandbox_policy: Option<&serde_json::Value>,
+    developer_instructions: Option<&str>,
 ) -> serde_json::Value {
     let mut params = serde_json::json!({
         "cwd": workspace_path.to_string_lossy(),
     });
+    if let Some(text) = developer_instructions.filter(|t| !t.trim().is_empty()) {
+        params["developerInstructions"] = serde_json::Value::String(text.to_string());
+    }
 
     if let Some(policy) = approval_policy {
         params["approvalPolicy"] = policy.clone();
@@ -135,6 +139,57 @@ fn extract_thread_id_from_message(message: &serde_json::Value) -> Option<String>
         .or_else(|| message.get("thread_id"))
         .and_then(|v| v.as_str())
         .map(ToString::to_string)
+}
+
+/// Thread id carried by a notification or server request (`params.threadId`
+/// and friends). `None` = legacy / harness event without thread scoping.
+fn event_thread_id(message: &serde_json::Value) -> Option<String> {
+    message
+        .pointer("/params/threadId")
+        .or_else(|| message.pointer("/params/thread_id"))
+        .or_else(|| message.pointer("/params/thread/id"))
+        .or_else(|| message.get("threadId"))
+        .or_else(|| message.get("thread_id"))
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string)
+}
+
+/// JSON-RPC response to a v2 server request (approval, tool call, user input).
+///
+/// The request `id` is echoed verbatim (number or string). Symphony runs in
+/// high-trust mode: command / file / permission approvals are accepted,
+/// dynamic tool calls and user-input requests are answered with a failure so
+/// the turn never hangs (design §3.5).
+fn server_request_response(event: &serde_json::Value) -> Option<serde_json::Value> {
+    let id = event.get("id")?.clone();
+    let method = event.get("method")?.as_str()?;
+    let result = match method {
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+            serde_json::json!({ "decision": "accept" })
+        }
+        "execCommandApproval" | "applyPatchApproval" => {
+            serde_json::json!({ "decision": "approved" })
+        }
+        "item/permissions/requestApproval" => serde_json::json!({
+            "permissions": event.pointer("/params/permissions").cloned().unwrap_or_else(|| serde_json::json!({})),
+            "scope": "turn"
+        }),
+        "item/tool/call" => serde_json::json!({
+            "success": false,
+            "contentItems": [{"type": "inputText", "text": "tool not available in Symphony"}]
+        }),
+        "item/tool/requestUserInput" => serde_json::json!({ "answers": {} }),
+        // MCP servers asking the user for input: nobody is there to answer.
+        "mcpServer/elicitation/request" => serde_json::json!({ "action": "decline" }),
+        _ => {
+            return Some(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {"code": -32601, "message": format!("method not supported by Symphony: {method}")}
+            }))
+        }
+    };
+    Some(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }))
 }
 
 fn extract_turn_id_from_message(message: &serde_json::Value) -> Option<String> {
@@ -254,7 +309,11 @@ mod tests {
             Path::new("/tmp/work"),
             Some(&json!("never")),
             Some(&json!("danger-full-access")),
+            Some("RULES"),
         );
+        assert_eq!(request["params"]["developerInstructions"], "RULES");
+        let none = build_thread_start_request(3, Path::new("/w"), None, None, Some("  "));
+        assert!(none["params"].get("developerInstructions").is_none());
 
         assert_eq!(request["method"], "thread/start");
         assert_eq!(request["params"]["approvalPolicy"], "never");
@@ -285,6 +344,44 @@ mod tests {
         assert!(output.contains("https_proxy=http://proxy.example.com:8443"));
         assert!(output.contains("NO_PROXY=localhost,127.0.0.1"));
         assert!(output.contains("no_proxy=localhost,127.0.0.1"));
+    }
+
+    #[test]
+    fn server_requests_get_jsonrpc_results_with_original_id() {
+        let req = json!({"jsonrpc":"2.0","id": 42, "method":"item/commandExecution/requestApproval",
+            "params":{"threadId":"sub","turnId":"t","itemId":"i","startedAtMs":1}});
+        let r = server_request_response(&req).unwrap();
+        assert_eq!(r["id"], 42);
+        assert_eq!(r["result"]["decision"], "accept");
+        assert!(r.get("method").is_none());
+
+        let tool = json!({"id":"abc","method":"item/tool/call","params":{"callId":"c","threadId":"x","tool":"t","turnId":"u","arguments":{}}});
+        let r = server_request_response(&tool).unwrap();
+        assert_eq!(r["id"], "abc");
+        assert_eq!(r["result"]["success"], false);
+        assert_eq!(r["result"]["contentItems"][0]["type"], "inputText");
+
+        let elicit = json!({"id":9,"method":"mcpServer/elicitation/request","params":{}});
+        assert_eq!(
+            server_request_response(&elicit).unwrap()["result"]["action"],
+            "decline"
+        );
+
+        let unknown = json!({"id":7,"method":"account/chatgptAuthTokens/refresh","params":{}});
+        let r = server_request_response(&unknown).unwrap();
+        assert_eq!(r["error"]["code"], -32601);
+
+        assert!(server_request_response(&json!({"method":"turn/completed"})).is_none());
+    }
+
+    #[test]
+    fn event_thread_id_reads_params() {
+        assert_eq!(
+            event_thread_id(&json!({"method":"turn/completed","params":{"threadId":"sub-1"}}))
+                .as_deref(),
+            Some("sub-1")
+        );
+        assert_eq!(event_thread_id(&json!({"type":"turn.completed"})), None);
     }
 
     #[test]
@@ -350,6 +447,17 @@ pub struct CodexClient {
     next_rpc_id: u64,
     /// Whether the handshake (initialize + thread/start) has been completed
     handshake_done: bool,
+    /// Developer instructions sent with `thread/start`.
+    developer_instructions: Option<String>,
+}
+
+/// Extra inputs for [`CodexClient::start_with`].
+#[derive(Debug, Clone, Default)]
+pub struct CodexStartOptions {
+    /// Environment variables added to the app-server process.
+    pub env: Vec<(String, String)>,
+    /// `developerInstructions` for `thread/start`.
+    pub developer_instructions: Option<String>,
 }
 
 impl CodexClient {
@@ -364,6 +472,22 @@ impl CodexClient {
         codex_config: &CodexConfig,
         cancel_token: CancellationToken,
     ) -> Result<Self, CodexError> {
+        Self::start_with(
+            workspace_path,
+            codex_config,
+            cancel_token,
+            CodexStartOptions::default(),
+        )
+        .await
+    }
+
+    /// [`start`](Self::start) with extra environment and developer instructions.
+    pub async fn start_with(
+        workspace_path: &Path,
+        codex_config: &CodexConfig,
+        cancel_token: CancellationToken,
+        options: CodexStartOptions,
+    ) -> Result<Self, CodexError> {
         // Validate workspace path exists
         if !workspace_path.is_dir() {
             return Err(CodexError::InvalidWorkspaceCwd);
@@ -376,6 +500,9 @@ impl CodexClient {
         );
 
         let mut command = codex_app_server_command(workspace_path, &codex_config.command);
+        for (k, v) in &options.env {
+            command.env(k, v);
+        }
 
         let mut child = command.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -442,6 +569,7 @@ impl CodexClient {
             sandbox_policy: codex_config.turn_sandbox_policy.clone(),
             next_rpc_id: 1,
             handshake_done: false,
+            developer_instructions: options.developer_instructions,
         })
     }
 
@@ -549,6 +677,17 @@ impl CodexClient {
             // Parse JSON-line event
             match serde_json::from_str::<serde_json::Value>(trimmed) {
                 Ok(event) => {
+                    // v2 server requests (any thread, including sub-agents):
+                    // always answer so nothing hangs (SPEC 10.5).
+                    if event.get("id").is_some() && event.get("method").is_some() {
+                        if let Some(resp) = server_request_response(&event) {
+                            if let Err(e) = self.send_json_rpc(&resp).await {
+                                tracing::warn!(issue_id, error = %e, "failed to answer server request");
+                            }
+                            continue;
+                        }
+                    }
+
                     // Handle approval requests (SPEC 10.5: MUST NOT stall)
                     if self.is_approval_request(&event) {
                         if let Err(e) = self.handle_approval_request(&event).await {
@@ -567,7 +706,26 @@ impl CodexClient {
 
                     let update = self.extract_codex_event(&event);
 
-                    // Check for turn terminal events
+                    // Check for turn terminal events. Only the main thread's
+                    // terminal events end the turn; sub-agent threads report
+                    // their own turn/completed on the same connection.
+                    // Events without a thread id are treated as main-thread.
+                    let is_main_thread = match (event_thread_id(&event), &self.thread_id) {
+                        (Some(t), Some(main)) => &t == main,
+                        _ => true,
+                    };
+                    if !is_main_thread {
+                        // Still forward as activity so the stall timer stays
+                        // fresh, without usage: sub-thread totals would break
+                        // the orchestrator's per-session token deltas.
+                        let mut update = update;
+                        update.input_tokens = None;
+                        update.output_tokens = None;
+                        update.total_tokens = None;
+                        update.rate_limits = None;
+                        let _ = event_callback.send(update).await;
+                        continue;
+                    }
                     if let Some(result) = self.check_turn_terminal(&event) {
                         // Send final event update
                         let _ = event_callback.send(update).await;
@@ -636,6 +794,7 @@ impl CodexClient {
             &self.workspace_path,
             self.approval_policy.as_ref(),
             self.sandbox_policy.as_ref(),
+            self.developer_instructions.as_deref(),
         );
 
         self.send_json_rpc(&thread_request).await?;
@@ -710,12 +869,9 @@ impl CodexClient {
 
             match serde_json::from_str::<serde_json::Value>(trimmed) {
                 Ok(value) => {
-                    if let Some(tid) = extract_thread_id_from_message(&value) {
-                        self.thread_id = Some(tid);
-                    }
-                    if let Some(tid) = extract_turn_id_from_message(&value) {
-                        self.turn_id = Some(tid);
-                    }
+                    // The main thread id comes only from the thread/start
+                    // response (perform_handshake), never from notifications
+                    // that may belong to sub-agent threads.
 
                     // Check for JSON-RPC error response
                     if let Some(error) = value.get("error") {
@@ -833,12 +989,16 @@ impl CodexClient {
             .and_then(|s| s.parse::<DateTime<Utc>>().ok())
             .unwrap_or_else(Utc::now);
 
-        // Extract thread_id and turn_id if present
-        if let Some(tid) = extract_thread_id_from_message(event) {
-            self.thread_id = Some(tid);
-        }
-        if let Some(tid) = extract_turn_id_from_message(event) {
-            self.turn_id = Some(tid);
+        // Track the turn id of the main thread only; the thread id itself is
+        // fixed by thread/start.
+        let main = match (event_thread_id(event), &self.thread_id) {
+            (Some(t), Some(m)) => &t == m,
+            _ => true,
+        };
+        if main {
+            if let Some(tid) = extract_turn_id_from_message(event) {
+                self.turn_id = Some(tid);
+            }
         }
 
         let session_id = match (&self.thread_id, &self.turn_id) {
@@ -899,9 +1059,12 @@ impl CodexClient {
             //   暂停 turn 并通过 HTTP API 暴露 pending approval，等待操作员决策。
             //   参见 docs/migration-gap-analysis.md Phase 6。
 
-            // Turn completed successfully
+            // Turn finished. Codex app-server reports quota/auth/stream failures
+            // through `turn/completed` with `turn.status = "failed"` and a
+            // non-null `turn.error`, so inspect the payload before treating it
+            // as a success.
             "turn.completed" | "turn_completed" | "turn/completed" => {
-                Some(Ok(TurnResult::Completed))
+                Some(Ok(completed_turn_result(event)))
             }
 
             // Turn failed
@@ -1013,6 +1176,42 @@ impl CodexClient {
         // Reap the zombie
         let _ = self.child.wait().await;
     }
+}
+
+/// Interpret a `turn/completed` notification.
+///
+/// The app-server payload looks like
+/// `{"params":{"turn":{"status":"completed|failed|interrupted","error":{"message":..}}}}`.
+/// Legacy events without a `turn` object are treated as successful.
+pub fn completed_turn_result(event: &serde_json::Value) -> TurnResult {
+    let turn = event
+        .get("params")
+        .and_then(|p| p.get("turn"))
+        .or_else(|| event.get("turn"));
+    let Some(turn) = turn else {
+        return TurnResult::Completed;
+    };
+
+    let status = turn.get("status").and_then(|v| v.as_str());
+    let error = turn.get("error").filter(|v| !v.is_null());
+
+    if error.is_none() && status.is_none_or(|s| s == "completed") {
+        return TurnResult::Completed;
+    }
+
+    let message = error.and_then(|e| {
+        e.get("message")
+            .and_then(|m| m.as_str())
+            .map(str::to_string)
+            .or_else(|| e.as_str().map(str::to_string))
+    });
+    let reason = match (status, message) {
+        (Some(s), Some(m)) => format!("turn {s}: {m}"),
+        (None, Some(m)) => m,
+        (Some(s), None) => format!("turn {s}"),
+        (None, None) => "turn completed with error".to_string(),
+    };
+    TurnResult::Failed { reason }
 }
 
 fn codex_app_server_command(workspace_path: &Path, command_line: &str) -> tokio::process::Command {

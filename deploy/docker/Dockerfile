@@ -63,6 +63,8 @@ RUN groupadd -r symphony \
 COPY --from=rust-builder /app/target/release/web-platform /usr/local/bin/web-platform
 COPY --from=rust-builder /app/target/release/symphony-platform /usr/local/bin/symphony-platform
 COPY --from=frontend-builder /app/dist /srv/frontend
+COPY deploy/codex-skills/ /opt/symphony/codex-skills/
+COPY deploy/scripts/install-codex-skills.sh /opt/symphony/scripts/install-codex-skills.sh
 
 RUN mkdir -p /data /workspaces \
     && chown -R symphony:symphony /data /workspaces
@@ -76,6 +78,8 @@ ENV SERVER_PORT=3000
 ENV RUST_LOG=web_platform=info
 
 USER symphony
+# Worker skills referenced by the WORKFLOW templates (symphony-commit/pull/push/land).
+RUN bash /opt/symphony/scripts/install-codex-skills.sh
 VOLUME ["/data", "/workspaces"]
 EXPOSE 3000
 

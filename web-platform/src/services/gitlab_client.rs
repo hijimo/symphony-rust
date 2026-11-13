@@ -764,6 +764,247 @@ impl GitPlatformClient for GitLabClient {
             })
             .collect())
     }
+
+    async fn update_issue_labels(
+        &self,
+        token: &str,
+        project_path: &str,
+        iid: u64,
+        add: &[String],
+        remove: &[String],
+    ) -> Result<(), GitPlatformError> {
+        let url = format!(
+            "{}/api/v4/projects/{}/issues/{}",
+            self.base_url,
+            Self::encode_project_path(project_path),
+            iid
+        );
+        let body = serde_json::json!({
+            "add_labels": add.join(","),
+            "remove_labels": remove.join(","),
+        });
+        self.send_ok(
+            self.http
+                .put(&url)
+                .header("PRIVATE-TOKEN", token)
+                .json(&body),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn add_issue_comment(
+        &self,
+        token: &str,
+        project_path: &str,
+        iid: u64,
+        body: &str,
+    ) -> Result<(), GitPlatformError> {
+        let url = format!(
+            "{}/api/v4/projects/{}/issues/{}/notes",
+            self.base_url,
+            Self::encode_project_path(project_path),
+            iid
+        );
+        self.send_ok(
+            self.http
+                .post(&url)
+                .header("PRIVATE-TOKEN", token)
+                .json(&serde_json::json!({ "body": body })),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn add_merge_request_comment(
+        &self,
+        token: &str,
+        project_path: &str,
+        mr_iid: u64,
+        body: &str,
+    ) -> Result<(), GitPlatformError> {
+        let url = format!(
+            "{}/api/v4/projects/{}/merge_requests/{}/notes",
+            self.base_url,
+            Self::encode_project_path(project_path),
+            mr_iid
+        );
+        self.send_ok(
+            self.http
+                .post(&url)
+                .header("PRIVATE-TOKEN", token)
+                .json(&serde_json::json!({ "body": body })),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn close_issue(
+        &self,
+        token: &str,
+        project_path: &str,
+        iid: u64,
+    ) -> Result<(), GitPlatformError> {
+        let url = format!(
+            "{}/api/v4/projects/{}/issues/{}",
+            self.base_url,
+            Self::encode_project_path(project_path),
+            iid
+        );
+        self.send_ok(
+            self.http
+                .put(&url)
+                .header("PRIVATE-TOKEN", token)
+                .json(&serde_json::json!({ "state_event": "close" })),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn set_merge_request_draft(
+        &self,
+        token: &str,
+        project_path: &str,
+        mr_iid: u64,
+        draft: bool,
+    ) -> Result<(), GitPlatformError> {
+        let mr = self.get_merge_request(token, project_path, mr_iid).await?;
+        let bare = strip_draft_prefix(&mr.title);
+        let title = if draft {
+            format!("Draft: {bare}")
+        } else {
+            bare.to_string()
+        };
+        if title == mr.title {
+            return Ok(());
+        }
+        let url = format!(
+            "{}/api/v4/projects/{}/merge_requests/{}",
+            self.base_url,
+            Self::encode_project_path(project_path),
+            mr_iid
+        );
+        self.send_ok(
+            self.http
+                .put(&url)
+                .header("PRIVATE-TOKEN", token)
+                .json(&serde_json::json!({ "title": title })),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn close_merge_request(
+        &self,
+        token: &str,
+        project_path: &str,
+        mr_iid: u64,
+    ) -> Result<(), GitPlatformError> {
+        let url = format!(
+            "{}/api/v4/projects/{}/merge_requests/{}",
+            self.base_url,
+            Self::encode_project_path(project_path),
+            mr_iid
+        );
+        self.send_ok(
+            self.http
+                .put(&url)
+                .header("PRIVATE-TOKEN", token)
+                .json(&serde_json::json!({ "state_event": "close" })),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn merge_merge_request(
+        &self,
+        token: &str,
+        project_path: &str,
+        mr_iid: u64,
+    ) -> Result<Option<String>, GitPlatformError> {
+        let url = format!(
+            "{}/api/v4/projects/{}/merge_requests/{}/merge",
+            self.base_url,
+            Self::encode_project_path(project_path),
+            mr_iid
+        );
+        let resp = self
+            .send_ok(self.http.put(&url).header("PRIVATE-TOKEN", token).json(
+                &serde_json::json!({ "squash": false, "should_remove_source_branch": false }),
+            ))
+            .await?;
+        Ok(resp
+            .get("merge_commit_sha")
+            .and_then(|v| v.as_str())
+            .map(str::to_string))
+    }
+
+    async fn can_merge(&self, token: &str, project_path: &str) -> Result<bool, GitPlatformError> {
+        let url = format!(
+            "{}/api/v4/projects/{}",
+            self.base_url,
+            Self::encode_project_path(project_path)
+        );
+        let body = self
+            .send_ok(self.http.get(&url).header("PRIVATE-TOKEN", token))
+            .await?;
+        let level = |p: &str| body.pointer(p).and_then(|v| v.as_i64()).unwrap_or(0);
+        let max = level("/permissions/project_access/access_level")
+            .max(level("/permissions/group_access/access_level"));
+        // Developer (30) may merge into unprotected branches; protected-branch
+        // rules are enforced by GitLab at merge time.
+        Ok(max >= 30)
+    }
+}
+
+impl GitLabClient {
+    /// Send a request, map non-2xx to errors, parse JSON (empty body → Null).
+    async fn send_ok(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> Result<serde_json::Value, GitPlatformError> {
+        let response = req.send().await.map_err(|e| {
+            if e.is_timeout() {
+                GitPlatformError::ServiceUnavailable("GitLab API request timed out".to_string())
+            } else {
+                GitPlatformError::RequestError(format!("GitLab request failed: {}", e))
+            }
+        })?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            if status.as_u16() == 405
+                || status.as_u16() == 406
+                || status.as_u16() == 409
+                || status.as_u16() == 422
+            {
+                return Err(GitPlatformError::Conflict {
+                    code: PlatformConflictCode::BranchProtectionOrPolicy,
+                    message: format!("GitLab returned {}: {}", status, truncate_body(&text)),
+                });
+            }
+            return Err(Self::map_status_error(status, &text));
+        }
+        if text.trim().is_empty() {
+            return Ok(serde_json::Value::Null);
+        }
+        serde_json::from_str(&text).map_err(|e| {
+            GitPlatformError::RequestError(format!("Failed to parse GitLab response: {e}"))
+        })
+    }
+}
+
+/// `Draft: x`, `[Draft] x`, `WIP: x` → `x`.
+pub(crate) fn strip_draft_prefix(title: &str) -> &str {
+    let t = title.trim_start();
+    for p in [
+        "Draft: ", "Draft:", "[Draft] ", "[Draft]", "(Draft) ", "WIP: ", "WIP:",
+    ] {
+        if let Some(rest) = t.strip_prefix(p) {
+            return rest.trim_start();
+        }
+    }
+    t
 }
 
 // ==================== GitLab API response types ====================
@@ -1023,6 +1264,7 @@ mod tests {
             description: None,
             labels: vec!["bug".to_string()],
             assignee: None,
+            add_default_todo: true,
         };
 
         let body = GitLabClient::create_issue_body(&req);
@@ -1037,6 +1279,7 @@ mod tests {
             description: None,
             labels: vec!["Todo".to_string()],
             assignee: None,
+            add_default_todo: true,
         };
 
         let body = GitLabClient::create_issue_body(&req);

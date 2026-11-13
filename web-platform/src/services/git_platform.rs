@@ -200,6 +200,92 @@ pub trait GitPlatformClient: Send + Sync {
         token: &str,
         project_path: &str,
     ) -> Result<Vec<PlatformMember>, GitPlatformError>;
+
+    // ----- AI-native SDLC document flow (default: unsupported) -----
+
+    /// Replace the given labels on an issue: add `add`, remove `remove`.
+    async fn update_issue_labels(
+        &self,
+        _token: &str,
+        _project_path: &str,
+        _iid: u64,
+        _add: &[String],
+        _remove: &[String],
+    ) -> Result<(), GitPlatformError> {
+        Err(unsupported("update_issue_labels"))
+    }
+
+    /// Post a comment on an issue.
+    async fn add_issue_comment(
+        &self,
+        _token: &str,
+        _project_path: &str,
+        _iid: u64,
+        _body: &str,
+    ) -> Result<(), GitPlatformError> {
+        Err(unsupported("add_issue_comment"))
+    }
+
+    /// Post a comment on a merge request / pull request.
+    async fn add_merge_request_comment(
+        &self,
+        _token: &str,
+        _project_path: &str,
+        _mr_iid: u64,
+        _body: &str,
+    ) -> Result<(), GitPlatformError> {
+        Err(unsupported("add_merge_request_comment"))
+    }
+
+    /// Close an issue.
+    async fn close_issue(
+        &self,
+        _token: &str,
+        _project_path: &str,
+        _iid: u64,
+    ) -> Result<(), GitPlatformError> {
+        Err(unsupported("close_issue"))
+    }
+
+    /// Mark a merge request ready (`draft=false`) or draft.
+    async fn set_merge_request_draft(
+        &self,
+        _token: &str,
+        _project_path: &str,
+        _mr_iid: u64,
+        _draft: bool,
+    ) -> Result<(), GitPlatformError> {
+        Err(unsupported("set_merge_request_draft"))
+    }
+
+    /// Close a merge request without merging.
+    async fn close_merge_request(
+        &self,
+        _token: &str,
+        _project_path: &str,
+        _mr_iid: u64,
+    ) -> Result<(), GitPlatformError> {
+        Err(unsupported("close_merge_request"))
+    }
+
+    /// Merge with a merge commit (no squash). Returns the merge commit SHA.
+    async fn merge_merge_request(
+        &self,
+        _token: &str,
+        _project_path: &str,
+        _mr_iid: u64,
+    ) -> Result<Option<String>, GitPlatformError> {
+        Err(unsupported("merge_merge_request"))
+    }
+
+    /// Whether the token's user may merge into the target branch (§10.2 预检).
+    async fn can_merge(&self, _token: &str, _project_path: &str) -> Result<bool, GitPlatformError> {
+        Err(unsupported("can_merge"))
+    }
+}
+
+fn unsupported(op: &str) -> GitPlatformError {
+    GitPlatformError::RequestError(format!("platform does not support {op}"))
 }
 
 /// Factory function to create the appropriate client based on platform type.

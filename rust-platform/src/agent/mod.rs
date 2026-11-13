@@ -7,7 +7,10 @@
 //! SPEC reference: Section 10
 
 pub mod codex_client;
+pub mod post_run;
+pub mod repo_instructions;
 pub mod runner;
+pub mod validation;
 
 pub use crate::models::{CodexEventUpdate, TokenUsage};
 pub use codex_client::{CodexClient, CodexError, TurnResult};

@@ -130,6 +130,7 @@ async fn test_gitlab_create_and_get_issue() {
         description: Some("## 描述\n\n这是一个自动化测试创建的 Issue。\n\n## Acceptance Criteria\n\n- [ ] 测试通过\n\n## Validation\n\n- [ ] `cargo test`".to_string()),
         labels: vec!["test".to_string()],
         assignee: None,
+        add_default_todo: true,
     };
 
     let created = client

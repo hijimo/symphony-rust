@@ -196,13 +196,17 @@ impl Drop for ProcessGroupGuard {
     }
 }
 
+fn askpass_path(dir: &Path) -> PathBuf {
+    dir.join("git-askpass.sh")
+}
+
 /// Write the askpass helper. It reads the token from an environment variable
 /// set only on the git child, so the script file never contains a secret.
 async fn ensure_askpass(dir: &Path) -> Result<PathBuf, WorkspaceError> {
     tokio::fs::create_dir_all(dir)
         .await
         .map_err(|e| WorkspaceError::Io { source: e })?;
-    let path = dir.join("git-askpass.sh");
+    let path = askpass_path(dir);
     let script = "#!/bin/sh\ncase \"$1\" in\n  Username*) printf '%s\\n' oauth2 ;;\n  *) printf '%s\\n' \"$SYMPHONY_GIT_TOKEN\" ;;\nesac\n";
     let needs_write = match tokio::fs::read_to_string(&path).await {
         Ok(existing) => existing != script,
@@ -256,6 +260,14 @@ async fn git_with_progress(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // Any git command may hit the remote: with partial clones
+    // (`--filter=blob:none`) even `checkout` lazily fetches blobs from the
+    // promisor remote. Since the global credential helper is disabled above,
+    // every invocation must carry the askpass helper, not only fetch/clone.
+    let askpass = match askpass {
+        Some(p) => Some(p.to_path_buf()),
+        None => Some(askpass_path(&ctx.askpass_dir)).filter(|p| p.exists()),
+    };
     if let (Some(askpass), Some(token)) = (askpass, ctx.token.as_deref()) {
         cmd.env("GIT_ASKPASS", askpass)
             .env("SYMPHONY_GIT_TOKEN", token);
@@ -825,6 +837,173 @@ fn pre_push_whitelist(base: &str) -> String {
          done\n\
          exit 0\n"
     )
+}
+
+/// Files that must never be committed from a `single_root` workspace.
+const SINGLE_ROOT_EXCLUDES: &[&str] = &["/.symphony-workspace.json", "/.symphony/"];
+
+/// Initialize (or re-enter) a `single_root` checkout in place: the issue
+/// workspace root itself becomes the repository (self-verification design §4.2).
+///
+/// - `git init` + `remote add origin <url without token>` when missing,
+///   an existing `origin` must point at the same repository;
+/// - full fetch (no blob filter) with askpass and progress pings;
+/// - `checkout --detach --force origin/<default_branch>`;
+/// - Symphony files go to `.git/info/exclude`.
+///
+/// No repository-level credential override and no pre-push hook: the agent
+/// keeps using the global credential helper and names its own branches.
+pub async fn init_single_root(
+    ctx: &RepoCheckoutContext,
+    dir: &Path,
+    slug: &str,
+    default_branch: &str,
+    on_progress: &(dyn Fn() + Send + Sync),
+) -> Result<String, WorkspaceError> {
+    let url = ctx.clone_url(slug);
+    let askpass = if ctx.token.is_some() {
+        Some(ensure_askpass(&ctx.askpass_dir).await?)
+    } else {
+        None
+    };
+    let askpass = askpass.as_deref();
+    if !dir.join(".git").exists() {
+        git(ctx, askpass, dir, &["init", "-q"], ctx.fetch_timeout).await?;
+    }
+    match git(
+        ctx,
+        askpass,
+        dir,
+        &["remote", "get-url", "origin"],
+        ctx.fetch_timeout,
+    )
+    .await
+    {
+        Ok(existing) => {
+            if !same_remote(&existing, &url) {
+                return Err(WorkspaceError::ManualRecoveryRequired {
+                    reason: format!(
+                        "workspace_single_root_remote_mismatch:{}",
+                        redact(&existing)
+                    ),
+                });
+            }
+            git(
+                ctx,
+                askpass,
+                dir,
+                &["remote", "set-url", "origin", &url],
+                ctx.fetch_timeout,
+            )
+            .await?;
+        }
+        Err(_) => {
+            git(
+                ctx,
+                askpass,
+                dir,
+                &["remote", "add", "origin", &url],
+                ctx.fetch_timeout,
+            )
+            .await?;
+        }
+    }
+    git_with_progress(
+        ctx,
+        askpass,
+        dir,
+        &["fetch", "--prune", "origin"],
+        ctx.clone_timeout,
+        on_progress,
+    )
+    .await?;
+    let target = format!("origin/{default_branch}");
+    git(
+        ctx,
+        askpass,
+        dir,
+        &["checkout", "-q", "--detach", "--force", &target],
+        ctx.clone_timeout,
+    )
+    .await?;
+    write_info_exclude(dir).await?;
+    rev_parse(ctx, dir, "HEAD").await
+}
+
+/// Refresh `origin/<default_branch>` of a `single_root` workspace before each
+/// run (best effort; failures are logged by the caller).
+pub async fn refresh_single_root(
+    ctx: &RepoCheckoutContext,
+    dir: &Path,
+    default_branch: &str,
+) -> Result<(), WorkspaceError> {
+    let askpass = if ctx.token.is_some() {
+        Some(ensure_askpass(&ctx.askpass_dir).await?)
+    } else {
+        None
+    };
+    let refspec = format!("+refs/heads/{default_branch}:refs/remotes/origin/{default_branch}");
+    git(
+        ctx,
+        askpass.as_deref(),
+        dir,
+        &["fetch", "origin", &refspec],
+        ctx.fetch_timeout,
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Refresh `origin/<base>` of a legacy `repo/` checkout without touching its
+/// own origin configuration (which may embed a token).
+pub async fn refresh_legacy_repo(
+    ctx: &RepoCheckoutContext,
+    dir: &Path,
+    slug: &str,
+    base: &str,
+) -> Result<(), WorkspaceError> {
+    let askpass = if ctx.token.is_some() {
+        Some(ensure_askpass(&ctx.askpass_dir).await?)
+    } else {
+        None
+    };
+    let url = ctx.clone_url(slug);
+    let refspec = format!("+refs/heads/{base}:refs/remotes/origin/{base}");
+    git(
+        ctx,
+        askpass.as_deref(),
+        dir,
+        &["fetch", &url, &refspec],
+        ctx.fetch_timeout,
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn write_info_exclude(dir: &Path) -> Result<(), WorkspaceError> {
+    let info = dir.join(".git").join("info");
+    tokio::fs::create_dir_all(&info)
+        .await
+        .map_err(|e| WorkspaceError::Io { source: e })?;
+    let path = info.join("exclude");
+    let mut text = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+    let mut changed = false;
+    for line in SINGLE_ROOT_EXCLUDES {
+        if !text.lines().any(|l| l.trim() == *line) {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(line);
+            text.push('\n');
+            changed = true;
+        }
+    }
+    if changed {
+        tokio::fs::write(&path, text)
+            .await
+            .map_err(|e| WorkspaceError::Io { source: e })?;
+    }
+    Ok(())
 }
 
 async fn rev_parse(

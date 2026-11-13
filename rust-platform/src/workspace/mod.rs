@@ -8,6 +8,7 @@
 pub mod gc;
 pub mod repo_api;
 pub mod repos;
+pub mod root_guard;
 pub mod terminal_marker;
 
 use std::path::{Path, PathBuf};
@@ -55,6 +56,17 @@ pub struct MultiRepoPrepare<'a> {
     pub on_progress: &'a (dyn Fn() + Send + Sync),
 }
 
+/// Inputs of [`WorkspaceManager::prepare_single_root_workspace`].
+pub struct SingleRootPrepare<'a> {
+    pub issue_id: &'a str,
+    pub issue_identifier: &'a str,
+    pub run_id: &'a str,
+    pub service_instance_id: &'a str,
+    pub checkout: &'a repos::RepoCheckoutContext,
+    pub spec: &'a crate::config::service_config::SingleRepoSpec,
+    pub on_progress: &'a (dyn Fn() + Send + Sync),
+}
+
 /// Outcome of multi-repo synchronization for one attempt.
 #[derive(Debug, Clone)]
 pub struct MultiRepoState {
@@ -88,6 +100,33 @@ pub(crate) struct WorkspaceMetadata {
     /// Rework switch in progress, bound to its label event (design §5.1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) rework_pending: Option<repos::ReworkPending>,
+    /// `"single_root"` for schema 3 (self-verification design §4.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) layout: Option<String>,
+}
+
+/// Marker layout name of a Symphony-prepared single repository.
+pub const LAYOUT_SINGLE_ROOT: &str = "single_root";
+
+/// Workspace layout as seen by the runner and the prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceLayout {
+    /// Schema 3: Symphony checked the repository out at the workspace root.
+    SingleRoot,
+    /// Schema 1: repository cloned by the agent (root or `repo/`).
+    Legacy,
+    /// Schema 2: multiple repositories below the root.
+    MultiRepo,
+}
+
+impl WorkspaceLayout {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SingleRoot => "single_root",
+            Self::Legacy => "legacy",
+            Self::MultiRepo => "multi_repo",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -275,6 +314,35 @@ impl WorkspaceManager {
         if metadata_path.exists() {
             let mut metadata = read_workspace_metadata(&metadata_path).await?;
             validate_workspace_metadata(&metadata, issue_id, &issue_id_path_key, &workspace_key)?;
+            // Ready multi-repo (schema 2) and single_root (schema 3)
+            // workspaces are reused as they are by workers without checkout
+            // config, e.g. the testing agent whose workflow carries neither
+            // `workspace.repos` nor `workspace.slug` (same as before schema 3).
+            // Unfinished ones need their checkout config to be re-entered.
+            if metadata.schema_version == 2 && metadata.init_status != "ready" {
+                return Err(WorkspaceError::ManualRecoveryRequired {
+                    reason: "workspace_multi_repo_not_migrated".to_string(),
+                });
+            }
+            if metadata.schema_version == 3 && metadata.init_status != "ready" {
+                return Err(WorkspaceError::ManualRecoveryRequired {
+                    reason: "workspace_single_root_requires_checkout_config".to_string(),
+                });
+            }
+            if metadata.schema_version == 1
+                && metadata.init_status == "ready"
+                && !workspace_path.join(".git").exists()
+                && !workspace_path.join("repo").join(".git").exists()
+                && !is_only_marker(&workspace_path).await
+            {
+                // Legacy layout without a repository at the root or in
+                // `repo/` (agent clones elsewhere, or a non-git hook). Kept
+                // running as before; flagged for operators (design §4.2).
+                tracing::warn!(
+                    workspace = %workspace_path.display(),
+                    "legacy workspace has no git repository at the root or in repo/"
+                );
+            }
             if metadata.init_status == "ready" {
                 metadata.last_used_at = Some(Utc::now());
                 write_workspace_metadata(&metadata_path, metadata).await?;
@@ -337,6 +405,7 @@ impl WorkspaceManager {
                 repos: Default::default(),
                 rework_handled_event_id: None,
                 rework_pending: None,
+                layout: None,
             },
         )
         .await?;
@@ -364,6 +433,7 @@ impl WorkspaceManager {
                     repos: Default::default(),
                     rework_handled_event_id: None,
                     rework_pending: None,
+                    layout: None,
                 };
                 let _ = write_workspace_metadata(&metadata_path, failed_metadata).await;
                 quarantine_workspace(&self.root, &workspace_path, &issue_id_path_key, run_id)
@@ -391,6 +461,7 @@ impl WorkspaceManager {
                 repos: Default::default(),
                 rework_handled_event_id: None,
                 rework_pending: None,
+                layout: None,
             },
         )
         .await?;
@@ -479,6 +550,11 @@ impl WorkspaceManager {
                     reason: "workspace_v1_not_migrated".to_string(),
                 });
             }
+            if metadata.schema_version == 3 {
+                return Err(WorkspaceError::ManualRecoveryRequired {
+                    reason: "workspace_single_root_not_migrated".to_string(),
+                });
+            }
             Some(metadata)
         } else {
             if !created_now && !is_dir_empty(&workspace_path).await? {
@@ -510,6 +586,7 @@ impl WorkspaceManager {
             repos: Default::default(),
             rework_handled_event_id: None,
             rework_pending: None,
+            layout: None,
         });
         let was_ready = metadata.init_status == "ready";
         if !was_ready {
@@ -611,6 +688,203 @@ impl WorkspaceManager {
         ))
     }
 
+    /// Single-repo `single_root` workspace (schema 3, self-verification
+    /// design §4.2): Symphony initializes the repository in place at the
+    /// workspace root before Codex starts.
+    ///
+    /// - fresh / empty dir or a schema-1 marker-only dir → initialize;
+    /// - `schema 3 + initializing` (we hold the lock, so the previous run is
+    ///   dead) → re-enter idempotently;
+    /// - `schema 3 + ready` → reuse and refresh `origin/<default_branch>`;
+    /// - other schema-1 workspaces → `Ok(None)`: the caller keeps the legacy
+    ///   single-repo path (never migrated).
+    pub async fn prepare_single_root_workspace(
+        &self,
+        req: SingleRootPrepare<'_>,
+    ) -> Result<Option<WorkspaceRunLease>, WorkspaceError> {
+        let SingleRootPrepare {
+            issue_id,
+            issue_identifier,
+            run_id,
+            service_instance_id,
+            checkout,
+            spec,
+            on_progress,
+        } = req;
+        let issue_id_path_key = Self::issue_id_path_key(issue_id);
+        let identifier_key = sanitize_workspace_key(issue_identifier)?;
+        let workspace_key = format!("{issue_id_path_key}-{identifier_key}");
+        let workspace_path = self.root.join(&workspace_key);
+        let metadata_path = workspace_path.join(".symphony-workspace.json");
+        let locks_dir = self.root.join(".symphony").join("locks").join("issues");
+        tokio::fs::create_dir_all(&locks_dir)
+            .await
+            .map_err(|e| WorkspaceError::Io { source: e })?;
+        let lock_path = locks_dir.join(format!("{issue_id_path_key}.lock"));
+        let lock_sidecar_path = locks_dir.join(format!("{issue_id_path_key}.json"));
+        let lock_guard = acquire_stable_lock_file(&lock_path).await?;
+
+        let created_now = if workspace_path.is_dir() {
+            false
+        } else {
+            tokio::fs::create_dir_all(&workspace_path)
+                .await
+                .map_err(|e| WorkspaceError::CreateFailed { source: e })?;
+            true
+        };
+        self.validate_path_containment(&workspace_path)?;
+
+        // after_create already run by a marker-only schema-1 workspace.
+        let mut inherited_fingerprint = None;
+        let existing = if metadata_path.exists() {
+            let m = read_workspace_metadata(&metadata_path).await?;
+            validate_workspace_metadata(&m, issue_id, &issue_id_path_key, &workspace_key)?;
+            match m.schema_version {
+                2 => {
+                    return Err(WorkspaceError::ManualRecoveryRequired {
+                        reason: "workspace_multi_repo_not_migrated".to_string(),
+                    })
+                }
+                1 if is_only_marker(&workspace_path).await => {
+                    inherited_fingerprint = m.after_create_fingerprint.clone();
+                    None // upgrade in place
+                }
+                1 => return Ok(None), // legacy, keep as is
+                _ => Some(m),
+            }
+        } else {
+            if !created_now && !is_dir_empty(&workspace_path).await? {
+                return Err(WorkspaceError::ManualRecoveryRequired {
+                    reason: "workspace_unknown_requires_manual".to_string(),
+                });
+            }
+            None
+        };
+
+        if let Some(m) = &existing {
+            if m.init_status == "failed" {
+                return Err(WorkspaceError::ManualRecoveryRequired {
+                    reason: "workspace_not_ready:failed".to_string(),
+                });
+            }
+        }
+        let started_at = existing
+            .as_ref()
+            .map(|m| m.init_started_at)
+            .unwrap_or_else(Utc::now);
+        let mut metadata = existing.clone().unwrap_or(WorkspaceMetadata {
+            schema_version: 3,
+            issue_id: issue_id.to_string(),
+            issue_id_path_key: issue_id_path_key.clone(),
+            workspace_key: workspace_key.clone(),
+            issue_identifier: issue_identifier.to_string(),
+            init_started_at: started_at,
+            initialized_at: None,
+            last_used_at: Some(started_at),
+            init_status: "initializing".to_string(),
+            after_create_fingerprint: inherited_fingerprint,
+            initialized_by_run_id: run_id.to_string(),
+            expected_git_root: Some(".".to_string()),
+            last_error: None,
+            repos: Default::default(),
+            rework_handled_event_id: None,
+            rework_pending: None,
+            layout: Some(LAYOUT_SINGLE_ROOT.to_string()),
+        });
+        let was_ready = metadata.init_status == "ready";
+
+        if was_ready {
+            if let Err(e) =
+                repos::refresh_single_root(checkout, &workspace_path, &spec.default_branch).await
+            {
+                tracing::warn!(error = %e, "single_root: refreshing default branch failed; continuing");
+            }
+        } else {
+            metadata.init_status = "initializing".to_string();
+            metadata.initialized_by_run_id = run_id.to_string();
+            metadata.last_error = None;
+            write_workspace_metadata(&metadata_path, metadata.clone()).await?;
+            if let Err(e) = repos::init_single_root(
+                checkout,
+                &workspace_path,
+                &spec.slug,
+                &spec.default_branch,
+                on_progress,
+            )
+            .await
+            {
+                metadata.last_error = Some(WorkspaceMetadataError {
+                    code: "repo_checkout_failed".to_string(),
+                    message: e.to_string(),
+                    at: Utc::now(),
+                });
+                let _ = write_workspace_metadata(&metadata_path, metadata).await;
+                return Err(e);
+            }
+            if let Some(ref script) = self.hooks.after_create {
+                if metadata.after_create_fingerprint.is_none() {
+                    if let Err(e) = self.run_hook("after_create", script, &workspace_path).await {
+                        metadata.init_status = "failed".to_string();
+                        metadata.last_error = Some(WorkspaceMetadataError {
+                            code: "after_create_failed".to_string(),
+                            message: e.to_string(),
+                            at: Utc::now(),
+                        });
+                        let _ = write_workspace_metadata(&metadata_path, metadata).await;
+                        quarantine_workspace(
+                            &self.root,
+                            &workspace_path,
+                            &issue_id_path_key,
+                            run_id,
+                        )
+                        .await?;
+                        return Err(e);
+                    }
+                    metadata.after_create_fingerprint = Some(script_fingerprint(script));
+                    // Persist right away: a crash before `ready` must not
+                    // run a non-idempotent after_create a second time.
+                    write_workspace_metadata(&metadata_path, metadata.clone()).await?;
+                }
+            }
+            metadata.init_status = "ready".to_string();
+            metadata.initialized_at = Some(Utc::now());
+        }
+        if !workspace_path.join(".git").exists() {
+            return Err(WorkspaceError::ManualRecoveryRequired {
+                reason: "workspace_not_ready:no_git".to_string(),
+            });
+        }
+        metadata.last_used_at = Some(Utc::now());
+        write_workspace_metadata(&metadata_path, metadata).await?;
+        write_lock_sidecar(
+            &lock_sidecar_path,
+            LockSidecar {
+                schema_version: 1,
+                issue_id: issue_id.to_string(),
+                issue_id_path_key: issue_id_path_key.clone(),
+                workspace_key: workspace_key.clone(),
+                run_id: run_id.to_string(),
+                service_instance_id: service_instance_id.to_string(),
+                workspace_path: workspace_path.display().to_string(),
+                created_at: Utc::now(),
+                updated_seq: 1,
+            },
+        )
+        .await?;
+        Ok(Some(WorkspaceRunLease {
+            workspace: Workspace {
+                path: workspace_path,
+                workspace_key,
+                created_now: !was_ready,
+            },
+            issue_id_path_key,
+            metadata_path,
+            lock_path,
+            lock_sidecar_path,
+            _lock_guard: lock_guard,
+        }))
+    }
+
     /// True when the issue already has a single-repo (schema 1) workspace.
     ///
     /// Design §8: enabling `workspace.repos` mid-flight never migrates an
@@ -621,9 +895,26 @@ impl WorkspaceManager {
             return false;
         };
         match read_workspace_metadata(&path).await {
-            Ok(m) => m.schema_version == 1,
+            Ok(m) => m.schema_version == 1 || m.layout.as_deref() == Some(LAYOUT_SINGLE_ROOT),
             Err(_) => false,
         }
+    }
+
+    /// Layout recorded in the issue's marker, if any.
+    pub async fn workspace_layout(
+        &self,
+        issue_id: &str,
+        issue_identifier: &str,
+    ) -> Option<WorkspaceLayout> {
+        let path = self
+            .metadata_path_for_issue(issue_id, issue_identifier)
+            .ok()?;
+        let m = read_workspace_metadata(&path).await.ok()?;
+        Some(match (m.schema_version, m.layout.as_deref()) {
+            (3, _) | (_, Some(LAYOUT_SINGLE_ROOT)) => WorkspaceLayout::SingleRoot,
+            (2, _) => WorkspaceLayout::MultiRepo,
+            _ => WorkspaceLayout::Legacy,
+        })
     }
 
     /// Handle a Rework transition for a multi-repo workspace (design §5.1).
@@ -1084,6 +1375,23 @@ fn script_fingerprint(script: &str) -> String {
     format!("fnv1a64:{hash:016x}")
 }
 
+/// True when no process holds the issue lock of `issue_id_path_key` under
+/// `root` (the lock file is missing or can be locked right now). The dev and
+/// testing workers of a project share `root`, so cleanups that must not touch
+/// a running issue check this first.
+pub fn issue_lock_is_free(root: &Path, issue_id_path_key: &str) -> bool {
+    let path = root
+        .join(".symphony")
+        .join("locks")
+        .join("issues")
+        .join(format!("{issue_id_path_key}.lock"));
+    match std::fs::OpenOptions::new().append(true).open(&path) {
+        // Dropping the file releases the probe lock immediately.
+        Ok(file) => matches!(lock_file_exclusive_nonblocking(&file), Ok(true)),
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
 async fn acquire_stable_lock_file(path: &Path) -> Result<Arc<std::fs::File>, WorkspaceError> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -1174,6 +1482,27 @@ fn lock_file_exclusive_nonblocking(_file: &std::fs::File) -> std::io::Result<boo
     Ok(true)
 }
 
+/// True when the directory contains nothing but Symphony's own files.
+async fn is_only_marker(path: &Path) -> bool {
+    let Ok(mut rd) = tokio::fs::read_dir(path).await else {
+        return false;
+    };
+    loop {
+        match rd.next_entry().await {
+            Ok(Some(e)) => {
+                let name = e.file_name();
+                let n = name.to_string_lossy();
+                if n != ".symphony-workspace.json" && n != ".symphony" {
+                    return false;
+                }
+            }
+            Ok(None) => return true,
+            // Unknown content: never treat it as an empty workspace.
+            Err(_) => return false,
+        }
+    }
+}
+
 async fn is_dir_empty(path: &Path) -> Result<bool, WorkspaceError> {
     let mut entries = tokio::fs::read_dir(path)
         .await
@@ -1202,7 +1531,7 @@ fn validate_workspace_metadata(
     issue_id_path_key: &str,
     workspace_key: &str,
 ) -> Result<(), WorkspaceError> {
-    if !matches!(metadata.schema_version, 1 | 2) {
+    if !matches!(metadata.schema_version, 1..=3) {
         return Err(WorkspaceError::MetadataInvalid {
             reason: format!("unsupported schema {}", metadata.schema_version),
         });
@@ -1471,9 +1800,19 @@ mod tests {
         assert_eq!(back.rework_handled_event_id, Some(7));
         assert!(validate_workspace_metadata(&back, "1", "i-31", "i-31-_1").is_ok());
 
-        let mut v3 = m;
+        let mut v3 = m.clone();
         v3.schema_version = 3;
-        assert!(validate_workspace_metadata(&v3, "1", "i-31", "i-31-_1").is_err());
+        v3.layout = Some(LAYOUT_SINGLE_ROOT.to_string());
+        let back: WorkspaceMetadata =
+            serde_json::from_str(&serde_json::to_string(&v3).unwrap()).unwrap();
+        assert_eq!(back.layout.as_deref(), Some(LAYOUT_SINGLE_ROOT));
+        assert!(validate_workspace_metadata(&back, "1", "i-31", "i-31-_1").is_ok());
+        // v1 serialization does not grow the layout key either.
+        assert!(!serde_json::to_string(&m).unwrap().contains("layout"));
+
+        let mut v4 = m;
+        v4.schema_version = 4;
+        assert!(validate_workspace_metadata(&v4, "1", "i-31", "i-31-_1").is_err());
     }
 
     #[test]

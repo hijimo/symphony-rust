@@ -74,6 +74,74 @@ mod turn_start_request {
 
 mod event_parsing {
     use super::*;
+    use symphony_platform::agent::codex_client::completed_turn_result;
+
+    #[test]
+    fn test_app_server_turn_completed_success() {
+        let event = json!({
+            "method": "turn/completed",
+            "params": {"turn": {"id": "t1", "status": "completed", "error": null}}
+        });
+        assert!(matches!(
+            completed_turn_result(&event),
+            TurnResult::Completed
+        ));
+    }
+
+    #[test]
+    fn test_app_server_turn_completed_with_quota_error_is_failure() {
+        let event = json!({
+            "method": "turn/completed",
+            "params": {"turn": {
+                "id": "t1",
+                "status": "failed",
+                "error": {
+                    "message": "Monthly request limit exceeded. Account has reached its monthly quota.",
+                    "codexErrorInfo": "other"
+                }
+            }}
+        });
+        match completed_turn_result(&event) {
+            TurnResult::Failed { reason } => {
+                assert!(reason.contains("turn failed"));
+                assert!(reason.contains("Monthly request limit exceeded"));
+            }
+            _ => panic!("Expected TurnResult::Failed"),
+        }
+    }
+
+    #[test]
+    fn test_app_server_turn_completed_error_without_status_is_failure() {
+        let event = json!({
+            "method": "turn/completed",
+            "params": {"turn": {"error": {"message": "unauthorized"}}}
+        });
+        match completed_turn_result(&event) {
+            TurnResult::Failed { reason } => assert_eq!(reason, "unauthorized"),
+            _ => panic!("Expected TurnResult::Failed"),
+        }
+    }
+
+    #[test]
+    fn test_app_server_turn_interrupted_is_failure() {
+        let event = json!({
+            "method": "turn/completed",
+            "params": {"turn": {"status": "interrupted", "error": null}}
+        });
+        match completed_turn_result(&event) {
+            TurnResult::Failed { reason } => assert_eq!(reason, "turn interrupted"),
+            _ => panic!("Expected TurnResult::Failed"),
+        }
+    }
+
+    #[test]
+    fn test_legacy_turn_completed_without_payload_is_success() {
+        let event = json!({"type": "turn.completed"});
+        assert!(matches!(
+            completed_turn_result(&event),
+            TurnResult::Completed
+        ));
+    }
 
     /// Simulate the check_turn_terminal logic for testing
     fn check_turn_terminal(event: &serde_json::Value) -> Option<Result<TurnResult, CodexError>> {

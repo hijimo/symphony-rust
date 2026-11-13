@@ -227,6 +227,13 @@ impl TeamworkConfig {
 }
 
 /// Typed runtime configuration (SPEC Section 4.1.3 + Section 6.4).
+/// Single-repo checkout source (self-verification design §4.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SingleRepoSpec {
+    pub slug: String,
+    pub default_branch: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
     // -- tracker --
@@ -246,6 +253,14 @@ pub struct ServiceConfig {
     pub workspace_gc: WorkspaceGcConfig,
     /// Multi-repo workspace entries; empty = legacy single-repo mode.
     pub workspace_repos: Vec<RepoSpec>,
+    /// Single-repo checkout source (`workspace.slug` / `workspace.default_branch`).
+    /// When set, Symphony prepares the repository at the workspace root
+    /// (`single_root` layout) before Codex starts.
+    pub workspace_single_repo: Option<SingleRepoSpec>,
+
+    // -- validation --
+    /// Deterministic validation gate (`validation.gate`, default off).
+    pub validation_gate: bool,
 
     // -- hooks --
     pub hooks: HooksConfig,
@@ -289,6 +304,8 @@ impl Default for ServiceConfig {
             workspace_root: std::env::temp_dir().join("symphony_workspaces"),
             workspace_gc: WorkspaceGcConfig::default(),
             workspace_repos: Vec::new(),
+            workspace_single_repo: None,
+            validation_gate: false,
             hooks: HooksConfig::default(),
             max_concurrent_agents: 10,
             max_turns: 20,
@@ -385,6 +402,48 @@ impl ServiceConfig {
             hooks.after_create.as_deref(),
         )?;
 
+        let workspace_single_repo = match (
+            get_optional_string(&workspace, "slug").filter(|v| !v.trim().is_empty()),
+            get_optional_string(&workspace, "default_branch").filter(|v| !v.trim().is_empty()),
+        ) {
+            (Some(slug), Some(branch)) if !slug.is_empty() && !branch.is_empty() => {
+                if !workspace_repos.is_empty() {
+                    return Err(ServiceConfigError::InvalidValue {
+                        field: "workspace.slug".to_string(),
+                        detail: "workspace.slug cannot be combined with workspace.repos"
+                            .to_string(),
+                    });
+                }
+                if hooks
+                    .after_create
+                    .as_deref()
+                    .is_some_and(crate::config::repos::clones_into_workspace_root)
+                {
+                    return Err(ServiceConfigError::InvalidValue {
+                        field: "hooks.after_create".to_string(),
+                        detail: "Symphony already checks the repository out at the workspace root \
+                                 (workspace.slug); after_create must not clone into `.`"
+                            .to_string(),
+                    });
+                }
+                Some(SingleRepoSpec {
+                    slug,
+                    default_branch: branch,
+                })
+            }
+            (None, None) => None,
+            _ => {
+                return Err(ServiceConfigError::InvalidValue {
+                    field: "workspace.slug".to_string(),
+                    detail: "workspace.slug and workspace.default_branch must be set together"
+                        .to_string(),
+                })
+            }
+        };
+
+        let validation = get_section(config, "validation");
+        let validation_gate = matches!(validation.get("gate"), Some(YamlValue::Bool(true)));
+
         // -- agent section --
         let agent = get_section(config, "agent");
         let max_concurrent_agents =
@@ -430,6 +489,8 @@ impl ServiceConfig {
             workspace_root,
             workspace_gc,
             workspace_repos,
+            workspace_single_repo,
+            validation_gate,
             hooks,
             max_concurrent_agents,
             max_turns,

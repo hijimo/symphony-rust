@@ -598,6 +598,39 @@ async fn setup_workspace(host: &GiteaHost) -> TempDir {
     workspace
 }
 
+/// Fill the web-platform Gitea template the way `templates::render_template`
+/// does for a single-repo project with testing disabled. Every placeholder of
+/// the template must be covered here, or the YAML front matter will not parse.
+fn render_gitea_template(project_slug: &str, endpoint: &str, host: &str) -> String {
+    let rendered = include_str!("../../web-platform/src/templates/workflow_gitea.md")
+        .replace("{{project_slug}}", project_slug)
+        .replace("{{platform_endpoint}}", endpoint)
+        .replace("{{platform_host}}", host)
+        .replace("{{workspace_root}}", "/tmp/symphony-test")
+        .replace("{{max_concurrent_agents}}", "2")
+        .replace("{{default_branch}}", "main")
+        .replace("{{repos_section}}", "")
+        .replace("{{hooks_section}}", "")
+        .replace("{{codex_section}}", "codex:\n  read_timeout_ms: 30000\n")
+        .replace("{{testing_max_turns}}", "12")
+        .replace("{{testing_workflow_labels}}", "")
+        .replace("{{testing_status_map}}", "")
+        .replace(
+            "{{testing_gate_section}}",
+            "12. Move the issue to `Human Review`.",
+        )
+        .replace("{{testing_fail_minor_section}}", "");
+    // Liquid expressions are written `{{ issue.x }}`; platform placeholders
+    // have no inner space.
+    let unfilled: Vec<&str> = rendered
+        .match_indices("{{")
+        .filter_map(|(i, _)| rendered[i + 2..].split("}}").next())
+        .filter(|name| !name.is_empty() && !name.starts_with(' '))
+        .collect();
+    assert!(unfilled.is_empty(), "unfilled placeholders: {unfilled:?}");
+    rendered
+}
+
 /// Test: Workflow template renders correctly with Gitea issue context.
 #[tokio::test]
 #[ignore]
@@ -605,21 +638,11 @@ async fn test_gitea_workflow_template_renders() {
     common::load_env();
 
     // The raw template has {{placeholders}} — render them first
-    let raw_template = include_str!("../../web-platform/src/templates/workflow_gitea.md");
-    let rendered_workflow = raw_template
-        .replace("{{project_slug}}", "luk/symphony_test_repo")
-        .replace(
-            "{{platform_endpoint}}",
-            "https://omv.iloxe.com:23000/api/v1",
-        )
-        .replace("{{platform_host}}", "https://omv.iloxe.com:23000")
-        .replace("{{workspace_root}}", "/tmp/symphony-test")
-        .replace("{{max_concurrent_agents}}", "2")
-        .replace("{{default_branch}}", "main")
-        .replace("{{hooks_section}}", "")
-        .replace("{{codex_section}}", "codex:\n  read_timeout_ms: 30000\n")
-        .replace("{{testing_max_turns}}", "12")
-        .replace("{{testing_skip_labels}}", r#"["hotfix", "urgent"]"#);
+    let rendered_workflow = render_gitea_template(
+        "luk/symphony_test_repo",
+        "https://omv.iloxe.com:23000/api/v1",
+        "https://omv.iloxe.com:23000",
+    );
 
     let definition =
         parse_workflow(&rendered_workflow).expect("Failed to parse Gitea workflow template");
@@ -703,19 +726,9 @@ async fn test_gitea_workflow_codex_state_transition() {
     eprintln!("[GITEA-E2E] STEP 1: Loading Gitea workflow template...");
     eprintln!("============================================================");
 
-    let template_content = include_str!("../../web-platform/src/templates/workflow_gitea.md");
     let gitea_base_url = std::env::var("GITEA_BASE_URL").unwrap();
-    let rendered_workflow = template_content
-        .replace("{{project_slug}}", host.project_path())
-        .replace("{{platform_endpoint}}", &gitea_base_url)
-        .replace("{{platform_host}}", &gitea_base_url)
-        .replace("{{workspace_root}}", "/tmp/symphony-test")
-        .replace("{{max_concurrent_agents}}", "2")
-        .replace("{{default_branch}}", "main")
-        .replace("{{hooks_section}}", "")
-        .replace("{{codex_section}}", "codex:\n  read_timeout_ms: 30000\n")
-        .replace("{{testing_max_turns}}", "12")
-        .replace("{{testing_skip_labels}}", r#"["hotfix", "urgent"]"#);
+    let rendered_workflow =
+        render_gitea_template(host.project_path(), &gitea_base_url, &gitea_base_url);
     let definition =
         parse_workflow(&rendered_workflow).expect("Failed to parse Gitea workflow template");
     let engine =

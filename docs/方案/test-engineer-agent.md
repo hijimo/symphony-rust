@@ -1,5 +1,7 @@
 # Test Engineer Agent 介入方案
 
+> **2026-11 更新**：默认流程已改为在开发阶段由验证子 Agent 完成验证（见 [self-verification-and-agents-md.md](./self-verification-and-agents-md.md)）。本方案的独立 `Testing` 阶段改为可选：开启 `testing_enabled` 时，测试 Agent 读取 workpad 中的验证表，只复核「失败」「未验证」「跳过」的项。
+
 ## 背景
 
 当前 workflow 中开发任务完成后的测试环节依赖 issue 自带的 `Validation` 段落，本质是"开发者自测"。缺少独立的测试视角，容易遗漏边界条件和回归问题。

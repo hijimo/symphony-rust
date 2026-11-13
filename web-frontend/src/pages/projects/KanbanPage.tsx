@@ -10,8 +10,12 @@ import {
   Chip,
   Skeleton,
 } from '@mui/material';
-import { Refresh, Add } from '@mui/icons-material';
+import { Refresh, Add, Description } from '@mui/icons-material';
+import { ToggleButton, ToggleButtonGroup } from '@mui/material';
 import KanbanBoard from '../../components/kanban/KanbanBoard';
+import StageBoard from '../../components/kanban/StageBoard';
+import { getStageKanban } from '../../api/changes';
+import type { StageKanban } from '../../types/changes';
 import KanbanSkeleton from '../../components/kanban/KanbanSkeleton';
 import AuthorFilter from '../../components/kanban/AuthorFilter';
 import { useKanbanStore } from '../../store/kanbanStore';
@@ -46,6 +50,28 @@ export default function KanbanPage() {
   const [projectNameLoading, setProjectNameLoading] = useState(true);
   const [projectNameError, setProjectNameError] = useState(false);
   const initialFetchDone = useRef(false);
+  const [view, setView] = useState<'stage' | 'classic'>(
+    () => (localStorage.getItem('kanbanView') as 'stage' | 'classic' | null) ?? 'stage',
+  );
+  const [stageData, setStageData] = useState<StageKanban | null>(null);
+  const [stageError, setStageError] = useState<string | null>(null);
+
+  const loadStages = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      setStageData(await getStageKanban(projectId, { search: searchInput || undefined }));
+      setStageError(null);
+    } catch (e) {
+      setStageError((e as Error).message);
+    }
+  }, [projectId, searchInput]);
+
+  useEffect(() => {
+    if (view !== 'stage') return;
+    void loadStages();
+    const t = window.setInterval(() => void loadStages(), KANBAN_AUTO_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(t);
+  }, [view, loadStages]);
 
   // Reset on project change or unmount
   useEffect(() => {
@@ -147,8 +173,9 @@ export default function KanbanPage() {
   const handleRefresh = useCallback(() => {
     if (projectId) {
       refresh(projectId);
+      if (view === 'stage') void loadStages();
     }
-  }, [projectId, refresh]);
+  }, [projectId, refresh, view, loadStages]);
 
   // Collect unique authors from all columns for the filter dropdown
   const allAuthors = useMemo((): PlatformUser[] => {
@@ -203,6 +230,28 @@ export default function KanbanPage() {
           </Typography>
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <ToggleButtonGroup
+            size="small"
+            exclusive
+            value={view}
+            onChange={(_, v) => {
+              if (!v) return;
+              setView(v);
+              localStorage.setItem('kanbanView', v);
+            }}
+          >
+            <ToggleButton value="stage" sx={{ py: 0.3, fontSize: 12 }}>阶段视图</ToggleButton>
+            <ToggleButton value="classic" sx={{ py: 0.3, fontSize: 12 }}>原视图</ToggleButton>
+          </ToggleButtonGroup>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<Description />}
+            onClick={() => navigate(`/projects/${id}/changes/new`)}
+            sx={{ textTransform: 'none', borderRadius: '4px', fontSize: '13px' }}
+          >
+            新建需求
+          </Button>
           <Button
             size="small"
             variant="contained"
@@ -280,7 +329,15 @@ export default function KanbanPage() {
       )}
 
       {/* Content */}
-      {loading && !kanbanData ? (
+      {view === 'stage' ? (
+        stageError ? (
+          <Alert severity="error" action={<Button size="small" onClick={() => void loadStages()}>重试</Button>}>{stageError}</Alert>
+        ) : stageData ? (
+          <StageBoard data={stageData} projectId={projectId} onChanged={() => void loadStages()} />
+        ) : (
+          <KanbanSkeleton />
+        )
+      ) : loading && !kanbanData ? (
         <KanbanSkeleton />
       ) : kanbanData ? (
         <KanbanBoard data={kanbanData} prsLoading={prsLoading} />

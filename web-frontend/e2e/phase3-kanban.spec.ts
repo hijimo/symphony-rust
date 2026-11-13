@@ -6,6 +6,8 @@ const GITLAB_PROJECT_URL = 'http://gitlab.jushuitan-inc.com:8081/zimei10525/symp
 
 let adminToken = '';
 let projectId = 0;
+// Issues created through the UI in this run, closed again in afterAll.
+const createdTitles: string[] = [];
 
 test.describe('Phase 3: Kanban & Issue Creation', () => {
   test.skip(!GITLAB_TOKEN, 'GITLAB_TOKEN must be set for Phase 3 E2E tests');
@@ -49,11 +51,29 @@ test.describe('Phase 3: Kanban & Issue Creation', () => {
     console.log(`Using project ID: ${projectId}`);
   });
 
+  test.afterAll(async ({ request }) => {
+    // The app has no close endpoint; close the test issues on GitLab directly.
+    const api = `${GITLAB_HOST}/api/v4/projects/${encodeURIComponent('zimei10525/symphony_e2e_test_repo')}/issues`;
+    const headers = { 'PRIVATE-TOKEN': GITLAB_TOKEN };
+    for (const title of createdTitles) {
+      const found = await request.get(api, { headers, params: { search: title, state: 'opened' } });
+      if (!found.ok()) continue;
+      for (const issue of (await found.json()) as { iid: number; title: string }[]) {
+        if (issue.title === title) {
+          await request.put(`${api}/${issue.iid}`, { headers, params: { state_event: 'close' } });
+        }
+      }
+    }
+  });
+
   test.beforeEach(async ({ page }) => {
     // Set auth token in localStorage directly (avoid rate limiting from repeated UI logins)
     await page.goto('/login');
     await page.evaluate((token) => {
       localStorage.setItem('token', token);
+      // These cases cover the issue/MR columns of the classic view; the stage
+      // view became the default with the SDLC workbench.
+      localStorage.setItem('kanbanView', 'classic');
     }, adminToken);
   });
 
@@ -108,6 +128,7 @@ test.describe('Phase 3: Kanban & Issue Creation', () => {
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const title = `[E2E] Playwright test ${timestamp}`;
+    createdTitles.push(title);
 
     // Fill in the title
     const titleInput = page.locator('input').first();

@@ -72,6 +72,31 @@ pub trait Tracker: Send + Sync {
     async fn set_workflow_state(&self, _issue_id: &str, _state: &str) -> Result<(), TrackerError> {
         Ok(())
     }
+
+    /// Whether workpad / label operations below are supported.
+    fn supports_workpad(&self) -> bool {
+        false
+    }
+
+    /// Read the workpad comment: `(comment_id, body)`.
+    async fn fetch_workpad(&self, _issue_id: &str) -> Result<Option<(u64, String)>, TrackerError> {
+        Err(TrackerError::Unsupported("workpad".to_string()))
+    }
+
+    /// Replace the body of the workpad comment.
+    async fn update_workpad(&self, _comment_id: u64, _body: &str) -> Result<(), TrackerError> {
+        Err(TrackerError::Unsupported("workpad".to_string()))
+    }
+
+    /// Add plain (non-workflow) labels.
+    async fn add_labels(&self, _issue_id: &str, _labels: &[String]) -> Result<(), TrackerError> {
+        Err(TrackerError::Unsupported("labels".to_string()))
+    }
+
+    /// Remove plain (non-workflow) labels.
+    async fn remove_labels(&self, _issue_id: &str, _labels: &[String]) -> Result<(), TrackerError> {
+        Err(TrackerError::Unsupported("labels".to_string()))
+    }
 }
 
 /// Unified issue source routing (Linear tracker vs Platform adapter).
@@ -109,4 +134,7 @@ pub enum TrackerError {
 
     #[error("missing endCursor in paginated response")]
     MissingEndCursor,
+
+    #[error("operation not supported by this tracker: {0}")]
+    Unsupported(String),
 }

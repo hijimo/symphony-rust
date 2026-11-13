@@ -48,10 +48,10 @@ test.describe('Navigation and Permissions', () => {
     await context.close();
   });
 
-  test('root path redirects to projects', async ({ page }) => {
+  test('root path redirects to overview', async ({ page }) => {
     await page.goto('/');
-    await page.waitForURL('**/projects', { timeout: 10000 });
-    await expect(page.url()).toContain('/projects');
+    await page.waitForURL('**/overview', { timeout: 10000 });
+    await expect(page.url()).toContain('/overview');
   });
 
   test('admin can see admin menu items', async ({ page }) => {

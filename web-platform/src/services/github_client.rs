@@ -850,6 +850,222 @@ impl GitPlatformClient for GitHubClient {
             })
             .collect())
     }
+
+    async fn update_issue_labels(
+        &self,
+        token: &str,
+        project_path: &str,
+        iid: u64,
+        add: &[String],
+        remove: &[String],
+    ) -> Result<(), GitPlatformError> {
+        if !add.is_empty() {
+            let url = format!(
+                "{}/repos/{}/issues/{}/labels",
+                Self::BASE_URL,
+                project_path,
+                iid
+            );
+            self.send_ok(
+                self.authed(self.http.post(&url), token)
+                    .json(&serde_json::json!({ "labels": add })),
+            )
+            .await?;
+        }
+        for label in remove {
+            let url = format!(
+                "{}/repos/{}/issues/{}/labels/{}",
+                Self::BASE_URL,
+                project_path,
+                iid,
+                urlencoding::encode(label)
+            );
+            match self
+                .send_ok(self.authed(self.http.delete(&url), token))
+                .await
+            {
+                Ok(_) | Err(GitPlatformError::NotFound(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    async fn add_issue_comment(
+        &self,
+        token: &str,
+        project_path: &str,
+        iid: u64,
+        body: &str,
+    ) -> Result<(), GitPlatformError> {
+        let url = format!(
+            "{}/repos/{}/issues/{}/comments",
+            Self::BASE_URL,
+            project_path,
+            iid
+        );
+        self.send_ok(
+            self.authed(self.http.post(&url), token)
+                .json(&serde_json::json!({ "body": body })),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn add_merge_request_comment(
+        &self,
+        token: &str,
+        project_path: &str,
+        mr_iid: u64,
+        body: &str,
+    ) -> Result<(), GitPlatformError> {
+        // PR conversation comments use the issues endpoint.
+        self.add_issue_comment(token, project_path, mr_iid, body)
+            .await
+    }
+
+    async fn close_issue(
+        &self,
+        token: &str,
+        project_path: &str,
+        iid: u64,
+    ) -> Result<(), GitPlatformError> {
+        let url = format!("{}/repos/{}/issues/{}", Self::BASE_URL, project_path, iid);
+        self.send_ok(
+            self.authed(self.http.patch(&url), token)
+                .json(&serde_json::json!({ "state": "closed" })),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn set_merge_request_draft(
+        &self,
+        token: &str,
+        project_path: &str,
+        mr_iid: u64,
+        draft: bool,
+    ) -> Result<(), GitPlatformError> {
+        let pr = self.get_merge_request(token, project_path, mr_iid).await?;
+        let node_id = pr.platform_node_id.ok_or_else(|| {
+            GitPlatformError::RequestError("pull request has no node id".to_string())
+        })?;
+        let mutation = if draft {
+            "convertPullRequestToDraft"
+        } else {
+            "markPullRequestReadyForReview"
+        };
+        let query = format!(
+            "mutation($id: ID!) {{ {mutation}(input: {{pullRequestId: $id}}) {{ clientMutationId }} }}"
+        );
+        let resp = self
+            .send_ok(
+                self.authed(self.http.post(format!("{}/graphql", Self::BASE_URL)), token)
+                    .json(&serde_json::json!({ "query": query, "variables": { "id": node_id } })),
+            )
+            .await?;
+        if let Some(errors) = resp.get("errors").and_then(|e| e.as_array()) {
+            // Already in the requested state is not an error.
+            let msg = errors
+                .iter()
+                .filter_map(|e| e.get("message")?.as_str())
+                .collect::<Vec<_>>()
+                .join("; ");
+            if !msg.to_lowercase().contains("already") {
+                return Err(GitPlatformError::RequestError(format!(
+                    "GitHub GraphQL error: {msg}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    async fn close_merge_request(
+        &self,
+        token: &str,
+        project_path: &str,
+        mr_iid: u64,
+    ) -> Result<(), GitPlatformError> {
+        let url = format!("{}/repos/{}/pulls/{}", Self::BASE_URL, project_path, mr_iid);
+        self.send_ok(
+            self.authed(self.http.patch(&url), token)
+                .json(&serde_json::json!({ "state": "closed" })),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn merge_merge_request(
+        &self,
+        token: &str,
+        project_path: &str,
+        mr_iid: u64,
+    ) -> Result<Option<String>, GitPlatformError> {
+        let url = format!(
+            "{}/repos/{}/pulls/{}/merge",
+            Self::BASE_URL,
+            project_path,
+            mr_iid
+        );
+        let resp = self
+            .send_ok(
+                self.authed(self.http.put(&url), token)
+                    .json(&serde_json::json!({ "merge_method": "merge" })),
+            )
+            .await?;
+        Ok(resp.get("sha").and_then(|v| v.as_str()).map(str::to_string))
+    }
+
+    async fn can_merge(&self, token: &str, project_path: &str) -> Result<bool, GitPlatformError> {
+        let url = format!("{}/repos/{}", Self::BASE_URL, project_path);
+        let resp = self
+            .send_ok(self.authed(self.http.get(&url), token))
+            .await?;
+        let p = |k: &str| {
+            resp.pointer(&format!("/permissions/{k}"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        };
+        Ok(p("push") || p("maintain") || p("admin"))
+    }
+}
+
+impl GitHubClient {
+    fn authed(&self, req: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
+        req.header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+    }
+
+    async fn send_ok(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> Result<serde_json::Value, GitPlatformError> {
+        let response = req.send().await.map_err(|e| {
+            if e.is_timeout() {
+                GitPlatformError::ServiceUnavailable("GitHub API request timed out".to_string())
+            } else {
+                GitPlatformError::RequestError(format!("GitHub request failed: {}", e))
+            }
+        })?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            if matches!(status.as_u16(), 405 | 409) {
+                return Err(GitPlatformError::Conflict {
+                    code: PlatformConflictCode::BranchProtectionOrPolicy,
+                    message: format!("GitHub returned {}: {}", status, truncate_body(&text)),
+                });
+            }
+            return Err(Self::map_status_error(status, &text));
+        }
+        if text.trim().is_empty() {
+            return Ok(serde_json::Value::Null);
+        }
+        serde_json::from_str(&text).map_err(|e| {
+            GitPlatformError::RequestError(format!("Failed to parse GitHub response: {e}"))
+        })
+    }
 }
 
 // ==================== GitHub API response types ====================
@@ -1161,6 +1377,7 @@ mod tests {
             description: None,
             labels: vec!["bug".to_string()],
             assignee: None,
+            add_default_todo: true,
         };
 
         let body = GitHubClient::create_issue_body(&req);
@@ -1175,6 +1392,7 @@ mod tests {
             description: None,
             labels: vec!["Todo".to_string()],
             assignee: None,
+            add_default_todo: true,
         };
 
         let body = GitHubClient::create_issue_body(&req);

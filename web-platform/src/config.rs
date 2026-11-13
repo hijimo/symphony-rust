@@ -38,7 +38,7 @@ impl AppConfig {
         let symphony_bin =
             env::var("SYMPHONY_BIN").unwrap_or_else(|_| "symphony-platform".to_string());
         let workspace_root =
-            env::var("SYMPHONY_WORKSPACE_ROOT").unwrap_or_else(|_| "./workspaces".to_string());
+            env::var("SYMPHONY_WORKSPACE_ROOT").unwrap_or_else(|_| default_workspace_root());
 
         Self {
             jwt_secret,
@@ -60,4 +60,13 @@ fn required_env(name: &str) -> String {
             name
         )
     })
+}
+
+/// Default workspace root, same as `dev.sh`: `~/symphony-workspaces`
+/// (outside any repository, self-verification design §4.1).
+fn default_workspace_root() -> String {
+    match env::var("HOME") {
+        Ok(home) if !home.is_empty() => format!("{home}/symphony-workspaces"),
+        _ => "./workspaces".to_string(),
+    }
 }

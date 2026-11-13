@@ -107,6 +107,8 @@ export interface Project {
   codex_sandbox: string | null;
   testing_enabled: boolean;
   testing_max_turns: number;
+  /** Deterministic self-verification gate (default false). */
+  validation_gate?: boolean;
 }
 
 export interface ProjectMember {
@@ -154,6 +156,7 @@ export interface UpdateProjectParams {
   codex_sandbox?: string;
   testing_enabled?: boolean;
   testing_max_turns?: number;
+  validation_gate?: boolean;
 }
 
 export interface AddMemberParams {

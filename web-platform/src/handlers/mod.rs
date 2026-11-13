@@ -3,6 +3,7 @@ pub mod admin_users;
 pub mod ai_generate;
 pub mod alerts;
 pub mod auth;
+pub mod change_docs;
 pub mod concurrency;
 pub mod contributors;
 pub mod issue_mrs;
