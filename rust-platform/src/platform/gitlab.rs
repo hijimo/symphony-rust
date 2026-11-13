@@ -15,8 +15,8 @@ use crate::config::PlatformConfig;
 use crate::error::PlatformError;
 use crate::platform::http_client::HttpClient;
 use crate::platform::{
-    Capability, Comment, CommentId, CreatePrParams, FetchOptions, Issue, IssueId, Platform,
-    PullRequest,
+    body_with_marker, validate_project_path, Capability, Comment, CommentId, CommentMode,
+    CreatePrParams, FetchOptions, Issue, IssueId, Platform, PullRequest, PullRequestRef,
 };
 
 /// GitLab adapter that communicates with the GitLab REST API v4.
@@ -74,6 +74,27 @@ struct GitlabMergeRequest {
 #[derive(Debug, Deserialize)]
 struct GitlabCurrentUser {
     username: String,
+}
+
+/// `/projects/:path/merge_requests/:iid/notes` for a PR reference.
+fn mr_notes_path(pr: &PullRequestRef) -> String {
+    format!(
+        "/projects/{}/merge_requests/{}/notes",
+        urlencoding::encode(&pr.repo_slug),
+        pr.number
+    )
+}
+
+fn convert_note(n: GitlabNote) -> Comment {
+    Comment {
+        id: CommentId(n.id),
+        body: n.body,
+        author: n.author.username,
+        created_at: chrono::DateTime::parse_from_rfc3339(&n.created_at)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now()),
+        is_system: n.system,
+    }
 }
 
 impl GitlabAdapter {
@@ -515,6 +536,82 @@ impl Platform for GitlabAdapter {
             url: mr.web_url,
             state: mr.state,
         })
+    }
+
+    /// GitLab API: `GET /projects/:path/merge_requests?state=opened&source_branch=<branch>`.
+    async fn find_open_pull_request(
+        &self,
+        repo_slug: &str,
+        branch: &str,
+    ) -> Result<Option<PullRequestRef>, PlatformError> {
+        validate_project_path(repo_slug)?;
+        let path = format!(
+            "/projects/{}/merge_requests",
+            urlencoding::encode(repo_slug)
+        );
+        let mrs: Vec<GitlabMergeRequest> = self
+            .http
+            .send_json(
+                reqwest::Method::GET,
+                &path,
+                &[("state", "opened"), ("source_branch", branch)],
+                None,
+            )
+            .await?;
+        Ok(mrs.into_iter().next().map(|mr| PullRequestRef {
+            repo_slug: repo_slug.to_string(),
+            number: mr.iid,
+            url: mr.web_url,
+        }))
+    }
+
+    async fn list_pull_request_comments(
+        &self,
+        pr: &PullRequestRef,
+    ) -> Result<Vec<Comment>, PlatformError> {
+        validate_project_path(&pr.repo_slug)?;
+        let notes: Vec<GitlabNote> = self.http.get_all_pages(&mr_notes_path(pr), &[]).await?;
+        Ok(notes
+            .into_iter()
+            .filter(|n| !n.system)
+            .map(convert_note)
+            .collect())
+    }
+
+    async fn upsert_pull_request_comment(
+        &self,
+        pr: &PullRequestRef,
+        marker: &str,
+        body: &str,
+        mode: CommentMode,
+    ) -> Result<CommentId, PlatformError> {
+        validate_project_path(&pr.repo_slug)?;
+        let payload = serde_json::json!({ "body": body_with_marker(body, marker) });
+        if mode == CommentMode::Upsert {
+            let existing = self
+                .list_pull_request_comments(pr)
+                .await?
+                .into_iter()
+                .find(|c| c.body.contains(marker));
+            if let Some(c) = existing {
+                let path = format!("{}/{}", mr_notes_path(pr), c.id.0);
+                let _: serde_json::Value = self
+                    .http
+                    .send_json(reqwest::Method::PUT, &path, &[], Some(&payload))
+                    .await?;
+                return Ok(c.id);
+            }
+        }
+        let note: GitlabNote = self
+            .http
+            .send_json(
+                reqwest::Method::POST,
+                &mr_notes_path(pr),
+                &[],
+                Some(&payload),
+            )
+            .await?;
+        Ok(CommentId(note.id))
     }
 
     async fn validate_credentials(&self) -> Result<(), PlatformError> {

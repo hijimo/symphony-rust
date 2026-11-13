@@ -81,6 +81,26 @@ pub struct PullRequest {
     pub state: String,
 }
 
+/// An open PR/MR located by repository and source branch.
+///
+/// `repo_slug` is `owner/repo` on GitHub and Gitea, and the project path
+/// (`group/sub/project`) on GitLab. `number` is the PR number or MR IID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PullRequestRef {
+    pub repo_slug: String,
+    pub number: u64,
+    pub url: String,
+}
+
+/// How `upsert_pull_request_comment` treats an existing comment with the marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentMode {
+    /// Update the first comment containing the marker; create one if none exists.
+    Upsert,
+    /// Always create a new comment (keeps one comment per round).
+    Append,
+}
+
 /// Platform capabilities that may differ between GitHub and GitLab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {

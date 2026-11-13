@@ -86,6 +86,38 @@ impl HttpClient {
         &self.base_url
     }
 
+    /// Send a request to `path` with an optional JSON body and decode the JSON
+    /// response. Non-2xx statuses map through `PlatformError::from_status`.
+    pub async fn send_json<T: DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        query: &[(&str, &str)],
+        body: Option<&serde_json::Value>,
+    ) -> Result<T, PlatformError> {
+        let url = format!("{}{}", self.base_url, path);
+        let mut request = self.client.request(method, &url).query(query);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request.send().await.map_err(|e| {
+            if e.is_timeout() {
+                PlatformError::Timeout
+            } else if e.is_connect() {
+                PlatformError::ConnectionRefused
+            } else {
+                PlatformError::Network(e)
+            }
+        })?;
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            let text: String = text.chars().take(500).collect();
+            return Err(PlatformError::from_status(status.as_u16(), &text));
+        }
+        Ok(response.json().await?)
+    }
+
     /// Fetches all pages of a paginated API endpoint and deserializes each page
     /// as a `Vec<T>`, concatenating all results.
     ///

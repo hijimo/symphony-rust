@@ -388,6 +388,31 @@ mod tests {
             })
         }
 
+        async fn find_open_pull_request(
+            &self,
+            _repo_slug: &str,
+            _branch: &str,
+        ) -> Result<Option<crate::platform::PullRequestRef>, PlatformError> {
+            Ok(None)
+        }
+
+        async fn list_pull_request_comments(
+            &self,
+            _pr: &crate::platform::PullRequestRef,
+        ) -> Result<Vec<Comment>, PlatformError> {
+            Ok(Vec::new())
+        }
+
+        async fn upsert_pull_request_comment(
+            &self,
+            _pr: &crate::platform::PullRequestRef,
+            _marker: &str,
+            _body: &str,
+            _mode: crate::platform::CommentMode,
+        ) -> Result<CommentId, PlatformError> {
+            Ok(CommentId(1))
+        }
+
         async fn validate_credentials(&self) -> Result<(), PlatformError> {
             Ok(())
         }
