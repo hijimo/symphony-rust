@@ -635,6 +635,10 @@ impl Platform for GitlabAdapter {
         validate_project_path(repo_slug)?;
         encode_repo_path(path)?;
         let dir = path.strip_suffix('/').unwrap_or(path);
+        let mut query = vec![("path", dir), ("per_page", "100")];
+        if !git_ref.is_empty() {
+            query.push(("ref", git_ref));
+        }
         let result: Result<Vec<GitlabTreeEntry>, _> = self
             .http
             .send_json(
@@ -643,7 +647,7 @@ impl Platform for GitlabAdapter {
                     "/projects/{}/repository/tree",
                     urlencoding::encode(repo_slug)
                 ),
-                &[("path", dir), ("ref", git_ref), ("per_page", "100")],
+                &query,
                 None,
             )
             .await;

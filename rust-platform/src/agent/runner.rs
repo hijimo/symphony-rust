@@ -177,6 +177,16 @@ pub trait IssueStateRefresher: Send + Sync {
     async fn remove_labels(&self, _issue_id: &str, _labels: &[String]) -> Result<(), String> {
         Err("labels not supported".to_string())
     }
+
+    /// List files in a repository directory (see `Tracker::list_repo_directory`).
+    async fn list_repo_directory(
+        &self,
+        _slug: &str,
+        _path: &str,
+        _git_ref: &str,
+    ) -> Result<Option<Vec<crate::platform::RepoFile>>, String> {
+        Err("repository listing not supported".to_string())
+    }
 }
 
 /// Agent Runner — manages the full worker lifecycle for one issue.
@@ -527,6 +537,18 @@ impl AgentRunner {
             }
         };
 
+        // Approved change documents on the default branch (P2 design §4 B3).
+        let change_docs = match super::change_docs::doc_target(
+            &issue.identifier,
+            &issue.id,
+            &repo_contexts,
+            single_spec.as_ref(),
+            &service_config.tracker_project_slug,
+        ) {
+            Some(target) => super::change_docs::lookup(state_refresher.as_ref(), &target).await,
+            None => crate::prompt::ChangeDocsLookup::Unknown,
+        };
+
         // 4. Turn loop
         let max_turns = service_config.max_turns;
         let mut turn_number = 1u32;
@@ -543,6 +565,7 @@ impl AgentRunner {
                 &repo_contexts,
                 instructions.as_deref(),
                 &run_id,
+                &change_docs,
                 layout,
             )
             .await;
@@ -873,6 +896,7 @@ impl AgentRunner {
         repos: &[RepoContext],
         repo_instructions: Option<&str>,
         run_id: &str,
+        change_docs: &crate::prompt::ChangeDocsLookup,
         layout: WorkspaceLayout,
     ) -> Result<(), AgentError> {
         loop {
@@ -899,6 +923,7 @@ impl AgentRunner {
                     &crate::prompt::RunGlobals {
                         run_id: run_id.to_string(),
                         workspace_layout: layout.as_str().to_string(),
+                        change_docs: change_docs.clone(),
                     },
                 )
                 .map_err(|e| AgentError::PromptRender(e.to_string()))?;

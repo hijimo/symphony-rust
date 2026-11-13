@@ -775,12 +775,18 @@ impl Platform for GiteaAdapter {
     ) -> Result<Option<Vec<RepoFile>>, PlatformError> {
         split_owner_repo(repo_slug)?;
         let encoded = encode_repo_path(path)?;
+        // An empty ref means the repository default branch.
+        let query: Vec<(&str, &str)> = if git_ref.is_empty() {
+            Vec::new()
+        } else {
+            vec![("ref", git_ref)]
+        };
         let result: Result<serde_json::Value, _> = self
             .http
             .send_json(
                 reqwest::Method::GET,
                 &format!("/repos/{repo_slug}/contents/{encoded}"),
-                &[("ref", git_ref)],
+                &query,
                 None,
             )
             .await;

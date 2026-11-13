@@ -148,6 +148,14 @@ impl PromptEngine {
             KString::from_static("workspace_layout"),
             LiquidValue::Scalar(layout.into()),
         );
+        globals.insert(
+            KString::from_static("change_docs"),
+            run.change_docs.to_liquid(),
+        );
+        globals.insert(
+            KString::from_static("change_docs_status"),
+            LiquidValue::Scalar(run.change_docs.status().into()),
+        );
 
         if turn_number > 1 {
             if let Some(ref cont_tmpl) = self.continuation_template {
@@ -203,6 +211,79 @@ pub struct RunGlobals {
     pub run_id: String,
     /// `single_root` / `legacy` / `multi_repo`.
     pub workspace_layout: String,
+    /// Approved change documents on the default branch (P2 design §4 B3).
+    pub change_docs: ChangeDocsLookup,
+}
+
+/// Result of looking up `docs/changes/<iid>/` before the run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ChangeDocsLookup {
+    /// Lookup not possible or failed; templates fall back to generic text.
+    #[default]
+    Unknown,
+    /// The directory does not exist (e.g. `track:fast`).
+    Absent,
+    Present(ChangeDocs),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeDocs {
+    /// Directory as seen from the workspace root (multi-repo: prefixed with
+    /// the primary repo path).
+    pub dir: String,
+    /// Ref the files were read from; empty = the repository default branch.
+    pub git_ref: String,
+    pub files: Vec<ChangeDocFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangeDocFile {
+    pub name: String,
+    pub blob_sha: String,
+}
+
+impl ChangeDocsLookup {
+    fn status(&self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Absent => "absent",
+            Self::Present(_) => "present",
+        }
+    }
+
+    fn to_liquid(&self) -> LiquidValue {
+        let Self::Present(docs) = self else {
+            return LiquidValue::Nil;
+        };
+        let files = docs
+            .files
+            .iter()
+            .map(|f| {
+                let mut o = Object::new();
+                o.insert(
+                    KString::from_static("name"),
+                    LiquidValue::Scalar(f.name.clone().into()),
+                );
+                let short: String = f.blob_sha.chars().take(12).collect();
+                o.insert(
+                    KString::from_static("blob_sha"),
+                    LiquidValue::Scalar(short.into()),
+                );
+                LiquidValue::Object(o)
+            })
+            .collect();
+        let mut o = Object::new();
+        o.insert(
+            KString::from_static("dir"),
+            LiquidValue::Scalar(docs.dir.clone().into()),
+        );
+        o.insert(
+            KString::from_static("ref"),
+            LiquidValue::Scalar(docs.git_ref.clone().into()),
+        );
+        o.insert(KString::from_static("files"), LiquidValue::Array(files));
+        LiquidValue::Object(o)
+    }
 }
 
 /// One repository as seen by the prompt (design §6.1).
@@ -675,6 +756,46 @@ mod tests {
     }
 
     #[test]
+    fn change_docs_globals_cover_present_absent_and_unknown() {
+        let tpl = "{% if change_docs %}{{ change_docs.dir }}@{{ change_docs.ref }}:{% for f in change_docs.files %}{{ f.name }}={{ f.blob_sha }};{% endfor %}{% endif %}[{{ change_docs_status }}]";
+        let engine = PromptEngine::compile(tpl).unwrap();
+        let render = |docs: ChangeDocsLookup| {
+            engine
+                .render_with_repos_ext(
+                    &make_test_issue(),
+                    None,
+                    1,
+                    5,
+                    &[],
+                    &RunGlobals {
+                        change_docs: docs,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+        };
+        let present = ChangeDocsLookup::Present(ChangeDocs {
+            dir: "backend/docs/changes/42".into(),
+            git_ref: "main".into(),
+            files: vec![ChangeDocFile {
+                name: "plan.md".into(),
+                blob_sha: "0123456789abcdef0123".into(),
+            }],
+        });
+        assert_eq!(
+            render(present),
+            "backend/docs/changes/42@main:plan.md=0123456789ab;[present]"
+        );
+        assert_eq!(render(ChangeDocsLookup::Absent), "[absent]");
+        assert_eq!(render(ChangeDocsLookup::Unknown), "[unknown]");
+        // Plain render (no run globals) is "unknown" and must not error in strict mode.
+        assert_eq!(
+            engine.render(&make_test_issue(), None, 1, 5).unwrap(),
+            "[unknown]"
+        );
+    }
+
+    #[test]
     fn run_globals_are_exposed() {
         let engine = PromptEngine::compile("{{ run_id }} {{ workspace_layout }}").unwrap();
         let out = engine
@@ -687,6 +808,7 @@ mod tests {
                 &RunGlobals {
                     run_id: "r-1".into(),
                     workspace_layout: "single_root".into(),
+                    ..Default::default()
                 },
             )
             .unwrap();

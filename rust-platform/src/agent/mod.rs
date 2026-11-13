@@ -6,6 +6,7 @@
 //!
 //! SPEC reference: Section 10
 
+pub mod change_docs;
 pub mod codex_client;
 pub mod post_run;
 pub mod repo_instructions;

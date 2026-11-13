@@ -1287,6 +1287,18 @@ impl IssueStateRefresher for TrackerStateRefresher {
             .await
             .map_err(|e| e.to_string())
     }
+
+    async fn list_repo_directory(
+        &self,
+        slug: &str,
+        path: &str,
+        git_ref: &str,
+    ) -> Result<Option<Vec<crate::platform::RepoFile>>, String> {
+        self.tracker
+            .list_repo_directory(slug, path, git_ref)
+            .await
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// Fallback when no tracker is configured — issue is always considered active.
