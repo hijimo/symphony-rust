@@ -11,8 +11,8 @@ pub mod workflow;
 use async_trait::async_trait;
 
 pub use issue::{
-    Capability, Comment, CommentId, CreatePrParams, Dispatchable, FetchOptions, Issue, IssueId,
-    PullRequest,
+    Capability, Comment, CommentId, CommentMode, CreatePrParams, Dispatchable, FetchOptions, Issue,
+    IssueId, PullRequest, PullRequestRef,
 };
 pub use memory::{make_test_issue, FaultConfig, MemoryAdapter, MemoryState};
 
@@ -90,8 +90,114 @@ pub trait Platform: Send + Sync {
         params: CreatePrParams,
     ) -> Result<PullRequest, PlatformError>;
 
+    /// Find the open PR/MR whose source branch is `branch` in `repo_slug`.
+    /// Returns `None` when there is no open PR/MR for the branch.
+    async fn find_open_pull_request(
+        &self,
+        repo_slug: &str,
+        branch: &str,
+    ) -> Result<Option<PullRequestRef>, PlatformError>;
+
+    /// List user comments on a PR/MR (system notes excluded).
+    async fn list_pull_request_comments(
+        &self,
+        pr: &PullRequestRef,
+    ) -> Result<Vec<Comment>, PlatformError>;
+
+    /// Write a comment on a PR/MR identified by `marker`.
+    ///
+    /// The stored body always contains `marker` (appended when missing).
+    /// `Upsert` updates the first comment containing the marker, `Append`
+    /// always creates a new one.
+    async fn upsert_pull_request_comment(
+        &self,
+        pr: &PullRequestRef,
+        marker: &str,
+        body: &str,
+        mode: CommentMode,
+    ) -> Result<CommentId, PlatformError>;
+
     // --- Health check ---
 
     /// Validate that the configured credentials are valid.
     async fn validate_credentials(&self) -> Result<(), PlatformError>;
+}
+
+/// Return `body` with `marker` guaranteed to be present.
+pub(crate) fn body_with_marker(body: &str, marker: &str) -> String {
+    if marker.is_empty() || body.contains(marker) {
+        body.to_string()
+    } else {
+        format!("{}\n\n{}", body.trim_end(), marker)
+    }
+}
+
+/// Validate an `owner/repo` slug (GitHub, Gitea) before it is placed in a URL path.
+pub(crate) fn split_owner_repo(slug: &str) -> Result<(&str, &str), PlatformError> {
+    let valid_segment = |s: &str| {
+        !s.is_empty()
+            && s != "."
+            && s != ".."
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    match slug.split_once('/') {
+        Some((owner, repo)) if valid_segment(owner) && valid_segment(repo) => Ok((owner, repo)),
+        _ => Err(PlatformError::Unprocessable(format!(
+            "invalid repository slug: {slug:?}"
+        ))),
+    }
+}
+
+/// Validate a GitLab project path (`group/sub/project`) before URL-encoding it.
+pub(crate) fn validate_project_path(slug: &str) -> Result<(), PlatformError> {
+    let ok = !slug.is_empty()
+        && slug.split('/').all(|s| {
+            !s.is_empty()
+                && s != "."
+                && s != ".."
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        });
+    if ok {
+        Ok(())
+    } else {
+        Err(PlatformError::Unprocessable(format!(
+            "invalid project path: {slug:?}"
+        )))
+    }
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+
+    #[test]
+    fn test_body_with_marker_appends_once() {
+        assert_eq!(body_with_marker("a\n", "<!-- m -->"), "a\n\n<!-- m -->");
+        assert_eq!(
+            body_with_marker("a <!-- m -->", "<!-- m -->"),
+            "a <!-- m -->"
+        );
+        assert_eq!(body_with_marker("a", ""), "a");
+    }
+
+    #[test]
+    fn test_split_owner_repo_accepts_and_rejects() {
+        assert_eq!(split_owner_repo("acme/app.js").unwrap(), ("acme", "app.js"));
+        for bad in [
+            "acme", "a/b/c", "../x", "a/..", "a/b c", "/b", "a/", "a/b?x=1",
+        ] {
+            assert!(split_owner_repo(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn test_validate_project_path() {
+        assert!(validate_project_path("group/sub/proj").is_ok());
+        assert!(validate_project_path("proj").is_ok());
+        for bad in ["", "a//b", "a/../b", "a/b c", "a/b#x"] {
+            assert!(validate_project_path(bad).is_err(), "{bad}");
+        }
+    }
 }

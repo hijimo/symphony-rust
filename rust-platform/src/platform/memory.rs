@@ -12,8 +12,8 @@ use chrono::Utc;
 use tokio::sync::Mutex;
 
 use super::{
-    Capability, Comment, CommentId, CreatePrParams, FetchOptions, Issue, IssueId, Platform,
-    PullRequest,
+    body_with_marker, Capability, Comment, CommentId, CommentMode, CreatePrParams, FetchOptions,
+    Issue, IssueId, Platform, PullRequest, PullRequestRef,
 };
 use crate::error::PlatformError;
 
@@ -34,6 +34,10 @@ pub struct MemoryState {
     pub issues: HashMap<IssueId, Issue>,
     pub comments: HashMap<IssueId, Vec<Comment>>,
     pub pull_requests: Vec<PullRequest>,
+    /// Open PRs keyed by (repo_slug, branch).
+    pub open_pull_requests: HashMap<(String, String), PullRequestRef>,
+    /// PR comments keyed by (repo_slug, number).
+    pub pr_comments: HashMap<(String, u64), Vec<Comment>>,
     /// Pending faults keyed by method name.
     pub faults: HashMap<String, FaultConfig>,
     /// Call counts per method name.
@@ -120,6 +124,19 @@ impl MemoryAdapter {
         state.issues.get(&issue_id).map(|i| i.labels.clone())
     }
 
+    /// Seed an open PR for `branch` in `repo_slug`.
+    pub async fn seed_open_pull_request(&self, repo_slug: &str, branch: &str, number: u64) {
+        let mut state = self.state.lock().await;
+        state.open_pull_requests.insert(
+            (repo_slug.to_string(), branch.to_string()),
+            PullRequestRef {
+                repo_slug: repo_slug.to_string(),
+                number,
+                url: format!("https://example.com/{repo_slug}/pull/{number}"),
+            },
+        );
+    }
+
     /// Get direct access to the internal state (for assertions in tests).
     pub async fn snapshot(&self) -> MemoryState {
         let state = self.state.lock().await;
@@ -127,6 +144,8 @@ impl MemoryAdapter {
             issues: state.issues.clone(),
             comments: state.comments.clone(),
             pull_requests: state.pull_requests.clone(),
+            open_pull_requests: state.open_pull_requests.clone(),
+            pr_comments: state.pr_comments.clone(),
             faults: state.faults.clone(),
             call_counts: state.call_counts.clone(),
         }
@@ -418,6 +437,69 @@ impl Platform for MemoryAdapter {
         let mut state = self.state.lock().await;
         state.pull_requests.push(pr.clone());
         Ok(pr)
+    }
+
+    async fn find_open_pull_request(
+        &self,
+        repo_slug: &str,
+        branch: &str,
+    ) -> Result<Option<PullRequestRef>, PlatformError> {
+        if let Some(err) = self.check_fault("find_open_pull_request").await {
+            return Err(err);
+        }
+        let state = self.state.lock().await;
+        Ok(state
+            .open_pull_requests
+            .get(&(repo_slug.to_string(), branch.to_string()))
+            .cloned())
+    }
+
+    async fn list_pull_request_comments(
+        &self,
+        pr: &PullRequestRef,
+    ) -> Result<Vec<Comment>, PlatformError> {
+        if let Some(err) = self.check_fault("list_pull_request_comments").await {
+            return Err(err);
+        }
+        let state = self.state.lock().await;
+        Ok(state
+            .pr_comments
+            .get(&(pr.repo_slug.clone(), pr.number))
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn upsert_pull_request_comment(
+        &self,
+        pr: &PullRequestRef,
+        marker: &str,
+        body: &str,
+        mode: CommentMode,
+    ) -> Result<CommentId, PlatformError> {
+        if let Some(err) = self.check_fault("upsert_pull_request_comment").await {
+            return Err(err);
+        }
+        let body = body_with_marker(body, marker);
+        let mut state = self.state.lock().await;
+        let comments = state
+            .pr_comments
+            .entry((pr.repo_slug.clone(), pr.number))
+            .or_default();
+        if mode == CommentMode::Upsert {
+            if let Some(c) = comments.iter_mut().find(|c| c.body.contains(marker)) {
+                c.body = body;
+                return Ok(c.id);
+            }
+        }
+        let id = CommentId(self.next_comment_id.fetch_add(1, Ordering::SeqCst));
+        comments.push(Comment {
+            id,
+            body,
+            author: "test-bot".to_string(),
+            created_at: Utc::now(),
+            is_system: false,
+        });
+        Ok(id)
     }
 
     async fn validate_credentials(&self) -> Result<(), PlatformError> {

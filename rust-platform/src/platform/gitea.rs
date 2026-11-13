@@ -8,8 +8,8 @@ use crate::config::PlatformConfig;
 use crate::error::PlatformError;
 use crate::platform::http_client::HttpClient;
 use crate::platform::{
-    Capability, Comment, CommentId, CreatePrParams, FetchOptions, Issue, IssueId, Platform,
-    PullRequest,
+    body_with_marker, split_owner_repo, Capability, Comment, CommentId, CommentMode,
+    CreatePrParams, FetchOptions, Issue, IssueId, Platform, PullRequest, PullRequestRef,
 };
 
 const MAX_PAGES: u32 = 10;
@@ -61,6 +61,29 @@ struct GiteaPullRequest {
     number: u64,
     html_url: String,
     state: String,
+    #[serde(default)]
+    head: Option<GiteaPrHead>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GiteaPrHead {
+    #[serde(rename = "ref")]
+    git_ref: String,
+}
+
+fn convert_comment(c: GiteaComment) -> Comment {
+    Comment {
+        id: CommentId(c.id),
+        body: c.body.unwrap_or_default(),
+        author: c
+            .user
+            .map(|u| u.login)
+            .unwrap_or_else(|| "unknown".to_string()),
+        created_at: chrono::DateTime::parse_from_rfc3339(&c.created_at)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or_else(|_| chrono::Utc::now()),
+        is_system: false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -627,24 +650,7 @@ impl Platform for GiteaAdapter {
     async fn list_comments(&self, issue_id: IssueId) -> Result<Vec<Comment>, PlatformError> {
         let path = format!("{}/issues/{}/comments", self.repo_path(), issue_id.0);
         let gi_comments: Vec<GiteaComment> = self.paginated_get(&path, &[]).await?;
-
-        let comments: Vec<Comment> = gi_comments
-            .into_iter()
-            .map(|c| Comment {
-                id: CommentId(c.id),
-                body: c.body.unwrap_or_default(),
-                author: c
-                    .user
-                    .map(|u| u.login)
-                    .unwrap_or_else(|| "unknown".to_string()),
-                created_at: chrono::DateTime::parse_from_rfc3339(&c.created_at)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now()),
-                is_system: false,
-            })
-            .collect();
-
-        Ok(comments)
+        Ok(gi_comments.into_iter().map(convert_comment).collect())
     }
 
     async fn create_pull_request(
@@ -694,6 +700,69 @@ impl Platform for GiteaAdapter {
             url: pr.html_url,
             state: pr.state,
         })
+    }
+
+    /// Gitea has no reliable `head` filter across versions, so open PRs are
+    /// listed (paginated) and matched on `head.ref`.
+    async fn find_open_pull_request(
+        &self,
+        repo_slug: &str,
+        branch: &str,
+    ) -> Result<Option<PullRequestRef>, PlatformError> {
+        split_owner_repo(repo_slug)?;
+        let prs: Vec<GiteaPullRequest> = self
+            .paginated_get(&format!("/repos/{repo_slug}/pulls"), &[("state", "open")])
+            .await?;
+        Ok(prs
+            .into_iter()
+            .find(|pr| pr.head.as_ref().is_some_and(|h| h.git_ref == branch))
+            .map(|pr| PullRequestRef {
+                repo_slug: repo_slug.to_string(),
+                number: pr.number,
+                url: pr.html_url,
+            }))
+    }
+
+    async fn list_pull_request_comments(
+        &self,
+        pr: &PullRequestRef,
+    ) -> Result<Vec<Comment>, PlatformError> {
+        split_owner_repo(&pr.repo_slug)?;
+        let path = format!("/repos/{}/issues/{}/comments", pr.repo_slug, pr.number);
+        let comments: Vec<GiteaComment> = self.paginated_get(&path, &[]).await?;
+        Ok(comments.into_iter().map(convert_comment).collect())
+    }
+
+    async fn upsert_pull_request_comment(
+        &self,
+        pr: &PullRequestRef,
+        marker: &str,
+        body: &str,
+        mode: CommentMode,
+    ) -> Result<CommentId, PlatformError> {
+        split_owner_repo(&pr.repo_slug)?;
+        let payload = serde_json::json!({ "body": body_with_marker(body, marker) });
+        if mode == CommentMode::Upsert {
+            let existing = self
+                .list_pull_request_comments(pr)
+                .await?
+                .into_iter()
+                .find(|c| c.body.contains(marker));
+            if let Some(c) = existing {
+                let path = format!("/repos/{}/issues/comments/{}", pr.repo_slug, c.id.0);
+                let _: serde_json::Value = self
+                    .http
+                    .send_json(reqwest::Method::PATCH, &path, &[], Some(&payload))
+                    .await?;
+                return Ok(c.id);
+            }
+        }
+        let path = format!("/repos/{}/issues/{}/comments", pr.repo_slug, pr.number);
+        let created: GiteaComment = self
+            .http
+            .send_json(reqwest::Method::POST, &path, &[], Some(&payload))
+            .await?;
+        Ok(CommentId(created.id))
     }
 
     async fn validate_credentials(&self) -> Result<(), PlatformError> {
