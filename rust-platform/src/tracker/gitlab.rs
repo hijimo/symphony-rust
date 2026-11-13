@@ -221,6 +221,31 @@ impl Tracker for GitlabTrackerAdapter {
             .await
             .map_err(platform_error_to_tracker_error)
     }
+
+    async fn find_open_pull_request(
+        &self,
+        slug: &str,
+        branch: &str,
+    ) -> Result<Option<crate::platform::PullRequestRef>, TrackerError> {
+        self.platform
+            .find_open_pull_request(slug, branch)
+            .await
+            .map_err(platform_error_to_tracker_error)
+    }
+
+    async fn upsert_pull_request_comment(
+        &self,
+        pr: &crate::platform::PullRequestRef,
+        marker: &str,
+        body: &str,
+        mode: crate::platform::CommentMode,
+    ) -> Result<(), TrackerError> {
+        self.platform
+            .upsert_pull_request_comment(pr, marker, body, mode)
+            .await
+            .map(|_| ())
+            .map_err(platform_error_to_tracker_error)
+    }
 }
 
 #[cfg(test)]
