@@ -231,6 +231,7 @@ async fn main() {
         Err(e) => tracing::warn!("Failed to reset interrupted drafts: {}", e),
     }
 
+    let runtime_state = Arc::new(web_platform::services::runtime_state::RuntimeStateCache::new());
     let state = AppState {
         sdlc,
         repo,
@@ -247,7 +248,15 @@ async fn main() {
         workspace_root: config.workspace_root,
         alert_manager: Some(alert_manager),
         platform_host_semaphores: Arc::new(PlatformHostSemaphores::new(5)),
+        runtime_state: runtime_state.clone(),
     };
+
+    web_platform::services::runtime_state::spawn_poller(
+        runtime_state,
+        state.process_manager.clone(),
+        state.concurrency_manager.clone(),
+        state.repo.clone(),
+    );
 
     web_platform::services::mr_create::spawn_merge_request_reconciler(state.clone());
 

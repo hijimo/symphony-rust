@@ -109,6 +109,7 @@ impl TestApp {
             workspace_root: dir.path().to_str().unwrap().to_string(),
             alert_manager: None,
             platform_host_semaphores: Arc::new(PlatformHostSemaphores::new(5)),
+            runtime_state: Default::default(),
         };
 
         let repo = state.repo.clone();

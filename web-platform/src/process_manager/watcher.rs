@@ -195,6 +195,7 @@ async fn watch_process(
                     started_at: state.started_at,
                     status: ServiceStatus::Failed,
                     restart_count: state.restart_count,
+                    api_port: None,
                 },
             );
             break;
@@ -227,6 +228,7 @@ async fn watch_process(
                 started_at: state.started_at,
                 status: ServiceStatus::Error,
                 restart_count: state.restart_count + 1,
+                api_port: None,
             },
         );
 
@@ -276,6 +278,7 @@ async fn watch_process(
                         started_at: now,
                         status: ServiceStatus::Running,
                         restart_count: state.restart_count + 1,
+                        api_port: result.api_port,
                     },
                 );
 
@@ -298,6 +301,7 @@ async fn watch_process(
                         started_at: state.started_at,
                         status: ServiceStatus::Failed,
                         restart_count: state.restart_count + 1,
+                        api_port: None,
                     },
                 );
                 break;
@@ -387,6 +391,7 @@ async fn watch_test_process(
                     started_at: state.started_at,
                     status: ServiceStatus::Failed,
                     restart_count: state.restart_count,
+                    api_port: None,
                 },
             );
             break;
@@ -421,6 +426,7 @@ async fn watch_test_process(
                 started_at: state.started_at,
                 status: ServiceStatus::Error,
                 restart_count: state.restart_count + 1,
+                api_port: None,
             },
         );
 
@@ -489,6 +495,7 @@ async fn watch_test_process(
                         started_at: now,
                         status: ServiceStatus::Running,
                         restart_count: state.restart_count + 1,
+                        api_port: result.api_port,
                     },
                 );
 
@@ -517,6 +524,7 @@ async fn watch_test_process(
                         started_at: state.started_at,
                         status: ServiceStatus::Failed,
                         restart_count: state.restart_count + 1,
+                        api_port: None,
                     },
                 );
                 break;

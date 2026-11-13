@@ -724,6 +724,7 @@ impl SdlcApp {
             workspace_root: workspace_root.to_string_lossy().to_string(),
             alert_manager: None,
             platform_host_semaphores: Arc::new(PlatformHostSemaphores::new(5)),
+            runtime_state: Default::default(),
         };
         let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
