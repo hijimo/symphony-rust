@@ -52,25 +52,27 @@ pub fn parse_git_url(url: &str) -> Result<ParsedGitUrl, GitUrlError> {
         return Err(GitUrlError::Empty);
     }
 
-    // Try SSH format first: git@host:path.git
+    // Try SSH format first: git@host:path.git (normalized to https).
     let ssh_re = Regex::new(r"^git@([^:]+):(.+)$").unwrap();
     if let Some(caps) = ssh_re.captures(url) {
         let host = caps.get(1).unwrap().as_str().to_string();
         let path = caps.get(2).unwrap().as_str();
-        return parse_path_components(&host, path);
+        return parse_path_components("https", &host, path);
     }
 
-    // Try HTTPS format: https://host/path
-    let https_re = Regex::new(r"^https?://([^/]+)/(.+)$").unwrap();
+    // Try HTTP(S) format: http(s)://host/path. The scheme is kept: internal
+    // instances such as `http://gitlab.example.com:8081` have no TLS.
+    let https_re = Regex::new(r"^(?i)(https?)://([^/]+)/(.+)$").unwrap();
     if let Some(caps) = https_re.captures(url) {
-        let authority = caps.get(1).unwrap().as_str();
+        let scheme = caps.get(1).unwrap().as_str().to_lowercase();
+        let authority = caps.get(2).unwrap().as_str();
         // Strip `user:pass@` / `user@` userinfo (e.g. `oauth2:<token>@`).
         let host = strip_userinfo(authority).to_string();
         if host.is_empty() {
             return Err(GitUrlError::InvalidFormat(url.to_string()));
         }
-        let path = caps.get(2).unwrap().as_str();
-        return parse_path_components(&host, path);
+        let path = caps.get(3).unwrap().as_str();
+        return parse_path_components(&scheme, &host, path);
     }
 
     Err(GitUrlError::InvalidFormat(url.to_string()))
@@ -107,7 +109,11 @@ pub fn same_repo(a: &str, b: &str) -> bool {
     }
 }
 
-fn parse_path_components(host: &str, path: &str) -> Result<ParsedGitUrl, GitUrlError> {
+fn parse_path_components(
+    scheme: &str,
+    host: &str,
+    path: &str,
+) -> Result<ParsedGitUrl, GitUrlError> {
     // Clean up path: remove trailing slashes and .git suffix
     let path = path.trim_end_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
@@ -126,7 +132,7 @@ fn parse_path_components(host: &str, path: &str) -> Result<ParsedGitUrl, GitUrlE
     let namespace = parts[..parts.len() - 1].join("/");
 
     let platform = detect_platform(host);
-    let normalized_url = format!("https://{}/{}/{}", host, namespace, repo_name);
+    let normalized_url = format!("{}://{}/{}/{}", scheme, host, namespace, repo_name);
 
     Ok(ParsedGitUrl {
         platform,
@@ -290,8 +296,8 @@ mod tests {
         assert_eq!(result.platform, Platform::GitLab);
         assert_eq!(result.namespace, "group");
         assert_eq!(result.repo_name, "project");
-        // Normalized URL always uses https
-        assert_eq!(result.normalized_url, "https://gitlab.com/group/project");
+        // The scheme the user entered is kept.
+        assert_eq!(result.normalized_url, "http://gitlab.com/group/project");
     }
 
     #[test]
@@ -304,9 +310,32 @@ mod tests {
         assert_eq!(result.host, "gitlab.jushuitan-inc.com:8081");
         assert_eq!(result.namespace, "zimei10525");
         assert_eq!(result.repo_name, "jst-ai-studio");
+        // The http scheme is kept (no TLS on the instance); userinfo dropped.
         assert_eq!(
             result.normalized_url,
-            "https://gitlab.jushuitan-inc.com:8081/zimei10525/jst-ai-studio"
+            "http://gitlab.jushuitan-inc.com:8081/zimei10525/jst-ai-studio"
+        );
+    }
+
+    #[test]
+    fn test_scheme_is_kept_and_ssh_becomes_https() {
+        assert_eq!(
+            parse_git_url("HTTP://gitlab.example.com:8081/g/p.git")
+                .unwrap()
+                .normalized_url,
+            "http://gitlab.example.com:8081/g/p"
+        );
+        assert_eq!(
+            parse_git_url("https://gitlab.example.com/g/p")
+                .unwrap()
+                .normalized_url,
+            "https://gitlab.example.com/g/p"
+        );
+        assert_eq!(
+            parse_git_url("git@gitlab.example.com:g/p.git")
+                .unwrap()
+                .normalized_url,
+            "https://gitlab.example.com/g/p"
         );
     }
 
