@@ -12,7 +12,7 @@ use async_trait::async_trait;
 
 pub use issue::{
     Capability, Comment, CommentId, CommentMode, CreatePrParams, Dispatchable, FetchOptions, Issue,
-    IssueId, PullRequest, PullRequestRef,
+    IssueId, PullRequest, PullRequestRef, RepoFile,
 };
 pub use memory::{make_test_issue, FaultConfig, MemoryAdapter, MemoryState};
 
@@ -117,6 +117,18 @@ pub trait Platform: Send + Sync {
         mode: CommentMode,
     ) -> Result<CommentId, PlatformError>;
 
+    // --- Repository contents ---
+
+    /// List the files (not subdirectories) directly inside `path` on `git_ref`,
+    /// sorted by name. Returns `None` when the directory does not exist, is
+    /// empty, or `path` is a file.
+    async fn list_directory(
+        &self,
+        repo_slug: &str,
+        path: &str,
+        git_ref: &str,
+    ) -> Result<Option<Vec<RepoFile>>, PlatformError>;
+
     // --- Health check ---
 
     /// Validate that the configured credentials are valid.
@@ -149,6 +161,57 @@ pub(crate) fn split_owner_repo(slug: &str) -> Result<(&str, &str), PlatformError
     }
 }
 
+/// Validate a repository-relative path and percent-encode each segment for use
+/// in a URL path. A trailing `/` is ignored.
+pub(crate) fn encode_repo_path(path: &str) -> Result<String, PlatformError> {
+    let trimmed = path.strip_suffix('/').unwrap_or(path);
+    let invalid = || PlatformError::Unprocessable(format!("invalid repository path: {path:?}"));
+    if trimmed.is_empty() || trimmed.starts_with('/') {
+        return Err(invalid());
+    }
+    let mut out = Vec::new();
+    for seg in trimmed.split('/') {
+        if seg.is_empty()
+            || seg == "."
+            || seg == ".."
+            || seg
+                .chars()
+                .any(|c| c.is_control() || matches!(c, '?' | '#' | '\\'))
+        {
+            return Err(invalid());
+        }
+        out.push(urlencoding::encode(seg).into_owned());
+    }
+    Ok(out.join("/"))
+}
+
+/// Parse a GitHub/Gitea contents API response. A JSON object means `path`
+/// was a file, so it is not a directory listing.
+pub(crate) fn parse_contents_listing(value: serde_json::Value) -> Option<Vec<RepoFile>> {
+    let items = value.as_array()?;
+    let files = items
+        .iter()
+        .filter(|i| i.get("type").and_then(|t| t.as_str()) == Some("file"))
+        .filter_map(|i| {
+            Some(RepoFile {
+                name: i.get("name")?.as_str()?.to_string(),
+                path: i.get("path")?.as_str()?.to_string(),
+                blob_sha: i.get("sha")?.as_str()?.to_string(),
+            })
+        })
+        .collect();
+    sorted_files(files)
+}
+
+/// Sort a directory listing by name; an empty listing becomes `None`.
+pub(crate) fn sorted_files(mut files: Vec<RepoFile>) -> Option<Vec<RepoFile>> {
+    if files.is_empty() {
+        return None;
+    }
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+    Some(files)
+}
+
 /// Validate a GitLab project path (`group/sub/project`) before URL-encoding it.
 pub(crate) fn validate_project_path(slug: &str) -> Result<(), PlatformError> {
     let ok = !slug.is_empty()
@@ -171,6 +234,38 @@ pub(crate) fn validate_project_path(slug: &str) -> Result<(), PlatformError> {
 #[cfg(test)]
 mod helper_tests {
     use super::*;
+
+    #[test]
+    fn test_encode_repo_path() {
+        assert_eq!(
+            encode_repo_path("docs/changes/7").unwrap(),
+            "docs/changes/7"
+        );
+        assert_eq!(
+            encode_repo_path("docs/方案").unwrap(),
+            "docs/%E6%96%B9%E6%A1%88"
+        );
+        assert_eq!(encode_repo_path("docs/").unwrap(), "docs");
+        for bad in [
+            "", "/", "/etc", "a/../b", "a//b", "./a", "a/b?x", "a#b", "a\\b",
+        ] {
+            assert!(encode_repo_path(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn test_sorted_files() {
+        let f = |n: &str| RepoFile {
+            name: n.to_string(),
+            path: n.to_string(),
+            blob_sha: String::new(),
+        };
+        assert_eq!(sorted_files(vec![]), None);
+        assert_eq!(
+            sorted_files(vec![f("b"), f("a")]).unwrap(),
+            vec![f("a"), f("b")]
+        );
+    }
 
     #[test]
     fn test_body_with_marker_appends_once() {
