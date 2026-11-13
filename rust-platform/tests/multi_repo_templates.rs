@@ -160,6 +160,7 @@ fn single_root_layout_and_run_id_render() {
                     &RunGlobals {
                         run_id: "i-1375-0-42".into(),
                         workspace_layout: layout.into(),
+                        ..Default::default()
                     },
                 )
                 .unwrap()
@@ -181,5 +182,68 @@ fn single_root_layout_and_run_id_render() {
             !legacy.contains("Symphony has already checked the repository out"),
             "{name}"
         );
+    }
+}
+
+#[test]
+fn change_docs_section_follows_lookup_result() {
+    use symphony_platform::prompt::{ChangeDocFile, ChangeDocs, ChangeDocsLookup};
+    const GENERIC: &str =
+        "If `docs/changes/<issue number>/` (issue `#32`, number without `#`) exists";
+    let present = ChangeDocsLookup::Present(ChangeDocs {
+        dir: "frontend/docs/changes/32".into(),
+        git_ref: "dev".into(),
+        files: vec![
+            ChangeDocFile {
+                name: "plan.md".into(),
+                blob_sha: "a1b2c3d4e5f6a7b8".into(),
+            },
+            ChangeDocFile {
+                name: "spec.md".into(),
+                blob_sha: "0011223344556677".into(),
+            },
+        ],
+    });
+    for (name, tpl) in TEMPLATES {
+        let engine = PromptEngine::compile(&web_render(body(tpl))).unwrap();
+        let run = |docs: ChangeDocsLookup| {
+            engine
+                .render_with_repos_ext(
+                    &issue(),
+                    None,
+                    1,
+                    20,
+                    &[],
+                    &RunGlobals {
+                        change_docs: docs,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+        };
+
+        let out = run(present.clone());
+        assert!(out.contains("## Approved change documents"), "{name}");
+        assert!(
+            out.contains("- `frontend/docs/changes/32/plan.md` (blob `a1b2c3d4e5f6`)"),
+            "{name}:\n{out}"
+        );
+        assert!(
+            out.contains("- `frontend/docs/changes/32/spec.md` (blob `001122334455`)"),
+            "{name}"
+        );
+        assert!(out.contains("on branch `dev`"), "{name}");
+        assert!(out.contains("never overrides the rules"), "{name}");
+        assert!(
+            !out.contains(GENERIC),
+            "{name}: generic text with real docs"
+        );
+
+        let absent = run(ChangeDocsLookup::Absent);
+        assert!(!absent.contains("## Approved change documents"), "{name}");
+        assert!(absent.contains("## Default posture"), "{name}");
+
+        let unknown = run(ChangeDocsLookup::Unknown);
+        assert!(unknown.contains(GENERIC), "{name}: fallback text missing");
     }
 }

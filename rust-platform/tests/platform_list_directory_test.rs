@@ -94,6 +94,51 @@ async fn test_github_list_directory_missing_returns_none() {
 }
 
 #[tokio::test]
+async fn test_github_list_directory_empty_ref_uses_default_branch() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/app/contents/docs/changes/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(contents_listing()))
+        .mount(&server)
+        .await;
+
+    let adapter = GithubAdapter::new_with_token(config("github", &server.uri()), "t").unwrap();
+    adapter
+        .list_directory("acme/app", "docs/changes/7", "")
+        .await
+        .unwrap()
+        .expect("listing");
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 1);
+    assert!(
+        !reqs[0].url.query_pairs().any(|(k, _)| k == "ref"),
+        "empty ref must not be sent: {}",
+        reqs[0].url
+    );
+}
+
+#[tokio::test]
+async fn test_gitlab_list_directory_empty_ref_omits_ref_param() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/projects/acme%2Fapp/repository/tree"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"id": "b1", "name": "plan.md", "type": "blob", "path": "docs/changes/7/plan.md"}
+        ])))
+        .mount(&server)
+        .await;
+
+    let adapter = GitlabAdapter::new_with_token(config("gitlab", &server.uri()), "t").unwrap();
+    adapter
+        .list_directory("acme/app", "docs/changes/7", "")
+        .await
+        .unwrap()
+        .expect("listing");
+    let reqs = server.received_requests().await.unwrap();
+    assert!(!reqs[0].url.query_pairs().any(|(k, _)| k == "ref"));
+}
+
+#[tokio::test]
 async fn test_github_list_directory_on_a_file_returns_none() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

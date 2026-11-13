@@ -209,6 +209,18 @@ impl Tracker for GitlabTrackerAdapter {
             .await
             .map_err(platform_error_to_tracker_error)
     }
+
+    async fn list_repo_directory(
+        &self,
+        slug: &str,
+        path: &str,
+        git_ref: &str,
+    ) -> Result<Option<Vec<crate::platform::RepoFile>>, TrackerError> {
+        self.platform
+            .list_directory(slug, path, git_ref)
+            .await
+            .map_err(platform_error_to_tracker_error)
+    }
 }
 
 #[cfg(test)]

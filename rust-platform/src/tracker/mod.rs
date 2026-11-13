@@ -97,6 +97,17 @@ pub trait Tracker: Send + Sync {
     async fn remove_labels(&self, _issue_id: &str, _labels: &[String]) -> Result<(), TrackerError> {
         Err(TrackerError::Unsupported("labels".to_string()))
     }
+
+    /// List files directly inside `path` of repository `slug` on `git_ref`
+    /// (empty = default branch). `None` when the directory does not exist.
+    async fn list_repo_directory(
+        &self,
+        _slug: &str,
+        _path: &str,
+        _git_ref: &str,
+    ) -> Result<Option<Vec<crate::platform::RepoFile>>, TrackerError> {
+        Err(TrackerError::Unsupported("repository listing".to_string()))
+    }
 }
 
 /// Unified issue source routing (Linear tracker vs Platform adapter).

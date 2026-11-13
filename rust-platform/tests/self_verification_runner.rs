@@ -197,7 +197,19 @@ fn env() -> Env {
     }
 }
 
+const DEFAULT_TEMPLATE: &str =
+    "PROMPT {{ issue.identifier }} run={{ run_id }} layout={{ workspace_layout }}";
+
 fn runner(e: &Env, service: ServiceConfig, before_done: &str) -> AgentRunner {
+    runner_with_template(e, service, before_done, DEFAULT_TEMPLATE)
+}
+
+fn runner_with_template(
+    e: &Env,
+    service: ServiceConfig,
+    before_done: &str,
+    template: &str,
+) -> AgentRunner {
     let hook = e.root.join(format!("hook-{}.sh", std::process::id()));
     let hook = hook.with_extension(format!("{}.sh", before_done.len()));
     std::fs::write(&hook, before_done).unwrap();
@@ -221,19 +233,12 @@ fn runner(e: &Env, service: ServiceConfig, before_done: &str) -> AgentRunner {
     let holder = Arc::new(ConfigHolder::new(
         EffectiveConfig {
             service,
-            prompt_template:
-                "PROMPT {{ issue.identifier }} run={{ run_id }} layout={{ workspace_layout }}"
-                    .to_string(),
+            prompt_template: template.to_string(),
             loaded_at: Utc::now(),
         },
         e.root.join("WORKFLOW.md"),
     ));
-    let engine = Arc::new(
-        PromptEngine::compile(
-            "PROMPT {{ issue.identifier }} run={{ run_id }} layout={{ workspace_layout }}",
-        )
-        .unwrap(),
-    );
+    let engine = Arc::new(PromptEngine::compile(template).unwrap());
     let (tx, mut rx) = tokio::sync::mpsc::channel(256);
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
     AgentRunner::new(
@@ -454,4 +459,73 @@ async fn effective_marker_of_this_run_adds_label_even_from_merging() {
     assert!(fake.inner.labels_added.lock().unwrap().is_empty());
     let _ = BTreeMap::<u8, u8>::new();
     let _ = Duration::from_secs(0);
+}
+
+/// Refresher that serves a change-docs listing and records the request.
+#[derive(Default)]
+struct DocsRefresher {
+    requests: Mutex<Vec<(String, String, String)>>,
+}
+
+#[async_trait]
+impl IssueStateRefresher for DocsRefresher {
+    async fn refresh_issue_state(&self, id: &str) -> Result<Option<AgentIssue>, String> {
+        Ok(Some(issue(id, "Human Review", None)))
+    }
+    fn is_terminal_state(&self, _s: &str) -> bool {
+        false
+    }
+    fn is_active_state(&self, s: &str) -> bool {
+        matches!(s, "Todo" | "In Progress")
+    }
+    async fn list_repo_directory(
+        &self,
+        slug: &str,
+        path: &str,
+        git_ref: &str,
+    ) -> Result<Option<Vec<symphony_platform::platform::RepoFile>>, String> {
+        self.requests
+            .lock()
+            .unwrap()
+            .push((slug.into(), path.into(), git_ref.into()));
+        Ok(Some(vec![symphony_platform::platform::RepoFile {
+            name: "plan.md".into(),
+            path: format!("{path}/plan.md"),
+            blob_sha: "abcdef0123456789".into(),
+        }]))
+    }
+}
+
+#[tokio::test]
+async fn first_turn_prompt_lists_approved_change_docs() {
+    let _g = ENV_LOCK.lock().await;
+    let e = env();
+    let r = runner_with_template(
+        &e,
+        ServiceConfig {
+            tracker_project_slug: "acme/app".into(),
+            ..ServiceConfig::default()
+        },
+        "true",
+        "{% if change_docs %}DOCS {% for f in change_docs.files %}{{ change_docs.dir }}/{{ f.name }}@{{ f.blob_sha }}{% endfor %}{% endif %} [{{ change_docs_status }}]",
+    );
+    let refresher = Arc::new(DocsRefresher::default());
+    r.run_attempt(issue("57", "Todo", None), None, refresher.clone())
+        .await
+        .unwrap();
+
+    let prompt = record(&e)["prompt"].as_str().unwrap().to_string();
+    assert!(
+        prompt.contains("DOCS docs/changes/57/plan.md@abcdef012345 [present]"),
+        "{prompt}"
+    );
+    assert_eq!(
+        refresher.requests.lock().unwrap().as_slice(),
+        &[(
+            "acme/app".to_string(),
+            "docs/changes/57".to_string(),
+            String::new()
+        )],
+        "one lookup, default branch"
+    );
 }
