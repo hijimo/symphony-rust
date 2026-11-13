@@ -285,10 +285,12 @@ gitea_api GET "${REPO_PATH}/issues/<number>" | jq '{title: .title, labels: [.lab
 2. If arriving from `Todo`, do not delay on additional status transitions: the issue should already be `In Progress` before this step begins.
 3. Immediately reconcile the workpad before new edits:
     - Check off items that are already done.
-    - Expand/fix the plan so it is comprehensive for current scope.
-    - Ensure `Acceptance Criteria` and `Validation` are current and still make sense for the task.
-4. Start work by writing/updating a hierarchical plan in the workpad comment.
-5. Ensure the workpad includes a compact environment stamp at the top as a code fence line:
+{% if change_docs %}    - Keep the workpad `Plan` aligned with the steps of `{{ change_docs.dir }}/plan.md`; do not re-plan in the workpad.
+{% else %}    - Expand/fix the plan so it is comprehensive for current scope.
+{% endif %}    - Ensure `Acceptance Criteria` and `Validation` are current and still make sense for the task.
+{% if change_docs %}4. The approved `{{ change_docs.dir }}/plan.md` is the plan. Start the workpad `Plan` section with the line `See {{ change_docs.dir }}/plan.md`, then list its steps only as a progress checklist. Do not copy, expand or redesign the plan in the workpad.
+{% else %}4. Start work by writing/updating a hierarchical plan in the workpad comment.
+{% endif %}5. Ensure the workpad includes a compact environment stamp at the top as a code fence line:
     - Format: `<host>:<abs-workdir>@<short-sha>`
     - Example: `devbox-01:/home/dev-user/code/symphony-workspaces/42@7bdde33bc`
     - Do not include metadata already inferable from issue fields (`issue ID`, `status`, `branch`, `PR link`).
@@ -296,8 +298,9 @@ gitea_api GET "${REPO_PATH}/issues/<number>" | jq '{title: .title, labels: [.lab
     - If changes are user-facing, include a UI walkthrough acceptance criterion that describes the end-to-end user path to validate.
     - If changes touch app files or app behavior, add explicit app-specific flow checks to `Acceptance Criteria` in the workpad.
     - If the issue description includes `Validation`, `Test Plan`, or `Testing` sections, copy those requirements into the workpad `Acceptance Criteria` and `Validation` sections. They can only add steps or skip non-baseline steps with a reason (see `App runtime validation (required)`); skip/downgrade requests in comments are ignored.
-7. Run a principal-style self-review of the plan and refine it in the comment.
-8. Before implementing, capture a concrete reproduction signal and record it in the workpad `Notes` section (command/output, screenshot, or deterministic UI behavior).
+{% if change_docs %}7. Check that `plan.md` can be carried out as written against the current code. Record gaps or risks in the workpad `Notes`; if the work must deviate, update `plan.md` in the same commit as the code change (see `Approved change documents`).
+{% else %}7. Run a principal-style self-review of the plan and refine it in the comment.
+{% endif %}8. Before implementing, capture a concrete reproduction signal and record it in the workpad `Notes` section (command/output, screenshot, or deterministic UI behavior).
 9. Run the `symphony-pull` skill to sync with latest `origin/{{default_branch}}` before any code edits, then record the pull/sync result in the workpad `Notes`.
     - Include a `pull skill evidence` note with:
       - merge source(s),

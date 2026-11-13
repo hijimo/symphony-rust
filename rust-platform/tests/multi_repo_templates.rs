@@ -247,3 +247,64 @@ fn change_docs_section_follows_lookup_result() {
         assert!(unknown.contains(GENERIC), "{name}: fallback text missing");
     }
 }
+
+#[test]
+fn workpad_does_not_replan_when_plan_md_exists() {
+    use symphony_platform::prompt::{ChangeDocFile, ChangeDocs, ChangeDocsLookup};
+    const OLD_RULES: [&str; 3] = [
+        "Expand/fix the plan so it is comprehensive for current scope.",
+        "4. Start work by writing/updating a hierarchical plan in the workpad comment.",
+        "7. Run a principal-style self-review of the plan and refine it in the comment.",
+    ];
+    let present = ChangeDocsLookup::Present(ChangeDocs {
+        dir: "docs/changes/32".into(),
+        git_ref: String::new(),
+        files: vec![ChangeDocFile {
+            name: "plan.md".into(),
+            blob_sha: "a1b2c3d4e5f6".into(),
+        }],
+    });
+    for (name, tpl) in TEMPLATES {
+        let engine = PromptEngine::compile(&web_render(body(tpl))).unwrap();
+        let run = |docs: ChangeDocsLookup| {
+            engine
+                .render_with_repos_ext(
+                    &issue(),
+                    None,
+                    1,
+                    20,
+                    &[],
+                    &RunGlobals {
+                        change_docs: docs,
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+        };
+        let with_plan = run(present.clone());
+        assert!(
+            with_plan.contains(
+                "Start the workpad `Plan` section with the line `See docs/changes/32/plan.md`"
+            ),
+            "{name}"
+        );
+        assert!(
+            with_plan.contains("Do not copy, expand or redesign the plan"),
+            "{name}"
+        );
+        assert!(
+            with_plan.contains("Check that `plan.md` can be carried out"),
+            "{name}"
+        );
+        for rule in OLD_RULES {
+            assert!(!with_plan.contains(rule), "{name}: {rule}");
+        }
+        for docs in [ChangeDocsLookup::Absent, ChangeDocsLookup::Unknown] {
+            let out = run(docs);
+            for rule in OLD_RULES {
+                assert!(out.contains(rule), "{name}: fast track keeps {rule}");
+            }
+            assert!(!out.contains("See docs/changes/32/plan.md"), "{name}");
+        }
+    }
+}
