@@ -6,6 +6,7 @@ pub mod auth;
 pub mod change_docs;
 pub mod concurrency;
 pub mod contributors;
+pub mod gate_approvers;
 pub mod issue_mrs;
 pub mod issues;
 pub mod kanban;

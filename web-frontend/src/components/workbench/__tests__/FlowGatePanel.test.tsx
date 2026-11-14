@@ -7,6 +7,7 @@ import theme from '../../../theme';
 import { server } from '../../../test/mocks/server';
 import { IID, PID, makeFlow, workbenchHandlers, type WbCalls } from '../../../test/workbenchFixtures';
 import { useWorkbenchStore } from '../../../store/workbenchStore';
+import { useAuthStore } from '../../../store/auth';
 import FlowGatePanel from '../FlowGatePanel';
 import type { ChangeDocument, DocType, FlowView } from '../../../types/changes';
 
@@ -78,6 +79,37 @@ describe('FlowGatePanel', () => {
   it('hides token usage when the stage has none', () => {
     setup(makeFlow({ tokenUsage: {} }), 'intent', calls);
     expect(screen.queryByTestId('doc-token-usage')).not.toBeInTheDocument();
+  });
+
+  it('gate approver list disables decisions for other members', () => {
+    useAuthStore.setState({ user: { id: 1, username: 'bob', displayName: null, role: 'user' } });
+    setup(
+      makeFlow({ gateApprovers: { G1: [{ userId: 99, username: 'carol', displayName: 'Carol' }], G2: [], G3: [] } }),
+      'intent',
+      calls,
+    );
+    expect(screen.getByRole('button', { name: '批准（G1）' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '要求修改' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '拒绝' })).toBeDisabled();
+    expect(screen.getByText('仅 Carol 可批准')).toBeInTheDocument();
+  });
+
+  it('listed approvers and admins can decide', () => {
+    const flow = makeFlow({ gateApprovers: { G1: [{ userId: 99, username: 'carol', displayName: null }], G2: [], G3: [] } });
+    useAuthStore.setState({ user: { id: 99, username: 'carol', displayName: null, role: 'user' } });
+    setup(flow, 'intent', calls);
+    expect(screen.getByRole('button', { name: '批准（G1）' })).toBeEnabled();
+    expect(screen.queryByText(/可批准$/)).not.toBeInTheDocument();
+  });
+
+  it('admins are not restricted by the approver list', () => {
+    useAuthStore.setState({ user: { id: 2, username: 'root', displayName: null, role: 'admin' } });
+    setup(
+      makeFlow({ gateApprovers: { G1: [{ userId: 99, username: 'carol', displayName: null }], G2: [], G3: [] } }),
+      'intent',
+      calls,
+    );
+    expect(screen.getByRole('button', { name: '批准（G1）' })).toBeEnabled();
   });
 
   it('校验 with no issues shows 校验通过', async () => {

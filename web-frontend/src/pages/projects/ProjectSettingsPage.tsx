@@ -22,6 +22,7 @@ import ConfirmDialog from '../../components/ConfirmDialog';
 import WorkflowEditor from '../../components/WorkflowEditor';
 import ServiceControlPanel from '../../components/ServiceControlPanel';
 import ProjectReposEditor from '../../components/projects/ProjectReposEditor';
+import GateApproversEditor from '../../components/projects/GateApproversEditor';
 import { useAuthStore } from '../../store/auth';
 import ProjectTokenAlert from '../../components/projects/ProjectTokenAlert';
 import { getProject, updateProject, deleteProject, getServiceStatus, startService, stopService, restartService } from '../../api/projects';
@@ -434,6 +435,10 @@ export default function ProjectSettingsPage() {
                 保存
               </Button>
             </Box>
+            <Typography variant="subtitle1" sx={{ fontWeight: 600, mt: 4, mb: 1 }}>
+              闸门审批人
+            </Typography>
+            {tab === 0 && <GateApproversEditor projectId={projectId} />}
           </TabPanel>
 
           {/* Tab 2: Workflow */}
