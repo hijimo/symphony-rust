@@ -167,12 +167,14 @@ async fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
 
+    let runtime_state = Arc::new(web_platform::services::runtime_state::RuntimeStateCache::new());
     let alert_handle = AlertEngineBuilder::new(
         process_manager.clone(),
         concurrency_manager.clone(),
         repo.clone(),
     )
     .evaluation_interval_secs(alert_eval_interval)
+    .runtime_state(runtime_state.clone())
     .build()
     .await;
 
@@ -231,7 +233,6 @@ async fn main() {
         Err(e) => tracing::warn!("Failed to reset interrupted drafts: {}", e),
     }
 
-    let runtime_state = Arc::new(web_platform::services::runtime_state::RuntimeStateCache::new());
     let state = AppState {
         sdlc,
         repo,
