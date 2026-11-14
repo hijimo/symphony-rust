@@ -1311,6 +1311,16 @@ impl IssueStateRefresher for TrackerStateRefresher {
             .map_err(|e| e.to_string())
     }
 
+    async fn list_pull_request_comments(
+        &self,
+        pr: &crate::platform::PullRequestRef,
+    ) -> Result<Vec<crate::platform::Comment>, String> {
+        self.tracker
+            .list_pull_request_comments(pr)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     async fn upsert_pull_request_comment(
         &self,
         pr: &crate::platform::PullRequestRef,

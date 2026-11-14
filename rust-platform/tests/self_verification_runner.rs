@@ -40,7 +40,14 @@ for line in sys.stdin:
         out({"jsonrpc": "2.0", "id": m["id"], "result": {}})
     elif meth == "thread/start":
         save("dev", m["params"].get("developerInstructions"))
+        save("sandbox", m["params"].get("sandbox"))
         out({"jsonrpc": "2.0", "id": m["id"], "result": {"thread": {"id": "main-t"}}})
+    elif meth == "review/start":
+        save("review_target", m["params"]["target"])
+        out({"jsonrpc": "2.0", "id": m["id"], "result": {"turn": {"id": "rv"}, "reviewThreadId": "main-t"}})
+        text = "Looks risky.\n\nFull review comments:\n\n- [P1] Unplanned file - " + os.getcwd() + "/src/other.rs:1\n  remove it\n"
+        out({"method": "item/completed", "params": {"threadId": "main-t", "item": {"type": "exitedReviewMode", "id": "x", "review": text.replace(" - ", " \u2014 ")}}})
+        out({"method": "turn/completed", "params": {"threadId": "main-t", "turn": {"id": "rv", "status": "completed"}}})
     elif meth == "turn/start":
         save("prompt", m["params"]["input"][0]["text"])
         save("thread", m["params"].get("threadId"))
@@ -652,4 +659,87 @@ async fn development_run_handing_off_runs_plan_deviation_check() {
         .lock()
         .unwrap()
         .contains("### Symphony plan check"));
+}
+
+#[tokio::test]
+async fn review_enabled_run_posts_ai_review_after_plan_check() {
+    let _g = ENV_LOCK.lock().await;
+    let e = env();
+    let bare = e.host.join("acme/app.git");
+    std::fs::create_dir_all(&bare).unwrap();
+    git(&bare, &["init", "--bare", "-q", "--initial-branch=main"]);
+    let seed = e.host.join("seed-app");
+    std::fs::create_dir_all(seed.join("docs/changes/62")).unwrap();
+    git(&seed, &["init", "-q", "--initial-branch=main"]);
+    std::fs::write(
+        seed.join("docs/changes/62/plan.md"),
+        "## Files\n- src/planned.rs\n",
+    )
+    .unwrap();
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-qm", "docs"]);
+    git(
+        &seed,
+        &["push", "-q", bare.to_str().unwrap(), "HEAD:refs/heads/main"],
+    );
+    let agent = format!(
+        "set -e\ngit init -q -b main .\ngit remote add origin '{}'\ngit fetch -q origin\n\
+         git checkout -q -b feat/62 origin/main\ngit remote set-head origin main\n\
+         mkdir -p src && echo 1 > src/other.rs\ngit add src\n\
+         git -c user.name=t -c user.email=t@e commit -qm work\n",
+        bare.display()
+    );
+    let r = runner(
+        &e,
+        ServiceConfig {
+            tracker_project_slug: "acme/app".into(),
+            review: symphony_platform::config::ReviewConfig {
+                enabled: true,
+                timeout_ms: 20_000,
+                ..Default::default()
+            },
+            ..ServiceConfig::default()
+        },
+        &agent,
+    );
+    let refresher = Arc::new(PlanRefresher::default());
+    *refresher.workpad.lock().unwrap() = "## Codex Workpad\n".into();
+    r.run_attempt(issue("62", "In Progress", None), None, refresher.clone())
+        .await
+        .unwrap();
+
+    let comments = refresher.pr_comments.lock().unwrap().clone();
+    assert_eq!(comments.len(), 2, "plan check + AI review: {comments:?}");
+    let review = comments
+        .iter()
+        .find(|c| c.contains("Symphony AI 审查（第 1 轮）"))
+        .expect("review comment");
+    assert!(review.contains("Important 1 · Nit 0"), "{review}");
+    assert!(review.contains("`src/other.rs:1`"), "{review}");
+    let added = refresher.added.lock().unwrap().clone();
+    assert!(
+        added.contains(&"ai-review-running".to_string()),
+        "{added:?}"
+    );
+    assert!(
+        added.contains(&"ai-review-important".to_string()),
+        "{added:?}"
+    );
+
+    let rec = record(&e);
+    assert_eq!(rec["sandbox"], "read-only", "review thread is read-only");
+    assert_eq!(
+        rec["review_target"],
+        serde_json::json!({"type": "baseBranch", "branch": "origin/main"})
+    );
+    let dev = rec["dev"].as_str().unwrap();
+    assert!(dev.contains("Symphony's code reviewer"));
+    assert!(
+        dev.contains("docs/changes/62/plan.md"),
+        "docs passed to the reviewer"
+    );
+    assert!(
+        dev.contains("计划外的改动"),
+        "plan check passed to the reviewer"
+    );
 }

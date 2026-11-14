@@ -262,6 +262,10 @@ pub struct ServiceConfig {
     /// Deterministic validation gate (`validation.gate`, default off).
     pub validation_gate: bool,
 
+    // -- review --
+    /// AI review of PRs before human review (`review.*`, P2 design §4 B1).
+    pub review: ReviewConfig,
+
     // -- hooks --
     pub hooks: HooksConfig,
 
@@ -306,6 +310,7 @@ impl Default for ServiceConfig {
             workspace_repos: Vec::new(),
             workspace_single_repo: None,
             validation_gate: false,
+            review: ReviewConfig::default(),
             hooks: HooksConfig::default(),
             max_concurrent_agents: 10,
             max_turns: 20,
@@ -443,6 +448,7 @@ impl ServiceConfig {
 
         let validation = get_section(config, "validation");
         let validation_gate = matches!(validation.get("gate"), Some(YamlValue::Bool(true)));
+        let review = parse_review_config(&get_section(config, "review"));
 
         // -- agent section --
         let agent = get_section(config, "agent");
@@ -491,6 +497,7 @@ impl ServiceConfig {
             workspace_repos,
             workspace_single_repo,
             validation_gate,
+            review,
             hooks,
             max_concurrent_agents,
             max_turns,
@@ -1041,6 +1048,54 @@ pub fn resolve_path(path_str: &str) -> Result<PathBuf, ServiceConfigError> {
     }
 }
 
+/// When an AI review sends the issue back for fixes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReviewBlockOn {
+    /// Never: findings are informational.
+    #[default]
+    None,
+    /// Important (P0/P1) findings move the issue back to In Progress.
+    Important,
+}
+
+/// `review:` section of WORKFLOW.md.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewConfig {
+    pub enabled: bool,
+    pub block_on: ReviewBlockOn,
+    /// Rounds after which blocking stops (issue stays in Human Review).
+    pub max_rounds: u32,
+    /// Timeout of one repository review.
+    pub timeout_ms: u64,
+}
+
+impl Default for ReviewConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            block_on: ReviewBlockOn::None,
+            max_rounds: 2,
+            timeout_ms: 900_000,
+        }
+    }
+}
+
+fn parse_review_config(section: &HashMap<String, YamlValue>) -> ReviewConfig {
+    let d = ReviewConfig::default();
+    let block_on = match section.get("block_on") {
+        Some(YamlValue::String(s)) if s.trim().eq_ignore_ascii_case("important") => {
+            ReviewBlockOn::Important
+        }
+        _ => ReviewBlockOn::None,
+    };
+    ReviewConfig {
+        enabled: get_bool_or_default(section, "enabled", d.enabled),
+        block_on,
+        max_rounds: get_u64_or_default(section, "max_rounds", d.max_rounds as u64) as u32,
+        timeout_ms: get_u64_or_default(section, "timeout_ms", d.timeout_ms),
+    }
+}
+
 /// Sanitize a workspace key from an issue identifier.
 ///
 /// Delegates to the canonical implementation in `crate::workspace::sanitize_workspace_key`.
@@ -1063,6 +1118,40 @@ pub fn sanitize_workspace_key(identifier: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::workflow_loader::parse_workflow;
+
+    #[test]
+    fn test_review_section_defaults_and_values() {
+        let base = "---\ntracker:\n  kind: linear\n  api_key: k\n  project_slug: s\n";
+        let parse = |extra: &str| {
+            let wf = parse_workflow(&format!("{base}{extra}---\nP\n")).unwrap();
+            ServiceConfig::from_workflow(&wf, Path::new("/tmp"))
+                .unwrap()
+                .review
+        };
+        assert_eq!(parse(""), ReviewConfig::default());
+        assert!(!ReviewConfig::default().enabled);
+        assert_eq!(ReviewConfig::default().block_on, ReviewBlockOn::None);
+        assert_eq!(ReviewConfig::default().max_rounds, 2);
+        assert_eq!(ReviewConfig::default().timeout_ms, 900_000);
+
+        let r = parse(
+            "review:\n  enabled: true\n  block_on: important\n  max_rounds: 3\n  timeout_ms: 60000\n",
+        );
+        assert_eq!(
+            r,
+            ReviewConfig {
+                enabled: true,
+                block_on: ReviewBlockOn::Important,
+                max_rounds: 3,
+                timeout_ms: 60_000,
+            }
+        );
+        // Unknown block_on values fall back to not blocking.
+        assert_eq!(
+            parse("review:\n  enabled: true\n  block_on: everything\n").block_on,
+            ReviewBlockOn::None
+        );
+    }
 
     #[test]
     fn test_from_workflow_defaults() {

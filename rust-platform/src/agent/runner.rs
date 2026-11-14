@@ -197,6 +197,14 @@ pub trait IssueStateRefresher: Send + Sync {
         Err("pull requests not supported".to_string())
     }
 
+    /// User comments on a PR/MR.
+    async fn list_pull_request_comments(
+        &self,
+        _pr: &crate::platform::PullRequestRef,
+    ) -> Result<Vec<crate::platform::Comment>, String> {
+        Err("pull requests not supported".to_string())
+    }
+
     /// Write a marker-identified PR/MR comment.
     async fn upsert_pull_request_comment(
         &self,
@@ -540,6 +548,7 @@ impl AgentRunner {
             CodexStartOptions {
                 env,
                 developer_instructions: Some(post_run::SAFETY_RULES.to_string()),
+                read_only: false,
             },
         )
         .await
@@ -619,16 +628,33 @@ impl AgentRunner {
         } else {
             checked.clone()
         };
-        self.plan_deviation_check(
-            &issue,
-            layout,
-            &plan_repos,
-            &repo_contexts,
-            single_spec.as_ref(),
-            &service_config.tracker_project_slug,
-            &state_refresher,
-        )
-        .await;
+        let plan_report = self
+            .plan_deviation_check(
+                &issue,
+                layout,
+                &plan_repos,
+                &repo_contexts,
+                single_spec.as_ref(),
+                &service_config.tracker_project_slug,
+                &state_refresher,
+            )
+            .await;
+
+        // 5b''. AI review of the PR before human review (P2 design §4 B1).
+        if service_config.review.enabled {
+            self.ai_review_check(
+                &issue,
+                layout,
+                &plan_repos,
+                &repo_contexts,
+                single_spec.as_ref(),
+                service_config,
+                &change_docs,
+                plan_report.as_deref(),
+                &state_refresher,
+            )
+            .await;
+        }
 
         // 5c. Read-only integrity check *after* the agent ran (design §5.3).
         if let Some((ctx, _)) = &multi {
@@ -934,29 +960,25 @@ impl AgentRunner {
         single: Option<&crate::config::SingleRepoSpec>,
         tracker_slug: &str,
         refresher: &Arc<dyn IssueStateRefresher>,
-    ) {
+    ) -> Option<String> {
         if !refresher.supports_workpad() || !starts_development(&issue.state) {
-            return;
+            return None;
         }
         let ended_review = matches!(
             refresher.refresh_issue_state(&issue.id).await,
             Ok(Some(i)) if is_state(&i.state, &["human review", "testing"])
         );
         if !ended_review {
-            return;
+            return None;
         }
-        let Some(target) = super::change_docs::doc_target(
+        let target = super::change_docs::doc_target(
             &issue.identifier,
             &issue.id,
             repos,
             single,
             tracker_slug,
-        ) else {
-            return;
-        };
-        let Some(number) = super::change_docs::issue_number(&issue.identifier, &issue.id) else {
-            return;
-        };
+        )?;
+        let number = super::change_docs::issue_number(&issue.identifier, &issue.id)?;
         let multi_repo = layout == WorkspaceLayout::MultiRepo;
         let primary_alias = if multi_repo {
             repos
@@ -967,9 +989,7 @@ impl AgentRunner {
         } else {
             checked.first().map(|r| r.alias.clone())
         };
-        let Some(primary_alias) = primary_alias else {
-            return;
-        };
+        let primary_alias = primary_alias?;
         let input = super::plan_check::PlanCheckInput {
             issue_id: &issue.id,
             issue_number: number,
@@ -978,13 +998,127 @@ impl AgentRunner {
             primary_alias: &primary_alias,
             primary_slug: &target.slug,
         };
-        if let Some(result) = super::plan_check::run(refresher.as_ref(), &input).await {
+        let result = super::plan_check::run(refresher.as_ref(), &input).await?;
+        tracing::info!(
+            issue_id = %issue.id,
+            consistent = result.is_consistent(),
+            unplanned = result.unplanned.len(),
+            untouched = result.untouched.len(),
+            "plan deviation check finished"
+        );
+        let prefix = if multi_repo {
+            format!("{primary_alias}/")
+        } else {
+            String::new()
+        };
+        Some(super::plan_check::report(
+            &result,
+            &format!("{prefix}docs/changes/{number}/plan.md"),
+        ))
+    }
+
+    /// Run the AI review when the issue was handed to Human Review (P2 §4 B1).
+    #[allow(clippy::too_many_arguments)]
+    async fn ai_review_check(
+        &self,
+        issue: &AgentIssue,
+        layout: WorkspaceLayout,
+        checked: &[post_run::CheckedRepo],
+        repos: &[RepoContext],
+        single: Option<&crate::config::SingleRepoSpec>,
+        service: &crate::config::ServiceConfig,
+        change_docs: &crate::prompt::ChangeDocsLookup,
+        plan_report: Option<&str>,
+        refresher: &Arc<dyn IssueStateRefresher>,
+    ) {
+        if !refresher.supports_workpad() || is_state(&issue.state, &["human review"]) {
+            return;
+        }
+        let ended_human_review = matches!(
+            refresher.refresh_issue_state(&issue.id).await,
+            Ok(Some(i)) if is_state(&i.state, &["human review"])
+        );
+        if !ended_human_review {
+            return;
+        }
+        let Some(target) = super::change_docs::doc_target(
+            &issue.identifier,
+            &issue.id,
+            repos,
+            single,
+            &service.tracker_project_slug,
+        ) else {
+            return;
+        };
+        let multi_repo = layout == WorkspaceLayout::MultiRepo;
+        let review_repos: Vec<super::ai_review::ReviewRepo> = checked
+            .iter()
+            .map(|c| super::ai_review::ReviewRepo {
+                alias: c.alias.clone(),
+                dir: c.dir.clone(),
+                default_branch: c.default_branch.clone(),
+                slug: if multi_repo {
+                    repos
+                        .iter()
+                        .find(|r| r.alias == c.alias)
+                        .map(|r| r.slug.clone())
+                        .unwrap_or_default()
+                } else {
+                    target.slug.clone()
+                },
+            })
+            .collect();
+        let primary_alias = if multi_repo {
+            repos
+                .iter()
+                .find(|r| r.role == "primary")
+                .or_else(|| repos.first())
+                .map(|r| r.alias.clone())
+        } else {
+            checked.first().map(|c| c.alias.clone())
+        };
+        let Some(primary_alias) = primary_alias else {
+            return;
+        };
+        let primary_dir = review_repos
+            .iter()
+            .find(|r| r.alias == primary_alias)
+            .map(|r| r.dir.clone());
+        let (docs, doc_refs): (Vec<std::path::PathBuf>, Vec<String>) =
+            match (change_docs, primary_dir) {
+                (crate::prompt::ChangeDocsLookup::Present(d), Some(dir)) => d
+                    .files
+                    .iter()
+                    .map(|f| {
+                        let short: String = f.blob_sha.chars().take(12).collect();
+                        (
+                            dir.join(&target.repo_dir).join(&f.name),
+                            format!("{}@{short}", f.name),
+                        )
+                    })
+                    .unzip(),
+                _ => (Vec::new(), Vec::new()),
+            };
+        let input = super::ai_review::ReviewInput {
+            issue_id: &issue.id,
+            repos: &review_repos,
+            primary_alias: &primary_alias,
+            codex: &service.codex,
+            timeout: std::time::Duration::from_millis(service.review.timeout_ms),
+            docs: &docs,
+            doc_refs: &doc_refs,
+            plan_check: plan_report,
+            // The issue is no longer active, so reconciliation may cancel the
+            // worker's token; the review uses its own, bounded by `timeout`.
+            cancel: CancellationToken::new(),
+        };
+        if let Some(outcome) = super::ai_review::run(refresher.as_ref(), &input).await {
             tracing::info!(
                 issue_id = %issue.id,
-                consistent = result.is_consistent(),
-                unplanned = result.unplanned.len(),
-                untouched = result.untouched.len(),
-                "plan deviation check finished"
+                round = outcome.round,
+                important = ?outcome.important,
+                nit = ?outcome.nit,
+                "AI review finished"
             );
         }
     }

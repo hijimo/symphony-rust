@@ -192,6 +192,25 @@ fn server_request_response(event: &serde_json::Value) -> Option<serde_json::Valu
     Some(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }))
 }
 
+/// Server-request answers for a read-only reviewer: decline every approval,
+/// otherwise behave like [`server_request_response`].
+fn reviewer_request_response(event: &serde_json::Value) -> Option<serde_json::Value> {
+    let id = event.get("id")?.clone();
+    let decision = match event.get("method")?.as_str()? {
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => "decline",
+        "execCommandApproval" | "applyPatchApproval" => "denied",
+        "item/permissions/requestApproval" => {
+            return Some(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {"permissions": {}, "scope": "turn"}
+            }))
+        }
+        _ => return server_request_response(event),
+    };
+    Some(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": {"decision": decision} }))
+}
+
 fn extract_turn_id_from_message(message: &serde_json::Value) -> Option<String> {
     message
         .pointer("/params/turn/id")
@@ -449,6 +468,8 @@ pub struct CodexClient {
     handshake_done: bool,
     /// Developer instructions sent with `thread/start`.
     developer_instructions: Option<String>,
+    /// Reviewer mode (see [`CodexStartOptions::read_only`]).
+    read_only: bool,
 }
 
 /// Extra inputs for [`CodexClient::start_with`].
@@ -458,6 +479,9 @@ pub struct CodexStartOptions {
     pub env: Vec<(String, String)>,
     /// `developerInstructions` for `thread/start`.
     pub developer_instructions: Option<String>,
+    /// Reviewer mode: `thread/start` uses `sandbox: read-only` and
+    /// `approvalPolicy: never`, and every approval request is declined.
+    pub read_only: bool,
 }
 
 impl CodexClient {
@@ -570,6 +594,7 @@ impl CodexClient {
             next_rpc_id: 1,
             handshake_done: false,
             developer_instructions: options.developer_instructions,
+            read_only: options.read_only,
         })
     }
 
@@ -607,6 +632,120 @@ impl CodexClient {
                 tracing::info!("turn cancelled via cancellation token");
                 self.kill().await;
                 Err(CodexError::TurnCancelled)
+            }
+        }
+    }
+
+    /// Run `review/start` against `base_branch` on this client's thread and
+    /// return every `item/*` notification of the review (P2 design §4 B1).
+    ///
+    /// Approval requests are declined; the review must not change anything.
+    pub async fn run_review(
+        &mut self,
+        base_branch: &str,
+        timeout: Duration,
+    ) -> Result<Vec<serde_json::Value>, CodexError> {
+        let cancel = self.cancel_token.clone();
+        tokio::select! {
+            r = tokio::time::timeout(timeout, self.review_events(base_branch)) => match r {
+                Ok(result) => result,
+                Err(_) => {
+                    self.kill().await;
+                    Err(CodexError::TurnTimeout)
+                }
+            },
+            _ = cancel.cancelled() => {
+                self.kill().await;
+                Err(CodexError::TurnCancelled)
+            }
+        }
+    }
+
+    async fn review_events(
+        &mut self,
+        base_branch: &str,
+    ) -> Result<Vec<serde_json::Value>, CodexError> {
+        if !self.handshake_done {
+            self.perform_handshake().await?;
+        }
+        let thread = self
+            .thread_id
+            .clone()
+            .ok_or_else(|| CodexError::ResponseError {
+                detail: "thread/start returned no thread id".to_string(),
+            })?;
+        let id = self.next_rpc_id();
+        self.send_json_rpc(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "review/start",
+            "params": {
+                "threadId": thread,
+                "target": {"type": "baseBranch", "branch": base_branch},
+            },
+        }))
+        .await?;
+
+        let mut items = Vec::new();
+        let mut line = String::with_capacity(4096);
+        loop {
+            line.clear();
+            if self
+                .stdout
+                .read_line(&mut line)
+                .await
+                .map_err(CodexError::Io)?
+                == 0
+            {
+                let code = self.child.try_wait().ok().flatten().and_then(|s| s.code());
+                return Err(CodexError::ProcessExit { code });
+            }
+            if line.len() > MAX_LINE_SIZE {
+                continue;
+            }
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+                continue;
+            };
+            if event.get("id").and_then(|v| v.as_u64()) == Some(id) {
+                if let Some(error) = event.get("error") {
+                    return Err(CodexError::ResponseError {
+                        detail: error
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("review/start failed")
+                            .to_string(),
+                    });
+                }
+                continue;
+            }
+            if event.get("id").is_some() && event.get("method").is_some() {
+                if let Some(resp) = reviewer_request_response(&event) {
+                    self.send_json_rpc(&resp).await?;
+                }
+                continue;
+            }
+            let on_thread = event_thread_id(&event).is_none_or(|t| t == thread);
+            if !on_thread {
+                continue;
+            }
+            let method = event.get("method").and_then(|v| v.as_str()).unwrap_or("");
+            if method.starts_with("item/") {
+                items.push(event.clone());
+            }
+            if method == "turn/completed" {
+                return match event
+                    .pointer("/params/turn/status")
+                    .and_then(|v| v.as_str())
+                {
+                    Some("failed") | Some("interrupted") => Err(CodexError::TurnFailed {
+                        reason: event
+                            .pointer("/params/turn/error/message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("review turn failed")
+                            .to_string(),
+                    }),
+                    _ => Ok(items),
+                };
             }
         }
     }
@@ -789,11 +928,19 @@ impl CodexClient {
 
         // Step 2: Send thread/start request
         let thread_id = self.next_rpc_id();
+        let (approval, sandbox) = if self.read_only {
+            (
+                Some(serde_json::json!("never")),
+                Some(serde_json::json!("read-only")),
+            )
+        } else {
+            (self.approval_policy.clone(), self.sandbox_policy.clone())
+        };
         let thread_request = build_thread_start_request(
             thread_id,
             &self.workspace_path,
-            self.approval_policy.as_ref(),
-            self.sandbox_policy.as_ref(),
+            approval.as_ref(),
+            sandbox.as_ref(),
             self.developer_instructions.as_deref(),
         );
 

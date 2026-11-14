@@ -9,8 +9,9 @@ pub use platform::{
     Config, IssueFilter, Label, PlatformConfig, PollingConfig, TrackerConfig, WorkflowConfig,
 };
 pub use service_config::{
-    resolve_path, resolve_value, sanitize_workspace_key, CodexConfig, HooksConfig, ServiceConfig,
-    ServiceConfigError, SingleRepoSpec, TrackerKind, WorkspaceGcConfig,
+    resolve_path, resolve_value, sanitize_workspace_key, CodexConfig, HooksConfig, ReviewBlockOn,
+    ReviewConfig, ServiceConfig, ServiceConfigError, SingleRepoSpec, TrackerKind,
+    WorkspaceGcConfig,
 };
 pub use validator::{validate_platform_config, ConfigValidationError};
 pub use watcher::{ConfigHolder, EffectiveConfig};
