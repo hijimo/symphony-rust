@@ -955,6 +955,32 @@ impl GitPlatformClient for GitLabClient {
         // rules are enforced by GitLab at merge time.
         Ok(max >= 30)
     }
+
+    async fn merge_readiness(
+        &self,
+        token: &str,
+        project_path: &str,
+        mr_iid: u64,
+    ) -> Result<crate::services::git_platform::MergeReadiness, GitPlatformError> {
+        use crate::services::git_platform::{gitlab_blocker, gitlab_ci_state, MergeReadiness};
+        let url = format!(
+            "{}/api/v4/projects/{}/merge_requests/{}",
+            self.base_url,
+            Self::encode_project_path(project_path),
+            mr_iid
+        );
+        let mr = self
+            .send_ok(self.http.get(&url).header("PRIVATE-TOKEN", token))
+            .await?;
+        Ok(MergeReadiness {
+            ci: gitlab_ci_state(mr.pointer("/head_pipeline/status").and_then(|v| v.as_str())),
+            ci_url: mr
+                .pointer("/head_pipeline/web_url")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            blocker: gitlab_blocker(mr["detailed_merge_status"].as_str()),
+        })
+    }
 }
 
 impl GitLabClient {

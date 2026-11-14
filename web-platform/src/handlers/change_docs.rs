@@ -477,6 +477,23 @@ pub async fn revert(
     ok(service::revert(&ctx, &flow, to, body.impl_branch, body.code_mr_iid).await?)
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TokenStatusQuery {
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+/// GET /api/projects/{id}/token-status — is the project token usable?
+pub async fn token_status(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(project_id): Path<i64>,
+    axum::extract::Query(q): axum::extract::Query<TokenStatusQuery>,
+) -> ApiResult {
+    let ctx = ctx(&state, &claims, project_id).await?;
+    ok(service::project_token_status(&state, &ctx.project, q.refresh).await)
+}
+
 /// POST .../docs/{doc}/draft/retry and .../draft/manual
 pub async fn draft_retry(
     State(state): State<AppState>,

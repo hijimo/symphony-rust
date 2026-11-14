@@ -80,6 +80,7 @@ fn impl_labels(project: &Project) -> Vec<String> {
     v
 }
 
+#[derive(Clone)]
 pub struct Ctx {
     pub app: AppState,
     pub project: Project,
@@ -130,6 +131,79 @@ async fn project_token(app: &AppState, project: &Project) -> Result<String, WebP
     user_token(app, owner, project).await?.ok_or_else(|| {
         WebPlatformError::BadRequest("项目 Token 不可用：项目创建者未配置平台 Token".into())
     })
+}
+
+/// Whether the project token (creator's personal token) works, P2 §5 A3.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenStatus {
+    pub ok: bool,
+    pub reason: Option<String>,
+    pub checked_at: String,
+}
+
+const TOKEN_STATUS_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+fn token_status_cache() -> &'static dashmap::DashMap<i64, (std::time::Instant, TokenStatus)> {
+    static C: std::sync::OnceLock<dashmap::DashMap<i64, (std::time::Instant, TokenStatus)>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(dashmap::DashMap::new)
+}
+
+/// Check the project token against the repository (cached for 10 minutes;
+/// `refresh` bypasses the cache). Network errors are not reported as an
+/// unusable token.
+pub async fn project_token_status(app: &AppState, project: &Project, refresh: bool) -> TokenStatus {
+    if !refresh {
+        if let Some(e) = token_status_cache().get(&project.id) {
+            if e.0.elapsed() < TOKEN_STATUS_TTL {
+                return e.1.clone();
+            }
+        }
+    }
+    let owner = match &project.created_by {
+        Some(id) => app
+            .repo
+            .find_by_id(*id)
+            .await
+            .ok()
+            .flatten()
+            .map(|u| u.username)
+            .unwrap_or_else(|| format!("#{id}")),
+        None => "-".to_string(),
+    };
+    let unusable = |why: String| {
+        Some(format!(
+            "项目 Token 不可用：{why}（使用的是项目创建者 {owner} 的个人 Token）"
+        ))
+    };
+    let reason = match project_token(app, project).await {
+        Err(_) => unusable("项目创建者未配置平台 Token".into()),
+        Ok(token) => match client(app, project).await {
+            Err(_) => None,
+            Ok(c) => match c.can_merge(&token, &project_path(project)).await {
+                Ok(_) => None,
+                Err(crate::services::git_platform::GitPlatformError::TokenInvalid(_)) => {
+                    unusable("平台 Token 已失效或被撤销".into())
+                }
+                Err(crate::services::git_platform::GitPlatformError::Forbidden(_))
+                | Err(crate::services::git_platform::GitPlatformError::NotFound(_)) => {
+                    unusable(format!("没有访问仓库 {} 的权限", project_path(project)))
+                }
+                Err(e) => {
+                    tracing::debug!(project = project.id, error = %e, "token status check inconclusive");
+                    None
+                }
+            },
+        },
+    };
+    let status = TokenStatus {
+        ok: reason.is_none(),
+        reason,
+        checked_at: chrono::Utc::now().to_rfc3339(),
+    };
+    token_status_cache().insert(project.id, (std::time::Instant::now(), status.clone()));
+    status
 }
 
 async fn client(
@@ -1139,8 +1213,102 @@ async fn issue_title(app: &AppState, project: &Project, flow: &ChangeFlow) -> St
 
 // ----------------------------------------------------------------- merge
 
-/// G3 passed: Ready → (merge main into docs branch on conflict) → merge with
-/// the approver's token → merged phase → hand-off label (§10.2 step 5).
+/// Seconds between CI checks while a docs MR merge waits.
+fn merge_ci_poll() -> std::time::Duration {
+    std::time::Duration::from_secs(env_secs("SYMPHONY_DOCS_MERGE_CI_POLL_SECS", 15))
+}
+
+/// Longest wait for CI before the merge is reported as failed.
+fn merge_ci_timeout() -> chrono::Duration {
+    chrono::Duration::seconds(env_secs("SYMPHONY_DOCS_MERGE_CI_TIMEOUT_SECS", 600) as i64)
+}
+
+fn env_secs(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(default)
+}
+
+/// What to do about CI before merging (P2 design §5 A3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CiWait {
+    Proceed,
+    /// Keep waiting; the value is the (possibly new) waiting start.
+    Wait(String),
+    Fail(String),
+}
+
+pub fn ci_wait_decision(
+    readiness: &crate::services::git_platform::MergeReadiness,
+    waiting_since: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+    timeout: chrono::Duration,
+) -> CiWait {
+    use crate::services::git_platform::CiState;
+    let link = readiness
+        .ci_url
+        .as_deref()
+        .map(|u| format!("（{u}）"))
+        .unwrap_or_default();
+    match readiness.ci {
+        CiState::Failed => CiWait::Fail(format!("CI 未通过{link}，修复后点“重试合并”")),
+        CiState::Pending => {
+            let since = waiting_since
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|t| t.with_timezone(&chrono::Utc))
+                .unwrap_or(now);
+            if now - since > timeout {
+                CiWait::Fail(format!(
+                    "等待 CI 超过 {} 分钟{link}，CI 完成后点“重试合并”",
+                    timeout.num_minutes().max(1)
+                ))
+            } else {
+                CiWait::Wait(since.to_rfc3339())
+            }
+        }
+        CiState::None | CiState::Success => CiWait::Proceed,
+    }
+}
+
+/// Flows with a scheduled CI re-check (one poller per flow).
+fn merge_pollers() -> &'static dashmap::DashSet<i64> {
+    static SET: std::sync::OnceLock<dashmap::DashSet<i64>> = std::sync::OnceLock::new();
+    SET.get_or_init(dashmap::DashSet::new)
+}
+
+fn schedule_merge_recheck(ctx: &Ctx, flow_id: i64) {
+    if !merge_pollers().insert(flow_id) {
+        return;
+    }
+    let ctx = ctx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(merge_ci_poll()).await;
+        merge_pollers().remove(&flow_id);
+        let s = sdlc(&ctx.app);
+        let Ok(Some(flow)) = s.store.get_flow_by_id(flow_id).await else {
+            return;
+        };
+        if flow.merge_waiting_since.is_none() {
+            return;
+        }
+        let fut: std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send>> =
+            Box::pin(merge_docs(&ctx, &flow));
+        if let Err(e) = fut.await {
+            tracing::info!(flow = flow_id, error = %e, "docs MR merge after CI wait failed");
+        }
+    });
+}
+
+enum MergeStep {
+    Merged(Option<String>),
+    WaitingForCi(String),
+}
+
+/// G3 passed: Ready → (merge main into docs branch on conflict) → wait for
+/// CI → merge with the approver's token → merged phase → hand-off label
+/// (§10.2 step 5).
 pub async fn merge_docs(ctx: &Ctx, flow: &ChangeFlow) -> Result<(), WebPlatformError> {
     let app = &ctx.app;
     let s = sdlc(app);
@@ -1190,7 +1358,7 @@ pub async fn merge_docs(ctx: &Ctx, flow: &ChangeFlow) -> Result<(), WebPlatformE
         s.notify(flow.id, json!({"type": "flow_changed"}));
         return Err(WebPlatformError::Conflict(msg));
     }
-    let result: Result<Option<String>, WebPlatformError> = async {
+    let result: Result<MergeStep, WebPlatformError> = async {
         c.set_merge_request_draft(&sys_token, &path, mr, false)
             .await
             .map_err(map_platform_error)?;
@@ -1208,17 +1376,53 @@ pub async fn merge_docs(ctx: &Ctx, flow: &ChangeFlow) -> Result<(), WebPlatformE
             s.workspaces.merge_main(&spec).await?;
             s.workspaces.push(&spec).await?;
         }
+        // Wait for CI instead of letting the platform reject the merge.
+        match c.merge_readiness(&sys_token, &path, mr).await {
+            Ok(r) => match ci_wait_decision(
+                &r,
+                flow.merge_waiting_since.as_deref(),
+                chrono::Utc::now(),
+                merge_ci_timeout(),
+            ) {
+                CiWait::Proceed => {}
+                CiWait::Wait(since) => return Ok(MergeStep::WaitingForCi(since)),
+                CiWait::Fail(msg) => return Err(WebPlatformError::Conflict(msg)),
+            },
+            Err(e) => tracing::debug!(error = %e, "merge readiness unavailable; merging directly"),
+        }
         match c.merge_merge_request(&approver_token, &path, mr).await {
-            Ok(sha) => Ok(sha),
+            Ok(sha) => Ok(MergeStep::Merged(sha)),
             Err(crate::services::git_platform::GitPlatformError::Conflict { message, .. }) => {
-                Err(WebPlatformError::Conflict(format!(
-                    "平台拒绝合并（CI 未完成或未通过、需要审批，或分支受保护），请处理后点“重试合并”：{message}"
-                )))
+                let hint = c
+                    .merge_readiness(&sys_token, &path, mr)
+                    .await
+                    .ok()
+                    .and_then(|r| r.blocker.map(|b| b.hint()));
+                Err(WebPlatformError::Conflict(match hint {
+                    Some(h) => format!("平台拒绝合并：{h}，处理后点“重试合并”。平台返回：{message}"),
+                    None => format!(
+                        "平台拒绝合并（CI 未完成或未通过、需要审批，或分支受保护），请处理后点“重试合并”：{message}"
+                    ),
+                }))
             }
             Err(e) => Err(map_platform_error(e)),
         }
     }
     .await;
+
+    let result = match result {
+        Ok(MergeStep::WaitingForCi(since)) => {
+            s.store.set_merge_waiting(flow.id, Some(&since)).await?;
+            s.store.set_flow_merge_result(flow.id, None, None).await?;
+            drop(_g);
+            s.notify(flow.id, json!({"type": "flow_changed"}));
+            schedule_merge_recheck(ctx, flow.id);
+            return Ok(());
+        }
+        Ok(MergeStep::Merged(sha)) => Ok(sha),
+        Err(e) => Err(e),
+    };
+    s.store.set_merge_waiting(flow.id, None).await?;
 
     match result {
         Ok(sha) => {
@@ -1766,4 +1970,53 @@ pub async fn retry_draft(
         d.last_feedback.clone(),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod ci_wait_tests {
+    use super::*;
+    use crate::services::git_platform::{CiState, MergeReadiness};
+
+    fn r(ci: CiState) -> MergeReadiness {
+        MergeReadiness {
+            ci,
+            ci_url: Some("http://ci/1".into()),
+            blocker: None,
+        }
+    }
+
+    #[test]
+    fn test_ci_wait_decision() {
+        let now = chrono::Utc::now();
+        let ten = chrono::Duration::minutes(10);
+        assert_eq!(
+            ci_wait_decision(&r(CiState::None), None, now, ten),
+            CiWait::Proceed
+        );
+        assert_eq!(
+            ci_wait_decision(&r(CiState::Success), None, now, ten),
+            CiWait::Proceed
+        );
+        match ci_wait_decision(&r(CiState::Failed), None, now, ten) {
+            CiWait::Fail(m) => assert!(m.contains("CI 未通过（http://ci/1）"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        // First pending check starts the wait at `now`.
+        assert_eq!(
+            ci_wait_decision(&r(CiState::Pending), None, now, ten),
+            CiWait::Wait(now.to_rfc3339())
+        );
+        // An earlier start is kept while within the timeout…
+        let started = (now - chrono::Duration::minutes(3)).to_rfc3339();
+        assert_eq!(
+            ci_wait_decision(&r(CiState::Pending), Some(&started), now, ten),
+            CiWait::Wait(started)
+        );
+        // …and reported once the timeout is exceeded.
+        let old = (now - chrono::Duration::minutes(11)).to_rfc3339();
+        match ci_wait_decision(&r(CiState::Pending), Some(&old), now, ten) {
+            CiWait::Fail(m) => assert!(m.contains("等待 CI 超过 10 分钟"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
 }

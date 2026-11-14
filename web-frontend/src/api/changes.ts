@@ -198,3 +198,17 @@ export async function getStageKanban(
   });
   return res.data.data;
 }
+
+export interface ProjectTokenStatus {
+  ok: boolean;
+  reason: string | null;
+  checkedAt: string;
+}
+
+/** Whether the project token (creator's personal token) is usable. */
+export async function getProjectTokenStatus(projectId: number, refresh = false): Promise<ProjectTokenStatus> {
+  const res = await client.get<ResponseData<ProjectTokenStatus>>(`/api/projects/${projectId}/token-status`, {
+    params: refresh ? { refresh: true } : undefined,
+  });
+  return res.data.data;
+}

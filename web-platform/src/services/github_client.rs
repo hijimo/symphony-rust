@@ -1028,6 +1028,43 @@ impl GitPlatformClient for GitHubClient {
         };
         Ok(p("push") || p("maintain") || p("admin"))
     }
+
+    async fn merge_readiness(
+        &self,
+        token: &str,
+        project_path: &str,
+        mr_iid: u64,
+    ) -> Result<crate::services::git_platform::MergeReadiness, GitPlatformError> {
+        use crate::services::git_platform::{github_blocker, github_ci_state, MergeReadiness};
+        let pr_url = format!("{}/repos/{}/pulls/{}", Self::BASE_URL, project_path, mr_iid);
+        let pr = self
+            .send_ok(self.authed(self.http.get(&pr_url), token))
+            .await?;
+        let sha = pr
+            .pointer("/head/sha")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let (combined, runs) = if sha.is_empty() {
+            (serde_json::Value::Null, serde_json::Value::Null)
+        } else {
+            let base = format!("{}/repos/{}/commits/{}", Self::BASE_URL, project_path, sha);
+            let combined = self
+                .send_ok(self.authed(self.http.get(format!("{base}/status")), token))
+                .await
+                .unwrap_or(serde_json::Value::Null);
+            let runs = self
+                .send_ok(self.authed(self.http.get(format!("{base}/check-runs")), token))
+                .await
+                .unwrap_or(serde_json::Value::Null);
+            (combined, runs)
+        };
+        Ok(MergeReadiness {
+            ci: github_ci_state(&combined, &runs),
+            ci_url: pr["html_url"].as_str().map(|u| format!("{u}/checks")),
+            blocker: github_blocker(pr["mergeable_state"].as_str()),
+        })
+    }
 }
 
 impl GitHubClient {
