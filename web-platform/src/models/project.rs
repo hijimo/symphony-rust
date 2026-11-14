@@ -143,6 +143,10 @@ pub struct Project {
     pub testing_service_generation: i64,
     /// Deterministic self-verification gate (rendered as `validation.gate`).
     pub validation_gate: bool,
+    /// AI review of PRs before human review (rendered as `review.enabled`).
+    pub ai_review_enabled: bool,
+    /// Important AI review findings send the issue back (`review.block_on`).
+    pub ai_review_block: bool,
 }
 
 /// Data required to create a new project.
@@ -177,6 +181,8 @@ pub struct ProjectUpdate {
     pub testing_enabled: Option<bool>,
     pub testing_max_turns: Option<i64>,
     pub validation_gate: Option<bool>,
+    pub ai_review_enabled: Option<bool>,
+    pub ai_review_block: Option<bool>,
 }
 
 /// Service status update payload.
@@ -258,6 +264,8 @@ pub struct UpdateProjectRequest {
     pub testing_enabled: Option<bool>,
     pub testing_max_turns: Option<i64>,
     pub validation_gate: Option<bool>,
+    pub ai_review_enabled: Option<bool>,
+    pub ai_review_block: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

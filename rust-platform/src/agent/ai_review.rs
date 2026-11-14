@@ -263,6 +263,45 @@ pub struct ReviewOutcome {
     pub nit: Option<usize>,
 }
 
+/// Label added when Important findings remain after the last blocking round.
+pub const LABEL_UNRESOLVED: &str = "ai-review-unresolved";
+
+/// What to do with the issue after a review round (P2 design §4 B1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockDecision {
+    /// Move back to In Progress so the developer agent addresses findings.
+    SendBack,
+    /// Stay in Human Review and add `ai-review-unresolved`.
+    Unresolved,
+    /// No Important findings: remove `ai-review-unresolved`.
+    Clear,
+    /// Leave the issue as it is.
+    Keep,
+}
+
+/// `blocked_handoff`: the issue was handed off with a blocked marker
+/// (validation or access); those are never sent back.
+pub fn block_decision(
+    cfg: &crate::config::ReviewConfig,
+    outcome: &ReviewOutcome,
+    blocked_handoff: bool,
+) -> BlockDecision {
+    let Some(important) = outcome.important else {
+        return BlockDecision::Keep;
+    };
+    if important == 0 {
+        return BlockDecision::Clear;
+    }
+    if cfg.block_on != crate::config::ReviewBlockOn::Important || blocked_handoff {
+        return BlockDecision::Keep;
+    }
+    if outcome.round < cfg.max_rounds {
+        BlockDecision::SendBack
+    } else {
+        BlockDecision::Unresolved
+    }
+}
+
 async fn base_branch(repo: &ReviewRepo) -> Option<String> {
     if !repo.default_branch.is_empty() {
         return Some(format!("origin/{}", repo.default_branch));

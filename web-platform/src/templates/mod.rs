@@ -28,6 +28,16 @@ pub struct WorkflowTemplateContext {
     pub repos: Vec<ResolvedRepo>,
     /// Render `validation.gate: true` (self-verification design §3.5).
     pub validation_gate: bool,
+    /// Render the `review:` section (P2 design §4 B1).
+    pub ai_review: AiReviewSettings,
+}
+
+/// Project AI review settings rendered into WORKFLOW front matter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AiReviewSettings {
+    pub enabled: bool,
+    /// `block_on: important` (Important findings send the issue back).
+    pub block_important: bool,
 }
 
 /// Get the raw template content for a given platform.
@@ -110,24 +120,33 @@ pub fn render_template_string(template: &str, ctx: &WorkflowTemplateContext) -> 
             "{{testing_fail_minor_section}}",
             &testing_fail_minor_section,
         );
-    if ctx.validation_gate {
-        insert_validation_gate(&rendered)
+    let rendered = if ctx.validation_gate {
+        insert_front_matter(&rendered, "validation:\n  gate: true")
+    } else {
+        rendered
+    };
+    if ctx.ai_review.enabled {
+        let block = if ctx.ai_review.block_important {
+            "important"
+        } else {
+            "none"
+        };
+        insert_front_matter(
+            &rendered,
+            &format!("review:\n  enabled: true\n  block_on: {block}"),
+        )
     } else {
         rendered
     }
 }
 
-/// Insert `validation:\n  gate: true\n` before the closing front-matter delimiter.
-fn insert_validation_gate(rendered: &str) -> String {
+/// Insert `section` before the closing front-matter delimiter.
+fn insert_front_matter(rendered: &str, section: &str) -> String {
     let Some(rest) = rendered.strip_prefix("---\n") else {
         return rendered.to_string();
     };
     match rest.find("\n---\n") {
-        Some(end) => format!(
-            "---\n{}\nvalidation:\n  gate: true{}",
-            &rest[..end],
-            &rest[end..]
-        ),
+        Some(end) => format!("---\n{}\n{section}{}", &rest[..end], &rest[end..]),
         None => rendered.to_string(),
     }
 }
@@ -392,6 +411,7 @@ mod tests {
             testing_max_turns: None,
             repos: vec![],
             validation_gate: false,
+            ai_review: AiReviewSettings::default(),
         };
         let rendered = render_template(&ctx);
         assert!(rendered.contains("kind: github"));
@@ -423,6 +443,7 @@ mod tests {
             testing_max_turns: None,
             repos: vec![],
             validation_gate: false,
+            ai_review: AiReviewSettings::default(),
         };
         let rendered = render_template(&ctx);
         assert!(rendered.contains("Testing Gate"));
@@ -456,6 +477,7 @@ mod tests {
             testing_max_turns: None,
             repos: vec![],
             validation_gate: false,
+            ai_review: AiReviewSettings::default(),
         };
         let rendered = render_template(&ctx);
         assert!(rendered.contains("kind: gitlab"));
@@ -486,6 +508,7 @@ mod tests {
             testing_max_turns: Some(12),
             repos: vec![],
             validation_gate: false,
+            ai_review: AiReviewSettings::default(),
         };
         let rendered = render_test_template(&ctx);
         assert!(rendered.contains("kind: github"));
@@ -514,6 +537,7 @@ mod tests {
             testing_max_turns: Some(10),
             repos: vec![],
             validation_gate: false,
+            ai_review: AiReviewSettings::default(),
         };
         let rendered = render_test_template(&ctx);
         assert!(rendered.contains("kind: gitlab"));
@@ -550,6 +574,32 @@ mod single_repo_snapshots {
             "github_basic" => include_str!("snapshots/github_basic.md"),
             "gitea_basic" => include_str!("snapshots/gitea_basic.md"),
             other => panic!("unknown snapshot {other}"),
+        }
+    }
+
+    #[test]
+    fn ai_review_settings_render_review_section_in_dev_and_test_templates() {
+        let mut ctx = super::snapshot_contexts().remove(0).1;
+        ctx.validation_gate = true;
+        ctx.ai_review = AiReviewSettings {
+            enabled: true,
+            block_important: true,
+        };
+        for rendered in [render_template(&ctx), render_test_template(&ctx)] {
+            let fm_end = rendered[4..].find("\n---\n").unwrap() + 4;
+            let fm = &rendered[..fm_end];
+            assert!(
+                fm.contains("\nreview:\n  enabled: true\n  block_on: important"),
+                "{fm}"
+            );
+        }
+        ctx.ai_review.block_important = false;
+        assert!(render_template(&ctx).contains("\nreview:\n  enabled: true\n  block_on: none"));
+        ctx.ai_review.enabled = false;
+        assert!(!render_template(&ctx).contains("\nreview:\n"));
+        // Every template tells the developer agent how to treat AI review comments.
+        for (_, c) in super::snapshot_contexts() {
+            assert!(render_template(&c).contains("`<!-- symphony:ai-review`"));
         }
     }
 
@@ -655,6 +705,7 @@ fn snapshot_contexts() -> Vec<(&'static str, WorkflowTemplateContext)> {
         testing_max_turns: None,
         repos: vec![],
         validation_gate: false,
+        ai_review: AiReviewSettings::default(),
     };
     let mut gitlab_full = base(Platform::GitLab, "http://gitlab.example.com:8081");
     gitlab_full.hooks_after_create = Some("git clone http://example/x.git .\nnpm ci".to_string());

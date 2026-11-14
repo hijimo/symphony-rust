@@ -49,6 +49,8 @@ pub struct ProjectResponse {
     pub testing_enabled: bool,
     pub testing_max_turns: i64,
     pub validation_gate: bool,
+    pub ai_review_enabled: bool,
+    pub ai_review_block: bool,
 }
 
 impl ProjectResponse {
@@ -81,6 +83,8 @@ impl ProjectResponse {
             testing_enabled: project.testing_enabled,
             testing_max_turns: project.testing_max_turns,
             validation_gate: project.validation_gate,
+            ai_review_enabled: project.ai_review_enabled,
+            ai_review_block: project.ai_review_block,
         }
     }
 
@@ -339,6 +343,8 @@ pub async fn update_project(
         testing_enabled: req.testing_enabled,
         testing_max_turns: req.testing_max_turns,
         validation_gate: req.validation_gate,
+        ai_review_enabled: req.ai_review_enabled,
+        ai_review_block: req.ai_review_block,
     };
 
     state.repo.update_project(id, &updates).await?;

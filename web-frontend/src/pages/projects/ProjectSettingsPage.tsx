@@ -96,6 +96,8 @@ export default function ProjectSettingsPage() {
   const [testingEnabled, setTestingEnabled] = useState(false);
   const [testingMaxTurns, setTestingMaxTurns] = useState(12);
   const [validationGate, setValidationGate] = useState(false);
+  const [aiReviewEnabled, setAiReviewEnabled] = useState(false);
+  const [aiReviewBlock, setAiReviewBlock] = useState(false);
   const [testingConfigSaving, setTestingConfigSaving] = useState(false);
 
   const showSnack = (message: string, severity: 'success' | 'error') => {
@@ -119,6 +121,8 @@ export default function ProjectSettingsPage() {
       setTestingEnabled(p.testing_enabled);
       setTestingMaxTurns(p.testing_max_turns);
       setValidationGate(Boolean(p.validation_gate));
+      setAiReviewEnabled(Boolean(p.ai_review_enabled));
+      setAiReviewBlock(Boolean(p.ai_review_block));
     } catch (err: any) {
       showSnack(err?.message || '加载项目失败', 'error');
     } finally {
@@ -287,6 +291,8 @@ export default function ProjectSettingsPage() {
         testing_enabled: testingEnabled,
         testing_max_turns: testingMaxTurns,
         validation_gate: validationGate,
+        ai_review_enabled: aiReviewEnabled,
+        ai_review_block: aiReviewBlock,
       });
       setProject(updated);
       showSnack('验证配置已保存，重启项目服务后生效', 'success');
@@ -301,7 +307,9 @@ export default function ProjectSettingsPage() {
     project !== null &&
     (testingEnabled !== project.testing_enabled ||
       testingMaxTurns !== project.testing_max_turns ||
-      validationGate !== Boolean(project.validation_gate));
+      validationGate !== Boolean(project.validation_gate) ||
+      aiReviewEnabled !== Boolean(project.ai_review_enabled) ||
+      aiReviewBlock !== Boolean(project.ai_review_block));
 
   // Delete project
   const handleDelete = async () => {
@@ -573,6 +581,36 @@ export default function ProjectSettingsPage() {
                 fullWidth
                 inputProps={{ min: 5, max: 30 }}
                 disabled={!testingEnabled}
+              />
+              <Typography variant="subtitle1" sx={{ fontWeight: 600, mt: 2 }}>
+                AI 审查
+              </Typography>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={aiReviewEnabled}
+                    onChange={(e) => {
+                      setAiReviewEnabled(e.target.checked);
+                      if (!e.target.checked) setAiReviewBlock(false);
+                    }}
+                    inputProps={{ 'aria-label': '启用 AI 审查' }}
+                  />
+                }
+                label="启用 AI 审查"
+              />
+              <Typography variant="caption" color="text.secondary" sx={{ mt: -2 }}>
+                Issue 交给人工审核时，Symphony 另起只读的 Codex 会话，按仓库根目录的 REVIEW.md（没有时用内置规则）对照 spec.md、plan.md 审查 PR，并在 PR 上发出按严重度排序的结论。结论供人参考，不替代人工批准。
+              </Typography>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={aiReviewBlock}
+                    onChange={(e) => setAiReviewBlock(e.target.checked)}
+                    disabled={!aiReviewEnabled}
+                    inputProps={{ 'aria-label': 'Important 自动打回' }}
+                  />
+                }
+                label="Important 自动打回（最多 2 轮）"
               />
             </Box>
             <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 3 }}>
