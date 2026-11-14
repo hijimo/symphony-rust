@@ -5,6 +5,7 @@ import type {
   OverviewParams,
   OverviewPrsResponse,
 } from '../types/overview';
+import type { OverviewStageKanban } from '../types/changes';
 
 export async function getOverviewIssues(
   params?: OverviewParams,
@@ -25,5 +26,10 @@ export async function getOverviewPrs(
     '/overview/kanban/prs',
     { params, signal },
   );
+  return res.data.data;
+}
+
+export async function getOverviewStages(signal?: AbortSignal): Promise<OverviewStageKanban> {
+  const res = await client.get<ResponseData<OverviewStageKanban>>('/overview/kanban/stages', { signal });
   return res.data.data;
 }

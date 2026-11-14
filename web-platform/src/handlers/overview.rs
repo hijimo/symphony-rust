@@ -462,3 +462,139 @@ pub async fn get_overview_prs(
         has_more: total > max_projects as u64,
     })))
 }
+
+/// GET /api/overview/kanban/stages
+///
+/// Stage board (P2 §5 A4) across the running projects the user belongs to.
+/// Each card and MR carries `projectId` / `projectName`; per-project
+/// failures are reported in `projects[].error` instead of failing the call.
+pub async fn get_overview_stages(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Query(query): Query<OverviewQuery>,
+) -> Result<Json<ResponseData<serde_json::Value>>, WebPlatformError> {
+    use crate::handlers::kanban::{build_stage_columns, StageKanbanQuery};
+
+    let user_id: i64 = claims
+        .sub
+        .parse()
+        .map_err(|_| WebPlatformError::Internal("invalid user id in token".to_string()))?;
+    if let Err(retry_after) = state
+        .phase3_rate_limiter
+        .check("overview_stages", user_id, 15)
+    {
+        return Err(WebPlatformError::RateLimited(retry_after));
+    }
+
+    let max_projects = query.effective_max_projects();
+    let (projects, total) = state
+        .repo
+        .list_running_projects_for_member(user_id, claims.role == "admin", max_projects)
+        .await?;
+
+    let user_config = state.repo.get_config(user_id).await?;
+    let proxy_config = load_effective_proxy_config(&state.repo, &state.encryption_key).await?;
+    let decrypt =
+        |t: Option<&String>| t.and_then(|t| crypto::decrypt(t, &state.encryption_key).ok());
+    let github_token = decrypt(user_config.as_ref().and_then(|c| c.github_token.as_ref()));
+    let gitlab_token = decrypt(user_config.as_ref().and_then(|c| c.gitlab_token.as_ref()));
+
+    let futures: Vec<_> = projects
+        .iter()
+        .map(|project| {
+            let state = &state;
+            let proxy_config = &proxy_config;
+            let token = match project.platform.as_str() {
+                "github" => github_token.as_deref(),
+                _ => gitlab_token.as_deref(),
+            };
+            async move {
+                let token = token.ok_or_else(|| "no_token".to_string())?;
+                let host =
+                    normalize_platform_host(&project.platform, project.platform_host.as_deref());
+                let sem = state.platform_host_semaphores.get(&host);
+                let _permit = sem
+                    .acquire()
+                    .await
+                    .map_err(|_| "semaphore_closed".to_string())?;
+                let client = create_platform_client_with_proxy(
+                    &project.platform,
+                    project.platform_host.as_deref(),
+                    Some(proxy_config),
+                )
+                .map_err(|e| format!("client_error: {e}"))?;
+                let path = format!("{}/{}", project.namespace, project.repo_name);
+                match timeout(
+                    PER_PROJECT_TIMEOUT,
+                    build_stage_columns(
+                        state,
+                        project.id,
+                        client.as_ref(),
+                        token,
+                        &path,
+                        &StageKanbanQuery::default(),
+                    ),
+                )
+                .await
+                {
+                    Ok(Ok(v)) => Ok(v),
+                    Ok(Err(e)) => Err(e.to_string()),
+                    Err(_) => Err("timeout".to_string()),
+                }
+            }
+        })
+        .collect();
+    let results = timeout(ENDPOINT_TIMEOUT, futures::future::join_all(futures))
+        .await
+        .unwrap_or_else(|_| vec![Err("timeout".to_string()); projects.len()]);
+
+    let mut columns: Vec<serde_json::Value> = crate::sdlc::kanban::StageColumn::ALL
+        .iter()
+        .map(|c| {
+            serde_json::json!({"key": c, "title": c.title(), "hint": c.hint(),
+                "issues": [], "mergeRequests": [], "totalCount": 0})
+        })
+        .collect();
+    let mut entries = Vec::with_capacity(projects.len());
+    for (project, result) in projects.iter().zip(results) {
+        let meta = serde_json::json!({
+            "projectId": project.id,
+            "projectName": project.name,
+            "platform": project.platform,
+        });
+        let tag = |mut v: serde_json::Value| {
+            v["projectId"] = meta["projectId"].clone();
+            v["projectName"] = meta["projectName"].clone();
+            v["platform"] = meta["platform"].clone();
+            v
+        };
+        let mut entry = meta.clone();
+        match result {
+            Ok(board) => {
+                entry["error"] = board["prError"].clone();
+                let src = board["columns"].as_array().cloned().unwrap_or_default();
+                for (dst, src) in columns.iter_mut().zip(src) {
+                    for key in ["issues", "mergeRequests"] {
+                        let items = src[key].as_array().cloned().unwrap_or_default();
+                        dst[key]
+                            .as_array_mut()
+                            .expect("column array")
+                            .extend(items.into_iter().map(tag));
+                    }
+                }
+            }
+            Err(e) => entry["error"] = serde_json::json!(e),
+        }
+        entries.push(entry);
+    }
+    for c in columns.iter_mut() {
+        c["totalCount"] = serde_json::json!(c["issues"].as_array().map_or(0, |a| a.len()));
+    }
+
+    Ok(Json(ResponseData::success(serde_json::json!({
+        "columns": columns,
+        "projects": entries,
+        "totalRunningProjects": total,
+        "hasMore": total > max_projects as u64,
+    }))))
+}

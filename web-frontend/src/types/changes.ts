@@ -150,9 +150,17 @@ export interface StagePlacement {
   subState: string;
   anomaly: boolean;
   waitingHuman: boolean;
+  /** Why the labels look wrong (shown as tooltip). */
+  anomalyReason?: string | null;
 }
 
-export interface StageIssueCard {
+/** Card/MR origin in the global (overview) stage board. */
+export interface StageProjectRef {
+  projectId?: number;
+  projectName?: string;
+}
+
+export interface StageIssueCard extends StageProjectRef {
   iid: number;
   title: string;
   state: string;
@@ -167,10 +175,16 @@ export interface StageIssueCard {
     track: Track;
     docsMrUrl: string | null;
     mergeError: string | null;
+    /** Set while the docs MR waits for CI before merging. */
+    mergeWaitingSince?: string | null;
     /** Earliest time a document of this flow entered review (UTC). */
     reviewSince?: string | null;
     documents: { docType: DocType; status: DocStatus; draftState: string; statusChangedAt?: string }[];
   } | null;
+  /** Implementation session running in rust-platform. */
+  aiRunning?: { since: string; instance: string } | null;
+  /** When `Human Review` was last added (UTC). */
+  humanReviewSince?: string | null;
 }
 
 export interface StageColumnData {
@@ -179,14 +193,14 @@ export interface StageColumnData {
   hint: string;
   totalCount: number;
   issues: StageIssueCard[];
-  mergeRequests: {
+  mergeRequests: (StageProjectRef & {
     iid: number;
     title: string;
     web_url: string;
     source_branch: string;
     ci_status: string | null;
     author: { username: string };
-  }[];
+  })[];
 }
 
 export interface StageKanban {
@@ -195,6 +209,13 @@ export interface StageKanban {
   platform: string;
   /** Labels that allow track:fast (lowercase). */
   fastTrackLabels?: string[];
+}
+
+export interface OverviewStageKanban {
+  columns: StageColumnData[];
+  projects: { projectId: number; projectName: string; platform: string; error: string | null }[];
+  totalRunningProjects: number;
+  hasMore: boolean;
 }
 
 // ---------------------------------------------------------- agent events

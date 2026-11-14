@@ -283,6 +283,18 @@ pub trait GitPlatformClient: Send + Sync {
         Err(unsupported("can_merge"))
     }
 
+    /// When `label` was last added to the issue (RFC 3339), if known
+    /// (P2 design §5 A4: Human Review waiting time).
+    async fn label_added_at(
+        &self,
+        _token: &str,
+        _project_path: &str,
+        _issue_iid: u64,
+        _label: &str,
+    ) -> Result<Option<String>, GitPlatformError> {
+        Err(unsupported("label_added_at"))
+    }
+
     /// CI state and the platform's reason the MR cannot merge yet
     /// (P2 design §5 A3).
     async fn merge_readiness(
@@ -342,6 +354,25 @@ impl MergeBlocker {
             Self::Other(s) => format!("平台返回的合并状态为 {s}"),
         }
     }
+}
+
+/// Latest `created_at` of an event list entry where `kind_key == kind_value`
+/// and `label.name == label` (GitLab resource label events / GitHub issue
+/// events).
+pub fn latest_label_add(
+    events: &serde_json::Value,
+    label: &str,
+    kind_key: &str,
+    kind_value: &str,
+) -> Option<String> {
+    events
+        .as_array()?
+        .iter()
+        .filter(|e| e[kind_key].as_str() == Some(kind_value))
+        .filter(|e| e.pointer("/label/name").and_then(|v| v.as_str()) == Some(label))
+        .filter_map(|e| e["created_at"].as_str())
+        .max()
+        .map(str::to_string)
 }
 
 /// GitLab pipeline status → CI state.
@@ -539,6 +570,26 @@ mod readiness_tests {
             github_ci_state(&serde_json::Value::Null, &serde_json::Value::Null),
             CiState::None
         );
+    }
+
+    #[test]
+    fn test_latest_label_add() {
+        let gl = json!([
+            {"action": "add", "label": {"name": "Human Review"}, "created_at": "2026-11-13T08:00:00Z"},
+            {"action": "remove", "label": {"name": "Human Review"}, "created_at": "2026-11-13T09:00:00Z"},
+            {"action": "add", "label": {"name": "Human Review"}, "created_at": "2026-11-13T10:00:00Z"},
+            {"action": "add", "label": {"name": "Todo"}, "created_at": "2026-11-13T11:00:00Z"}
+        ]);
+        assert_eq!(
+            latest_label_add(&gl, "Human Review", "action", "add").as_deref(),
+            Some("2026-11-13T10:00:00Z")
+        );
+        let gh = json!([{"event": "labeled", "label": {"name": "Human Review"}, "created_at": "2026-11-12T01:00:00Z"}]);
+        assert_eq!(
+            latest_label_add(&gh, "Human Review", "event", "labeled").as_deref(),
+            Some("2026-11-12T01:00:00Z")
+        );
+        assert_eq!(latest_label_add(&json!({}), "x", "event", "labeled"), None);
     }
 
     #[test]

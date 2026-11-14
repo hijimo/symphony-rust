@@ -376,6 +376,10 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
             get(overview::get_overview_issues),
         )
         .route("/api/overview/kanban/prs", get(overview::get_overview_prs))
+        .route(
+            "/api/overview/kanban/stages",
+            get(overview::get_overview_stages),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), jwt_auth));
 
     // Phase 4: SSE endpoint (uses ticket auth, no JWT middleware)

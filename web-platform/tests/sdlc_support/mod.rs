@@ -85,6 +85,8 @@ pub struct GitLabState {
     pub detailed_merge_status: Mutex<Option<String>>,
     /// When set, project lookups answer 401 (invalid token).
     pub reject_token: Mutex<bool>,
+    /// (issue iid, label, created_at) of `add` label events.
+    pub label_events: Mutex<Vec<(u64, String, String)>>,
 }
 
 impl GitLabState {
@@ -230,6 +232,19 @@ async fn list_mrs(State(st): State<GS>, AxPath(_p): AxPath<String>) -> Json<Valu
         m.values()
             .filter(|x| x.state == "opened")
             .map(mr_json)
+            .collect(),
+    ))
+}
+
+async fn label_events(
+    State(st): State<GS>,
+    AxPath((_p, iid)): AxPath<(String, u64)>,
+) -> Json<Value> {
+    let ev = st.label_events.lock().unwrap();
+    Json(Value::Array(
+        ev.iter()
+            .filter(|(i, _, _)| *i == iid)
+            .map(|(_, l, t)| json!({"action": "add", "label": {"name": l}, "created_at": t}))
             .collect(),
     ))
 }
@@ -485,6 +500,10 @@ pub async fn spawn_fake_gitlab(st: GS) -> String {
             get(related_mrs),
         )
         .route(
+            "/api/v4/projects/{p}/issues/{iid}/resource_label_events",
+            get(label_events),
+        )
+        .route(
             "/api/v4/projects/{p}/merge_requests",
             post(create_mr).get(list_mrs),
         )
@@ -687,6 +706,8 @@ pub struct SdlcApp {
     pub backend_bare: Option<PathBuf>,
     pub dir: TempDir,
     pub workspace_root: PathBuf,
+    /// Shared with AppState: tests record rust-platform snapshots here.
+    pub runtime: Arc<web_platform::services::runtime_state::RuntimeStateCache>,
 }
 
 pub struct Opts {
@@ -716,6 +737,7 @@ impl SdlcApp {
         let gitlab = Arc::new(GitLabState::default());
         *gitlab.access_level.lock().unwrap() = 40;
         let gitlab_url = spawn_fake_gitlab(gitlab.clone()).await;
+        let runtime = Arc::new(web_platform::services::runtime_state::RuntimeStateCache::new());
 
         let bare = make_bare(
             dir.path(),
@@ -802,7 +824,7 @@ impl SdlcApp {
             workspace_root: workspace_root.to_string_lossy().to_string(),
             alert_manager: None,
             platform_host_semaphores: Arc::new(PlatformHostSemaphores::new(5)),
-            runtime_state: Default::default(),
+            runtime_state: runtime.clone(),
         };
         let app = create_router(state).into_make_service_with_connect_info::<SocketAddr>();
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -844,6 +866,7 @@ impl SdlcApp {
         }
 
         Self {
+            runtime,
             addr,
             client,
             token,

@@ -258,6 +258,67 @@ describe('StageBoard', () => {
   });
 });
 
+describe('StageBoard A4 details', () => {
+  beforeEach(() => {
+    localStorage.setItem('token', 'mock-token');
+    localStorage.setItem('expiresAt', '2099-01-01T00:00:00Z');
+  });
+
+  it('shows AI running for implementation sessions and the Human Review wait', () => {
+    const data = stageKanban();
+    const tpl = data.columns[2].issues[0];
+    data.columns[2].issues = [
+      { ...tpl, iid: 7, placement: { column: 'build', subState: '实现中', anomaly: false, waitingHuman: false }, aiRunning: { since: new Date(Date.now() - 2 * 3600_000).toISOString(), instance: 'dev' } },
+      { ...tpl, iid: 8, placement: { column: 'build', subState: '待人工审查', anomaly: false, waitingHuman: true }, humanReviewSince: new Date(Date.now() - 3 * 86400_000).toISOString() },
+    ];
+    renderBoard(data);
+    expect(within(screen.getByTestId('stage-card-7')).getByText('AI 运行中 · 2 小时')).toBeInTheDocument();
+    expect(within(screen.getByTestId('stage-card-8')).getByText('等待审批 · 3 天')).toBeInTheDocument();
+    expect(within(screen.getByTestId('stage-card-8')).queryByText(/AI 运行中/)).not.toBeInTheDocument();
+  });
+
+  it('uses the anomaly reason as the warning tooltip', async () => {
+    const user = userEvent.setup();
+    const data = stageKanban();
+    data.columns[2].issues[0].placement.anomalyReason = '文档阶段被人工改为 Todo，将按 track:fast 处理';
+    renderBoard(data);
+    await user.hover(within(screen.getByTestId('stage-card-3')).getByLabelText('label 异常'));
+    expect(await screen.findByText('文档阶段被人工改为 Todo，将按 track:fast 处理')).toBeInTheDocument();
+  });
+
+  it('marks merge failure in red with the merge error tooltip', async () => {
+    const user = userEvent.setup();
+    const data = stageKanban();
+    const tpl = data.columns[0].issues[1];
+    data.columns[2].issues = [
+      {
+        ...tpl,
+        iid: 11,
+        placement: { column: 'build', subState: '合并失败', anomaly: false, waitingHuman: false },
+        flow: { ...tpl.flow!, state: 'plan_approved_pending_merge', mergeError: '冲突' },
+      },
+    ];
+    renderBoard(data);
+    const chip = within(screen.getByTestId('stage-card-11')).getByText('合并失败');
+    expect(chip.closest('.MuiChip-root')).toHaveClass('MuiChip-colorError');
+    await user.hover(chip);
+    expect(await screen.findByText('冲突')).toBeInTheDocument();
+  });
+
+  it('routes cards and MRs to their own project in the global board', async () => {
+    const user = userEvent.setup();
+    const data = stageKanban();
+    data.columns[0].issues[0] = { ...data.columns[0].issues[0], projectId: 42, projectName: 'other' };
+    data.columns[3].mergeRequests[0] = { ...data.columns[3].mergeRequests[0], projectId: 43, projectName: 'mrs' };
+    renderBoard(data);
+    expect(within(screen.getByTestId('stage-card-1')).getByText('other')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '#1 Issue 1' }));
+    expect(screen.getByTestId('location')).toHaveTextContent('/projects/42/issues/1');
+    await user.click(screen.getByRole('button', { name: '!9 feat' }));
+    expect(screen.getByTestId('location')).toHaveTextContent('/projects/43/mrs/9');
+  });
+});
+
 describe('waitedFor', () => {
   it('formats durations', async () => {
     const { waitedFor } = await import('../StageBoard');

@@ -9,7 +9,7 @@ use crate::models::kanban::{
 };
 use crate::proxy::EffectiveProxyConfig;
 use crate::services::git_platform::{
-    CreateMergeRequest, GitPlatformClient, GitPlatformError, ListIssuesOptions,
+    latest_label_add, CreateMergeRequest, GitPlatformClient, GitPlatformError, ListIssuesOptions,
     ListMergeRequestsOptions, MergeRequestState, PlatformConflictCode, PlatformMember,
     PlatformValidationCode,
 };
@@ -954,6 +954,25 @@ impl GitPlatformClient for GitLabClient {
         // Developer (30) may merge into unprotected branches; protected-branch
         // rules are enforced by GitLab at merge time.
         Ok(max >= 30)
+    }
+
+    async fn label_added_at(
+        &self,
+        token: &str,
+        project_path: &str,
+        issue_iid: u64,
+        label: &str,
+    ) -> Result<Option<String>, GitPlatformError> {
+        let url = format!(
+            "{}/api/v4/projects/{}/issues/{}/resource_label_events?per_page=100",
+            self.base_url,
+            Self::encode_project_path(project_path),
+            issue_iid
+        );
+        let events = self
+            .send_ok(self.http.get(&url).header("PRIVATE-TOKEN", token))
+            .await?;
+        Ok(latest_label_add(&events, label, "action", "add"))
     }
 
     async fn merge_readiness(
