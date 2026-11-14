@@ -59,6 +59,12 @@ pub struct ConcurrencyMetrics {
     pub saturated_since: Option<DateTime<Utc>>,
 }
 
+/// `Human Review` and document review states (`doc:*-review`) wait for people.
+fn waits_for_human(state: &str) -> bool {
+    let s = state.trim().to_lowercase().replace([' ', '-'], "_");
+    s == "human_review" || (s.starts_with("doc:") && s.ends_with("review"))
+}
+
 // ---------------------------------------------------------------------------
 // MetricCollector trait
 // ---------------------------------------------------------------------------
@@ -114,6 +120,8 @@ pub struct DefaultMetricCollector {
     crash_events: DashMap<i64, CrashEvent>,
     /// Tracks when concurrency first became saturated (None = not saturated).
     saturated_since: std::sync::Mutex<Option<DateTime<Utc>>>,
+    /// Polled rust-platform state (P2 design §3 F1); source of running tasks.
+    runtime_state: Option<Arc<crate::services::runtime_state::RuntimeStateCache>>,
 }
 
 impl DefaultMetricCollector {
@@ -128,7 +136,60 @@ impl DefaultMetricCollector {
             api_failures: DashMap::new(),
             crash_events: DashMap::new(),
             saturated_since: std::sync::Mutex::new(None),
+            runtime_state: None,
         }
+    }
+
+    /// Read running tasks from the runtime state cache.
+    pub fn with_runtime_state(
+        mut self,
+        cache: Arc<crate::services::runtime_state::RuntimeStateCache>,
+    ) -> Self {
+        self.runtime_state = Some(cache);
+        self
+    }
+
+    /// Running agent sessions per project. States that wait for a human are
+    /// skipped even if a WORKFLOW lists them as active, so they never raise
+    /// task-timeout alerts (P2 design §5 A5).
+    fn running_tasks(&self, now: DateTime<Utc>) -> HashMap<i64, Vec<RunningTask>> {
+        let mut out: HashMap<i64, Vec<RunningTask>> = HashMap::new();
+        let Some(cache) = &self.runtime_state else {
+            return out;
+        };
+        for ((project_id, instance), snap) in cache.snapshots() {
+            for row in snap.running {
+                if waits_for_human(&row.state) {
+                    continue;
+                }
+                let Some(iid) = row
+                    .issue_identifier
+                    .trim_start_matches('#')
+                    .parse::<i64>()
+                    .ok()
+                    .or_else(|| row.issue_id.parse().ok())
+                else {
+                    continue;
+                };
+                let Ok(started) = DateTime::parse_from_rfc3339(&row.started_at) else {
+                    continue;
+                };
+                let started_at = started.with_timezone(&Utc);
+                let inst = match instance {
+                    crate::services::runtime_state::Instance::Dev => "dev",
+                    crate::services::runtime_state::Instance::Test => "test",
+                };
+                out.entry(project_id).or_default().push(RunningTask {
+                    agent_id: format!("{inst}:{}", row.issue_identifier),
+                    issue_iid: iid,
+                    issue_title: row.issue_identifier.clone(),
+                    project_id,
+                    started_at,
+                    elapsed_seconds: (now - started_at).num_seconds().max(0),
+                });
+            }
+        }
+        out
     }
 
     /// Update saturation tracking based on current concurrency state.
@@ -224,12 +285,8 @@ impl MetricCollector for DefaultMetricCollector {
             api_health.insert(entry.key().clone(), entry.value().load(Ordering::Relaxed));
         }
 
-        // --- Running tasks (placeholder — actual task tracking requires integration) ---
-        // In the current architecture, running tasks are tracked externally.
-        // The alert engine evaluates tasks based on ProcessManager state.
-        // For now, we provide an empty map; task_timeout evaluation will be
-        // driven by external event injection in a future integration step.
-        let running_tasks: HashMap<i64, Vec<RunningTask>> = HashMap::new();
+        // --- Running tasks from the polled rust-platform state ---
+        let running_tasks = self.running_tasks(now);
 
         MetricSnapshot {
             running_tasks,
@@ -303,6 +360,57 @@ mod tests {
         let pm = ProcessManager::new();
         let cm = Arc::new(ConcurrencyManager::new(10));
         DefaultMetricCollector::new(pm, cm)
+    }
+
+    #[tokio::test]
+    async fn test_running_tasks_come_from_runtime_state_and_skip_waiting_states() {
+        use crate::services::runtime_state::RuntimeStateCache;
+        use axum::{routing::get, Json, Router};
+
+        let started = (Utc::now() - chrono::Duration::minutes(45)).to_rfc3339();
+        let body = serde_json::json!({
+            "running": [
+                {"issue_id": "42", "issue_identifier": "#42", "state": "In Progress",
+                 "turn_count": 2, "started_at": started, "last_event_at": null,
+                 "tokens": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}},
+                {"issue_id": "43", "issue_identifier": "#43", "state": "Human Review",
+                 "turn_count": 1, "started_at": started, "last_event_at": null},
+                {"issue_id": "44", "issue_identifier": "#44", "state": "doc:plan-review",
+                 "turn_count": 1, "started_at": started, "last_event_at": null},
+                {"issue_id": "x", "issue_identifier": "ENG-1", "state": "Todo",
+                 "turn_count": 1, "started_at": "not a date", "last_event_at": null}
+            ],
+            "retrying": []
+        });
+        let app = Router::new().route("/api/v1/state", get(move || async move { Json(body) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let pm = ProcessManager::new();
+        pm.set_state(
+            9,
+            crate::process_manager::ProcessState {
+                pid: 1,
+                started_at: Utc::now(),
+                status: ServiceStatus::Running,
+                restart_count: 0,
+                api_port: Some(port),
+            },
+        );
+        let cm = Arc::new(ConcurrencyManager::new(10));
+        let runtime = Arc::new(RuntimeStateCache::new());
+        runtime.poll_once(&pm, &cm, |_| "p".into()).await;
+
+        let collector = DefaultMetricCollector::new(pm, cm).with_runtime_state(runtime);
+        let snap = collector.collect().await;
+        let tasks = snap.running_tasks.get(&9).expect("project 9");
+        assert_eq!(tasks.len(), 1, "waiting-human and unparsable rows skipped");
+        let t = &tasks[0];
+        assert_eq!(t.issue_iid, 42);
+        assert_eq!(t.project_id, 9);
+        assert_eq!(t.agent_id, "dev:#42");
+        assert!(t.elapsed_seconds >= 45 * 60 - 5, "{}", t.elapsed_seconds);
     }
 
     #[tokio::test]

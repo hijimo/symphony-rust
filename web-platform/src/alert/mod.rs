@@ -21,6 +21,7 @@ pub struct AlertEngineBuilder {
     concurrency_manager: Arc<ConcurrencyManager>,
     repo: SqliteRepository,
     evaluation_interval_secs: u64,
+    runtime_state: Option<Arc<crate::services::runtime_state::RuntimeStateCache>>,
 }
 
 /// Handle returned by the builder, containing the components needed by AppState/AlertManager.
@@ -46,7 +47,17 @@ impl AlertEngineBuilder {
             concurrency_manager,
             repo,
             evaluation_interval_secs: 30,
+            runtime_state: None,
         }
+    }
+
+    /// Source of running tasks for the task-timeout rule.
+    pub fn runtime_state(
+        mut self,
+        cache: Arc<crate::services::runtime_state::RuntimeStateCache>,
+    ) -> Self {
+        self.runtime_state = Some(cache);
+        self
     }
 
     pub fn evaluation_interval_secs(mut self, secs: u64) -> Self {
@@ -61,10 +72,14 @@ impl AlertEngineBuilder {
         let cooldown_manager = Arc::new(CooldownManager::new());
 
         // 2. Build metric collector
-        let metric_collector = Arc::new(DefaultMetricCollector::new(
+        let mut collector = DefaultMetricCollector::new(
             self.process_manager.clone(),
             self.concurrency_manager.clone(),
-        ));
+        );
+        if let Some(cache) = self.runtime_state.clone() {
+            collector = collector.with_runtime_state(cache);
+        }
+        let metric_collector = Arc::new(collector);
 
         // 3. Build rule evaluator
         let rule_evaluator = Arc::new(DefaultRuleEvaluator::new(
