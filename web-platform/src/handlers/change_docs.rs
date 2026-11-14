@@ -494,6 +494,17 @@ pub async fn token_status(
     ok(service::project_token_status(&state, &ctx.project, q.refresh).await)
 }
 
+/// GET .../revert-preview — code MRs and implementation branch a revert uses.
+pub async fn revert_preview(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path((project_id, iid)): Path<(i64, i64)>,
+) -> ApiResult {
+    let ctx = ctx(&state, &claims, project_id).await?;
+    let flow = service::load_flow(&state, &ctx.project, iid).await?;
+    ok(service::revert_targets(&ctx, &flow).await?)
+}
+
 /// POST .../docs/{doc}/draft/retry and .../draft/manual
 pub async fn draft_retry(
     State(state): State<AppState>,

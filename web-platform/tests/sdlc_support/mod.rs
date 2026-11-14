@@ -94,6 +94,24 @@ impl GitLabState {
     pub fn mr(&self, iid: u64) -> FakeMr {
         self.mrs.lock().unwrap().get(&iid).cloned().unwrap()
     }
+    /// Add an open MR (e.g. the implementation MR created by the agent).
+    pub fn add_mr(&self, title: &str, source: &str, target: &str) -> u64 {
+        let mut m = self.mrs.lock().unwrap();
+        let iid = m.keys().max().copied().unwrap_or(0) + 1;
+        m.insert(
+            iid,
+            FakeMr {
+                iid,
+                title: title.into(),
+                source: source.into(),
+                target: target.into(),
+                state: "opened".into(),
+                notes: vec![],
+                merge_sha: None,
+            },
+        );
+        iid
+    }
     pub fn add_issue(&self, title: &str, labels: &[&str]) -> u64 {
         let mut m = self.issues.lock().unwrap();
         let iid = m.keys().max().copied().unwrap_or(0) + 1;
@@ -211,6 +229,24 @@ async fn list_mrs(State(st): State<GS>, AxPath(_p): AxPath<String>) -> Json<Valu
     Json(Value::Array(
         m.values()
             .filter(|x| x.state == "opened")
+            .map(mr_json)
+            .collect(),
+    ))
+}
+
+/// MRs referring to the issue: title mentions `#iid` (code MRs) or the docs
+/// branch belongs to it.
+async fn related_mrs(
+    State(st): State<GS>,
+    AxPath((_p, iid)): AxPath<(String, u64)>,
+) -> Json<Value> {
+    let m = st.mrs.lock().unwrap();
+    Json(Value::Array(
+        m.values()
+            .filter(|x| {
+                x.title.contains(&format!("#{iid}"))
+                    || x.source.starts_with(&format!("symphony/docs-{iid}"))
+            })
             .map(mr_json)
             .collect(),
     ))
@@ -444,6 +480,10 @@ pub async fn spawn_fake_gitlab(st: GS) -> String {
             get(get_issue).put(update_issue),
         )
         .route("/api/v4/projects/{p}/issues/{iid}/notes", post(issue_note))
+        .route(
+            "/api/v4/projects/{p}/issues/{iid}/related_merge_requests",
+            get(related_mrs),
+        )
         .route(
             "/api/v4/projects/{p}/merge_requests",
             post(create_mr).get(list_mrs),

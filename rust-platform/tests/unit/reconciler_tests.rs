@@ -282,6 +282,58 @@ mod reconcile_actions {
         }
     }
 
+    #[tokio::test]
+    async fn test_docs_revert_removing_impl_labels_terminates_worker() {
+        // P2 design §5 A2: reverting to the docs phase removes every
+        // implementation label. The issue then has no workflow label, the
+        // tracker reports an empty state, and the running worker must stop
+        // without its workspace being cleaned (the code MR is kept).
+        use std::sync::Arc;
+        use symphony_platform::platform::{make_test_issue, IssueId, MemoryAdapter, Platform};
+        use symphony_platform::tracker::gitlab::GitlabTrackerAdapter;
+        use symphony_platform::tracker::Tracker;
+
+        let mem = MemoryAdapter::new();
+        let mut issue = make_test_issue(7, "impl", Some("in_progress"));
+        issue.labels = vec!["In Progress".into(), "doc:plan-review".into()];
+        mem.seed_issue(issue).await;
+        // Labels removed by web-platform's revert; workflow state is gone.
+        mem.remove_labels(IssueId(7), &["In Progress".into()])
+            .await
+            .unwrap();
+        {
+            let mut snap = mem.fetch_issue(IssueId(7)).await.unwrap();
+            snap.workflow_state = None;
+            mem.seed_issue(snap).await;
+        }
+        let platform: Arc<dyn Platform> = Arc::new(mem);
+        let tracker = GitlabTrackerAdapter::new(
+            platform,
+            vec!["Todo".into(), "In Progress".into()],
+            vec!["Done".into()],
+        );
+        let refreshed: Vec<(String, String)> = tracker
+            .fetch_issue_states_by_ids(&["7".to_string()])
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|i| (i.id, i.state))
+            .collect();
+        assert_eq!(refreshed, vec![("7".to_string(), String::new())]);
+
+        let actions = determine_reconcile_actions(
+            &["7".to_string()],
+            &refreshed,
+            &["Todo".to_string(), "In Progress".to_string()],
+            &["Done".to_string()],
+            &[("7".to_string(), "#7".to_string())],
+        );
+        assert!(
+            matches!(actions.as_slice(), [ReconcileAction::TerminateNoClean { issue_id, .. }] if issue_id == "7"),
+            "{actions:?}"
+        );
+    }
+
     #[test]
     fn test_non_running_issue_ignored() {
         let running = vec!["1".to_string()];

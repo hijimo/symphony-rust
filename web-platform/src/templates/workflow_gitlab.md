@@ -372,6 +372,7 @@ Symphony turns it into an env file and exposes only its path as `$SYMPHONY_E2E_E
 ## Step 2: Execution phase (Todo -> In Progress -> Human Review)
 
 1. Determine current repo state (`branch`, `git status`, `HEAD`) and verify the kickoff `pull` sync result is already recorded in the workpad before implementation continues.
+   - If the issue has a comment containing `<!-- symphony:docs-revision` posted after your branch last merged `origin/{{default_branch}}`, the approved documents were revised: merge `origin/{{default_branch}}` into your branch first and resolve conflicts under `docs/changes/<issue number>/` by taking the `origin/{{default_branch}}` version.
 2. If current issue state is `Todo`, move it to `In Progress`; otherwise leave the current state unchanged.
 3. Load the existing workpad comment and treat it as the active execution checklist.
     - Edit it liberally whenever reality changes (scope, risks, validation approach, discovered tasks).

@@ -438,6 +438,14 @@ async fn sync_label(app: &AppState, project: &Project, flow: &ChangeFlow) -> Opt
     sync_label_mode(app, project, flow, LabelSync::Update).await
 }
 
+/// Marker read by the implementation workflow template (P2 design §5 A2).
+pub fn docs_revision_marker(revision: i64, merge_sha: Option<&str>) -> String {
+    format!(
+        "<!-- symphony:docs-revision r{revision} sha={} -->",
+        merge_sha.unwrap_or("unknown")
+    )
+}
+
 async fn comment_both(app: &AppState, project: &Project, flow: &ChangeFlow, body: &str) {
     let (Ok(token), Ok(c)) = (
         project_token(app, project).await,
@@ -1432,10 +1440,20 @@ pub async fn merge_docs(ctx: &Ctx, flow: &ChangeFlow) -> Result<(), WebPlatformE
             s.store
                 .set_flow_merge_result(flow.id, sha.as_deref(), None)
                 .await?;
-            let note = format!(
+            let mut note = format!(
                 "📦 文档已合入主干 @ {}",
                 sha.as_deref().map(|h| &h[..h.len().min(8)]).unwrap_or("-")
             );
+            // A revision (r2+) changes documents an implementation branch
+            // already uses: tell the developer agent to merge the new base
+            // (P2 design §5 A2).
+            if flow.revision > 1 {
+                note.push_str(&format!(
+                    "\n\n实现分支需要合入新的主干后再继续；`docs/changes/{iid}/` 下的冲突以主干为准。\n\n{}",
+                    docs_revision_marker(flow.revision, sha.as_deref()),
+                    iid = flow.issue_iid
+                ));
+            }
             drop(_g);
             let flow = s.store.get_flow_by_id(flow.id).await?.unwrap();
             if let Some(w) = sync_label(app, &ctx.project, &flow).await {
@@ -1460,6 +1478,56 @@ pub async fn merge_docs(ctx: &Ctx, flow: &ChangeFlow) -> Result<(), WebPlatformE
 
 // ---------------------------------------------------------------- revert
 
+/// One open implementation MR of an issue.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeMr {
+    pub iid: u64,
+    pub title: String,
+    pub web_url: String,
+    pub source_branch: String,
+}
+
+/// What a revert will touch (P2 design §5 A2).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevertTargets {
+    /// Branch the current documents are copied from (first code MR).
+    pub impl_branch: Option<String>,
+    /// Open code MRs that become drafts.
+    pub code_mrs: Vec<CodeMr>,
+}
+
+/// Open MRs related to the issue, docs MRs excluded.
+pub async fn revert_targets(
+    ctx: &Ctx,
+    flow: &ChangeFlow,
+) -> Result<RevertTargets, WebPlatformError> {
+    let token = project_token(&ctx.app, &ctx.project).await?;
+    let c = client(&ctx.app, &ctx.project).await?;
+    let mrs = c
+        .get_issue_merge_requests(&token, &project_path(&ctx.project), flow.issue_iid as u64)
+        .await
+        .map_err(map_platform_error)?;
+    let mut code_mrs: Vec<CodeMr> = mrs
+        .into_iter()
+        .filter(|m| matches!(m.state.as_str(), "opened" | "open"))
+        .filter(|m| !m.source_branch.starts_with("symphony/docs-"))
+        .map(|m| CodeMr {
+            iid: m.iid,
+            title: m.title,
+            web_url: m.web_url,
+            source_branch: m.source_branch,
+        })
+        .collect();
+    code_mrs.sort_by_key(|m| m.iid);
+    code_mrs.dedup_by_key(|m| m.iid);
+    Ok(RevertTargets {
+        impl_branch: code_mrs.first().map(|m| m.source_branch.clone()),
+        code_mrs,
+    })
+}
+
 /// "退回文档阶段" (§10.2 step 17): stop implementation, keep code MR as
 /// Draft, open a new docs revision from the implementation branch's docs.
 pub async fn revert(
@@ -1479,6 +1547,28 @@ pub async fn revert(
     if !flow.track.doc_types().contains(&to) {
         return Err(WebPlatformError::BadRequest(format!("该流程没有 {to}")));
     }
+    // Callers may omit the implementation branch and code MR: resolve them
+    // from the platform (all open code MRs become drafts).
+    let mut draft_mrs: Vec<u64> = code_mr_iid.map(|i| i as u64).into_iter().collect();
+    let impl_branch =
+        if impl_branch.as_deref().is_some_and(|b| !b.trim().is_empty()) && code_mr_iid.is_some() {
+            impl_branch
+        } else {
+            match revert_targets(ctx, flow).await {
+                Ok(t) => {
+                    draft_mrs.extend(t.code_mrs.iter().map(|m| m.iid));
+                    impl_branch
+                        .filter(|b| !b.trim().is_empty())
+                        .or(t.impl_branch)
+                }
+                Err(e) => {
+                    tracing::warn!(flow = flow.id, error = %e, "revert: listing code MRs failed");
+                    impl_branch
+                }
+            }
+        };
+    draft_mrs.sort_unstable();
+    draft_mrs.dedup();
     let lock = s.flow_lock(flow.id);
     {
         let _g = lock.lock().await;
@@ -1545,10 +1635,8 @@ pub async fn revert(
         };
 
         // Point of no return: leave the implementation phase.
-        if let Some(mr) = code_mr_iid {
-            let _ = c
-                .set_merge_request_draft(&token, &path, mr as u64, true)
-                .await;
+        for mr in &draft_mrs {
+            let _ = c.set_merge_request_draft(&token, &path, *mr, true).await;
         }
         let _ = c
             .update_issue_labels(
