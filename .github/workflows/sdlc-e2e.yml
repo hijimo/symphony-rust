@@ -1,0 +1,69 @@
+name: sdlc-e2e
+
+# Real-browser E2E of the AI-native SDLC document flow
+# (web-frontend/playwright.sdlc.config.ts): real web-platform, fake GitLab,
+# fake codex app-server, local bare repositories. Runs next to make-all.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  sdlc-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Cache cargo artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-e2e-
+            ${{ runner.os }}-cargo-
+
+      # Built up front so the Playwright web server only starts it.
+      - name: Build web-platform
+        run: cargo build -p web-platform
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: web-frontend
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: web-frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run SDLC E2E
+        working-directory: web-frontend
+        env:
+          CI: "true"
+          SDLC_E2E_RUN_DIR: ${{ runner.temp }}/symphony-sdlc-e2e
+        run: npx playwright test -c playwright.sdlc.config.ts
+
+      - name: Upload report and traces
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sdlc-e2e-report
+          path: |
+            web-frontend/playwright-report/sdlc
+            web-frontend/test-results/sdlc
+            ${{ runner.temp }}/symphony-sdlc-e2e/*.log
+          retention-days: 7

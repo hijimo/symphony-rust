@@ -540,6 +540,8 @@ async fn first_turn_prompt_lists_approved_change_docs() {
 /// Records plan-check side effects of a run that ends in Human Review.
 #[derive(Default)]
 struct PlanRefresher {
+    /// When set, `list_repo_directory` serves an approved plan.md.
+    docs: bool,
     workpad: Mutex<String>,
     added: Mutex<Vec<String>>,
     pr_comments: Mutex<Vec<String>>,
@@ -577,6 +579,21 @@ impl IssueStateRefresher for PlanRefresher {
     }
     async fn remove_labels(&self, _id: &str, _l: &[String]) -> Result<(), String> {
         Ok(())
+    }
+    async fn list_repo_directory(
+        &self,
+        _slug: &str,
+        path: &str,
+        _git_ref: &str,
+    ) -> Result<Option<Vec<symphony_platform::platform::RepoFile>>, String> {
+        if !self.docs {
+            return Err("repository listing not supported".into());
+        }
+        Ok(Some(vec![symphony_platform::platform::RepoFile {
+            name: "plan.md".into(),
+            path: format!("{path}/plan.md"),
+            blob_sha: "0123456789abcdef".into(),
+        }]))
     }
     async fn find_open_pull_request(
         &self,
@@ -808,4 +825,130 @@ async fn blocking_review_out_of_rounds_marks_unresolved_instead_of_sending_back(
         .lock()
         .unwrap()
         .contains(&"ai-review-unresolved".to_string()));
+}
+
+/// Remote with arbitrary files on `branch`.
+fn make_remote_with(host: &Path, slug: &str, branch: &str, files: &[(&str, &str)]) {
+    let bare = host.join(format!("{slug}.git"));
+    std::fs::create_dir_all(&bare).unwrap();
+    git(
+        &bare,
+        &[
+            "init",
+            "--bare",
+            "-q",
+            &format!("--initial-branch={branch}"),
+        ],
+    );
+    let seed = host.join(format!("seed-{}", slug.replace('/', "-")));
+    std::fs::create_dir_all(&seed).unwrap();
+    git(
+        &seed,
+        &["init", "-q", &format!("--initial-branch={branch}")],
+    );
+    for (path, content) in files {
+        let f = seed.join(path);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, content).unwrap();
+    }
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-qm", "init"]);
+    git(
+        &seed,
+        &[
+            "push",
+            "-q",
+            bare.to_str().unwrap(),
+            &format!("HEAD:refs/heads/{branch}"),
+        ],
+    );
+}
+
+#[tokio::test]
+async fn multi_repo_handoff_runs_plan_check_and_blocking_review_per_repository() {
+    let _g = ENV_LOCK.lock().await;
+    let e = env();
+    set_gitlab_env(&e.host);
+    make_remote_with(
+        &e.host,
+        "g/fe",
+        "main",
+        &[
+            ("package.json", "{}"),
+            (
+                "docs/changes/63/plan.md",
+                "## Files\n- fe/src/planned.rs\n- be/src/api.rs\n",
+            ),
+        ],
+    );
+    make_remote_with(&e.host, "g/be", "main", &[("src/api.rs", "fn api() {}\n")]);
+    let spec = |alias: &str, slug: &str, role| RepoSpec {
+        alias: alias.into(),
+        slug: slug.into(),
+        role,
+        mode: RepoMode::Write,
+        default_branch: "main".into(),
+        checkout: CheckoutMode::Partial,
+        merge_after: vec![],
+    };
+    // The agent changes an unplanned file in the primary repository only.
+    let agent = "set -e\ncd fe\nmkdir -p src && echo 1 > src/other.rs\ngit add src\n\
+                 git -c user.name=t -c user.email=t@e commit -qm work\n";
+    let r = runner(
+        &e,
+        ServiceConfig {
+            tracker_project_slug: "g/fe".into(),
+            workspace_repos: vec![
+                spec("fe", "g/fe", RepoRole::Primary),
+                spec("be", "g/be", RepoRole::Secondary),
+            ],
+            review: symphony_platform::config::ReviewConfig {
+                enabled: true,
+                block_on: symphony_platform::config::ReviewBlockOn::Important,
+                max_rounds: 2,
+                timeout_ms: 20_000,
+            },
+            ..ServiceConfig::default()
+        },
+        agent,
+    );
+    let refresher = Arc::new(PlanRefresher {
+        docs: true,
+        ..Default::default()
+    });
+    *refresher.workpad.lock().unwrap() = "## Codex Workpad\n".into();
+    r.run_attempt(issue("63", "In Progress", None), None, refresher.clone())
+        .await
+        .unwrap();
+
+    let comments = refresher.pr_comments.lock().unwrap().clone();
+    let plan = comments
+        .iter()
+        .find(|c| c.contains("fe/docs/changes/63/plan.md"))
+        .unwrap_or_else(|| panic!("plan check uses the primary alias prefix: {comments:?}"));
+    assert!(plan.contains("`fe/src/other.rs`"), "{plan}");
+    let review = comments
+        .iter()
+        .find(|c| c.contains("Symphony AI 审查（第 1 轮）"))
+        .unwrap_or_else(|| panic!("review comment: {comments:?}"));
+    assert!(
+        review.contains("plan.md@0123456789ab"),
+        "docs refs: {review}"
+    );
+    assert!(
+        refresher
+            .added
+            .lock()
+            .unwrap()
+            .contains(&"plan-deviation".to_string()),
+        "{:?}",
+        refresher.added.lock().unwrap()
+    );
+    assert_eq!(
+        refresher.states.lock().unwrap().as_slice(),
+        &["In Progress".to_string()],
+        "Important finding in round 1 of 2 sends the issue back"
+    );
+    let dev = record(&e)["dev"].as_str().unwrap().to_string();
+    assert!(dev.contains("docs/changes/63/plan.md"), "{dev}");
 }
