@@ -155,6 +155,11 @@ impl RuntimeStateCache {
         }
     }
 
+    /// Store a snapshot directly (used by tests and future push updates).
+    pub fn record(&self, project_id: i64, instance: Instance, snapshot: RuntimeSnapshot) {
+        self.entries.insert((project_id, instance), snapshot);
+    }
+
     pub fn get(&self, project_id: i64, instance: Instance) -> Option<RuntimeSnapshot> {
         self.entries.get(&(project_id, instance)).map(|e| e.clone())
     }

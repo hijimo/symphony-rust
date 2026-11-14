@@ -62,29 +62,52 @@ export function waitedFor(iso: string, now = Date.now()): string {
   return `${Math.floor(min / 1440)} 天`;
 }
 
+const SUB_STATE_COLOR: Record<string, 'error' | 'info' | 'success'> = {
+  合并失败: 'error',
+  '等待 CI': 'info',
+  已批准待合并: 'success',
+};
+
 function Card({ card, projectId, onStart }: { card: StageIssueCard; projectId: number; onStart: (c: StageIssueCard) => void }) {
   const navigate = useNavigate();
   const p = card.placement;
+  const pid = card.projectId ?? projectId;
+  const reviewSince = card.humanReviewSince ?? card.flow?.reviewSince;
+  const reviewWait = reviewSince ? waitedFor(reviewSince) : '';
+  const drafting = card.flow?.documents.some((d) => d.draftState === 'running');
+  const runningFor = card.aiRunning ? waitedFor(card.aiRunning.since) : '';
   return (
     <Paper variant="outlined" sx={{ p: 1, borderRadius: '6px' }} data-testid={`stage-card-${card.iid}`}>
       <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', mb: 0.5, flexWrap: 'wrap' }}>
-        <Chip size="small" label={p.subState} sx={{ height: 20, fontSize: 11 }} color={p.waitingHuman ? 'warning' : 'default'} />
+        {card.projectName && (
+          <Chip size="small" variant="outlined" label={card.projectName} sx={{ height: 20, fontSize: 10, color: '#0053db' }} />
+        )}
+        <Tooltip title={p.subState === '合并失败' ? (card.flow?.mergeError ?? '') : ''}>
+          <Chip
+            size="small"
+            label={p.subState}
+            sx={{ height: 20, fontSize: 11 }}
+            color={SUB_STATE_COLOR[p.subState] ?? (p.waitingHuman ? 'warning' : 'default')}
+          />
+        </Tooltip>
         {p.waitingHuman && (
           <Typography sx={{ fontSize: 11, color: '#ac3500' }}>
-            等待审批{card.flow?.reviewSince && waitedFor(card.flow.reviewSince) ? ` · ${waitedFor(card.flow.reviewSince)}` : ''}
+            等待审批{reviewWait ? ` · ${reviewWait}` : ''}
           </Typography>
         )}
-        {card.flow?.documents.some((d) => d.draftState === 'running') && <Typography sx={{ fontSize: 11, color: '#0053db' }}>AI 运行中</Typography>}
+        {(drafting || card.aiRunning) && (
+          <Typography sx={{ fontSize: 11, color: '#0053db' }}>AI 运行中{runningFor ? ` · ${runningFor}` : ''}</Typography>
+        )}
         {card.track && <Chip size="small" variant="outlined" label={`track:${card.track}`} sx={{ height: 20, fontSize: 10 }} />}
         {p.anomaly && (
-          <Tooltip title="Issue 同时带有多个流程 label">
+          <Tooltip title={p.anomalyReason ?? 'Issue 同时带有多个流程 label'}>
             <WarningAmberIcon sx={{ fontSize: 14, color: '#ba1a1a' }} aria-label="label 异常" />
           </Tooltip>
         )}
       </Box>
       <Link
         component="button"
-        onClick={() => navigate(card.flow ? `/projects/${projectId}/changes/${card.iid}` : `/projects/${projectId}/issues/${card.iid}`)}
+        onClick={() => navigate(card.flow ? `/projects/${pid}/changes/${card.iid}` : `/projects/${pid}/issues/${card.iid}`)}
         sx={{ fontSize: 13, textAlign: 'left', color: '#191b23' }}
       >
         #{card.iid} {card.title}
@@ -109,7 +132,19 @@ function Card({ card, projectId, onStart }: { card: StageIssueCard; projectId: n
   );
 }
 
-export default function StageBoard({ data, projectId, onChanged }: { data: StageKanban; projectId: number; onChanged: () => void }) {
+/**
+ * Stage columns. `projectId` is the default project; cards/MRs carrying
+ * their own `projectId` (global overview board) route to that project.
+ */
+export default function StageBoard({
+  data,
+  projectId,
+  onChanged,
+}: {
+  data: Pick<StageKanban, 'columns'> & { prError?: string | null };
+  projectId: number;
+  onChanged: () => void;
+}) {
   const navigate = useNavigate();
   const [starting, setStarting] = useState<StageIssueCard | null>(null);
   const [track, setTrack] = useState<Track>('plan');
@@ -130,11 +165,12 @@ export default function StageBoard({ data, projectId, onChanged }: { data: Stage
             </Box>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
               {c.issues.map((i) => (
-                <Card key={i.iid} card={i} projectId={projectId} onStart={setStarting} />
+                <Card key={`${i.projectId ?? projectId}-${i.iid}`} card={i} projectId={projectId} onStart={setStarting} />
               ))}
               {c.mergeRequests.map((mr) => (
-                <Paper key={`mr-${mr.iid}`} variant="outlined" sx={{ p: 1 }}>
-                  <Link component="button" onClick={() => navigate(`/projects/${projectId}/mrs/${mr.iid}`)} sx={{ fontSize: 13, textAlign: 'left' }}>
+                <Paper key={`mr-${mr.projectId ?? projectId}-${mr.iid}`} variant="outlined" sx={{ p: 1 }}>
+                  {mr.projectName && <Typography sx={{ fontSize: 10, color: '#0053db' }}>{mr.projectName}</Typography>}
+                  <Link component="button" onClick={() => navigate(`/projects/${mr.projectId ?? projectId}/mrs/${mr.iid}`)} sx={{ fontSize: 13, textAlign: 'left' }}>
                     !{mr.iid} {mr.title}
                   </Link>
                   <Typography sx={{ fontSize: 11, color: '#737686' }}>{mr.source_branch} · CI {mr.ci_status ?? '-'}</Typography>
@@ -166,11 +202,12 @@ export default function StageBoard({ data, projectId, onChanged }: { data: Stage
               setBusy(true);
               setErr('');
               try {
-                await startFlow(projectId, { track, issueIid: starting.iid });
+                const pid = starting.projectId ?? projectId;
+                await startFlow(pid, { track, issueIid: starting.iid });
                 const iid = starting.iid;
                 setStarting(null);
                 onChanged();
-                navigate(`/projects/${projectId}/changes/${iid}`);
+                navigate(`/projects/${pid}/changes/${iid}`);
               } catch (e) {
                 setErr((e as Error).message);
               } finally {
