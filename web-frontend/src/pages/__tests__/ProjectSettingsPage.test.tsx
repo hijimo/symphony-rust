@@ -151,6 +151,49 @@ describe('ProjectSettingsPage', () => {
     expect(body).toMatchObject({ validation_gate: true });
   });
 
+  it('saves the AI review switches with the testing config', async () => {
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      http.put('*/api/projects/:id', async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          success: true,
+          retCode: 'SUCCESS',
+          retMsg: 'ok',
+          data: {
+            id: 1,
+            name: 'My GitLab Project',
+            git_url: 'https://gitlab.com/a/b.git',
+            platform: 'gitlab',
+            namespace: 'a',
+            repo_name: 'b',
+            default_branch: 'main',
+            service_status: 'stopped',
+            testing_enabled: false,
+            testing_max_turns: 12,
+            ai_review_enabled: true,
+            ai_review_block: true,
+          },
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderProjectSettings();
+    await waitFor(() => {
+      expect(screen.getByText('项目设置 - My GitLab Project')).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('tab', { name: 'Agent 配置' }));
+    const block = screen.getByRole('checkbox', { name: 'Important 自动打回' });
+    expect(block).toBeDisabled();
+    await user.click(screen.getByRole('checkbox', { name: '启用 AI 审查' }));
+    expect(block).toBeEnabled();
+    await user.click(block);
+    const saves = screen.getAllByRole('button', { name: '保存' });
+    await user.click(saves[saves.length - 1]);
+    await waitFor(() => expect(body).not.toBeNull());
+    expect(body).toMatchObject({ ai_review_enabled: true, ai_review_block: true });
+  });
+
   it('reads back a saved validation gate from GET', async () => {
     server.use(
       http.get('*/api/projects/:id', () =>

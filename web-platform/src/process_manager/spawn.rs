@@ -192,6 +192,10 @@ pub async fn spawn_symphony(
             testing_max_turns: Some(project.testing_max_turns),
             repos,
             validation_gate: project.validation_gate,
+            ai_review: templates::AiReviewSettings {
+                enabled: project.ai_review_enabled,
+                block_important: project.ai_review_block,
+            },
         };
         templates::render_template(&ctx)
     };
@@ -348,6 +352,10 @@ pub async fn spawn_test_symphony(
         testing_max_turns: Some(project.testing_max_turns),
         repos: vec![],
         validation_gate: project.validation_gate,
+        ai_review: templates::AiReviewSettings {
+            enabled: project.ai_review_enabled,
+            block_important: project.ai_review_block,
+        },
     };
     let workflow_content = templates::render_test_template(&ctx);
 

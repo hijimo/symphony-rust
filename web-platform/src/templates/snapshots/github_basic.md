@@ -271,6 +271,7 @@ When an issue has an attached PR, run this protocol before moving to `Human Revi
 3. Treat every actionable reviewer comment (human or bot), including inline review comments, as blocking until one of these is true:
    - code/test/docs updated to address it, or
    - explicit, justified pushback reply is posted on that thread.
+   Comments containing `<!-- symphony:ai-review` come from Symphony's AI reviewer: every Important finding is actionable in this sense, nits may be answered briefly instead of fixed. Never edit or delete those comments.
 4. Update the workpad plan/checklist to include each feedback item and its resolution status.
 5. After feedback-driven changes, run `App runtime validation (required)` again (it counts as a new round) and push updates.
 6. Repeat this sweep until there are no outstanding actionable comments.

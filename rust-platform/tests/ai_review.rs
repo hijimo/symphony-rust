@@ -463,3 +463,68 @@ async fn test_failed_review_reports_unknown_counts_and_clears_label() {
     assert!(labels.contains(&format!("-{LABEL_RUNNING}")));
     assert!(labels.contains(&format!("-{LABEL_IMPORTANT}")));
 }
+
+// ------------------------------------------------------------ blocking
+
+use symphony_platform::agent::ai_review::{block_decision, BlockDecision, ReviewOutcome};
+use symphony_platform::config::{ReviewBlockOn, ReviewConfig};
+
+fn cfg(block: bool) -> ReviewConfig {
+    ReviewConfig {
+        enabled: true,
+        block_on: if block {
+            ReviewBlockOn::Important
+        } else {
+            ReviewBlockOn::None
+        },
+        max_rounds: 2,
+        timeout_ms: 1,
+    }
+}
+
+fn outcome(round: u32, important: Option<usize>) -> ReviewOutcome {
+    ReviewOutcome {
+        round,
+        important,
+        nit: Some(0),
+    }
+}
+
+#[test]
+fn test_block_decision_sends_back_until_max_rounds() {
+    assert_eq!(
+        block_decision(&cfg(true), &outcome(1, Some(2)), false),
+        BlockDecision::SendBack
+    );
+    assert_eq!(
+        block_decision(&cfg(true), &outcome(2, Some(1)), false),
+        BlockDecision::Unresolved,
+        "last round keeps the issue in Human Review"
+    );
+    assert_eq!(
+        block_decision(&cfg(true), &outcome(1, Some(0)), false),
+        BlockDecision::Clear
+    );
+}
+
+#[test]
+fn test_block_decision_never_blocks_unknown_blocked_or_disabled() {
+    assert_eq!(
+        block_decision(&cfg(true), &outcome(1, None), false),
+        BlockDecision::Keep,
+        "unknown counts never block"
+    );
+    assert_eq!(
+        block_decision(&cfg(true), &outcome(1, Some(3)), true),
+        BlockDecision::Keep,
+        "blocked hand-offs are not sent back"
+    );
+    assert_eq!(
+        block_decision(&cfg(false), &outcome(1, Some(3)), false),
+        BlockDecision::Keep
+    );
+    assert_eq!(
+        block_decision(&cfg(false), &outcome(1, Some(0)), false),
+        BlockDecision::Clear
+    );
+}
