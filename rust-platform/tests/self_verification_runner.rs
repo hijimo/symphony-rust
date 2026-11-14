@@ -784,3 +784,28 @@ async fn blocking_review_sends_important_findings_back_to_in_progress() {
         &["In Progress".to_string()]
     );
 }
+
+#[tokio::test]
+async fn blocking_review_out_of_rounds_marks_unresolved_instead_of_sending_back() {
+    let _g = ENV_LOCK.lock().await;
+    let e = env();
+    let refresher = run_reviewed_issue(
+        &e,
+        symphony_platform::config::ReviewConfig {
+            enabled: true,
+            block_on: symphony_platform::config::ReviewBlockOn::Important,
+            max_rounds: 1,
+            timeout_ms: 20_000,
+        },
+    )
+    .await;
+    assert!(
+        refresher.states.lock().unwrap().is_empty(),
+        "round 1 of 1: not sent back"
+    );
+    assert!(refresher
+        .added
+        .lock()
+        .unwrap()
+        .contains(&"ai-review-unresolved".to_string()));
+}

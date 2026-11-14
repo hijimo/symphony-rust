@@ -311,3 +311,32 @@ async fn test_memory_list_directory_returns_direct_children_only() {
         .unwrap()
         .is_none());
 }
+
+// =============================================================================
+// Transport errors (HttpClient::send_json)
+// =============================================================================
+
+#[tokio::test]
+async fn test_send_json_maps_refused_connection_and_bad_url() {
+    // A port that was just released: nothing listens there.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let adapter =
+        GithubAdapter::new_with_token(config("github", &format!("http://127.0.0.1:{port}")), "t")
+            .unwrap();
+    let err = adapter
+        .find_open_pull_request("acme/app", "feature")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PlatformError::ConnectionRefused), "{err:?}");
+
+    let adapter = GithubAdapter::new_with_token(config("github", "http://bad host"), "t").unwrap();
+    let err = adapter
+        .find_open_pull_request("acme/app", "feature")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PlatformError::Network(_)), "{err:?}");
+}

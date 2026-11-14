@@ -100,6 +100,9 @@ while True:
             if r and r.get("decision") == "accept":
                 open(path, "w").write(keep_fm(path, DOCS[m.group(2)]))
             send({"jsonrpc": "2.0", "method": "item/completed", "params": {"threadId": thread, "turnId": turn, "completedAtMs": 0, "item": {"type": "fileChange", "id": "f%d" % n, "status": "completed", "changes": ch}}})
+        # codex 0.158 reports usage only through this notification.
+        usage = {"inputTokens": 1000, "cachedInputTokens": 200, "outputTokens": 234, "reasoningOutputTokens": 30, "totalTokens": 1234}
+        send({"jsonrpc": "2.0", "method": "thread/tokenUsage/updated", "params": {"threadId": thread, "turnId": turn, "tokenUsage": {"total": usage, "last": usage}}})
         send({"jsonrpc": "2.0", "method": "turn/completed", "params": {"threadId": thread, "turn": {"id": turn, "status": "completed"}}})
     elif mid is not None:
         send({"jsonrpc": "2.0", "id": mid, "result": {}})
