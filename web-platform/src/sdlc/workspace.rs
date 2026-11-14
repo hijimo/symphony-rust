@@ -260,6 +260,22 @@ impl WorkspaceService {
         Ok(mirror)
     }
 
+    /// File of the primary repository's default branch (fresh fetch of the
+    /// project mirror); `None` when it does not exist.
+    pub async fn read_default_branch_file(
+        &self,
+        spec: &WorkspaceSpec,
+        path_in_repo: &str,
+    ) -> Result<Option<String>, WebPlatformError> {
+        let lock = self.mirror_lock(spec.project_id);
+        let _g = lock.lock().await;
+        let mirror = self
+            .ensure_mirror(spec.project_id, &spec.primary, spec.token.as_deref())
+            .await?;
+        let rev = format!("origin/{}:{path_in_repo}", spec.primary.default_branch);
+        Ok(self.git(&mirror, &["show", &rev], None).await.ok())
+    }
+
     async fn remote_branch_exists(&self, mirror: &Path, branch: &str) -> bool {
         self.git(
             mirror,

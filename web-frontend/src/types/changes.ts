@@ -136,6 +136,24 @@ export interface DocTemplate {
   checklist: string[];
 }
 
+/** Effective template of the default branch with its editable file text. */
+export interface ProjectDocTemplate extends DocTemplate {
+  path: string;
+  content: string;
+}
+
+export interface SavedDocTemplate {
+  branch: string;
+  mrIid: number;
+  mrUrl: string;
+}
+
+export interface TemplateTrialResult {
+  status: string;
+  error: string | null;
+  content: string;
+}
+
 export interface ValidationIssue {
   section: string;
   message: string;

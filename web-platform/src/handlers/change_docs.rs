@@ -369,15 +369,64 @@ pub async fn list_templates(
     ok(templates::all(Some(&root)))
 }
 
-/// GET /api/projects/{id}/doc-templates — built-in templates (project
-/// overrides are resolved inside a workspace).
-pub async fn builtin_templates(
+/// GET /api/projects/{id}/doc-templates — effective templates of the
+/// default branch with their source and editable text (P2 §5 A7).
+pub async fn doc_templates(
     State(state): State<AppState>,
     claims: axum::Extension<Claims>,
     Path(project_id): Path<i64>,
 ) -> ApiResult {
-    require_project_member(&claims, project_id, &state.repo).await?;
-    ok(templates::all(None))
+    let ctx = ctx(&state, &claims, project_id).await?;
+    ok(crate::sdlc::doc_templates::effective(&state, &ctx.project).await?)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TemplateBody {
+    pub content: String,
+}
+
+/// PUT /api/projects/{id}/doc-templates/{doc} — commit on a new branch and
+/// open an MR; a person merges it.
+pub async fn save_doc_template(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path((project_id, doc)): Path<(i64, String)>,
+    Json(body): Json<TemplateBody>,
+) -> ApiResult {
+    let doc = parse_doc(&doc)?;
+    let ctx = ctx(&state, &claims, project_id).await?;
+    ok(
+        crate::sdlc::doc_templates::save(&state, &ctx.project, ctx.user_id, doc, &body.content)
+            .await?,
+    )
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TrialBody {
+    pub content: String,
+    pub sample: String,
+}
+
+/// POST /api/projects/{id}/doc-templates/{doc}/trial — draft once with the
+/// edited template; the result is returned, not committed.
+pub async fn trial_doc_template(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path((project_id, doc)): Path<(i64, String)>,
+    Json(body): Json<TrialBody>,
+) -> ApiResult {
+    let doc = parse_doc(&doc)?;
+    let ctx = ctx(&state, &claims, project_id).await?;
+    if let Err(retry_after) = state
+        .phase3_rate_limiter
+        .check("template_trial", ctx.user_id, 5)
+    {
+        return Err(WebPlatformError::RateLimited(retry_after));
+    }
+    ok(
+        crate::sdlc::doc_templates::trial(&state, &ctx.project, doc, &body.content, &body.sample)
+            .await?,
+    )
 }
 
 /// POST .../docs/{doc}/validate — run submit validation without submitting.

@@ -270,7 +270,15 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
         .route("/api/projects/{id}/changes", post(change_docs::start))
         .route(
             "/api/projects/{id}/doc-templates",
-            get(change_docs::builtin_templates),
+            get(change_docs::doc_templates),
+        )
+        .route(
+            "/api/projects/{id}/doc-templates/{doc}",
+            put(change_docs::save_doc_template),
+        )
+        .route(
+            "/api/projects/{id}/doc-templates/{doc}/trial",
+            post(change_docs::trial_doc_template),
         )
         .route("/api/projects/{id}/changes/{iid}", get(change_docs::get))
         .route(
