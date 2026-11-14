@@ -104,6 +104,8 @@ pub struct FlowView {
     pub queued_stages: Vec<DocType>,
     /// Accumulated drafting token usage per document.
     pub token_usage: BTreeMap<DocType, super::store::TokenTotals>,
+    /// Who may decide each gate; empty = every project member (P2 §4 B6).
+    pub gate_approvers: BTreeMap<String, Vec<super::store::GateApprover>>,
 }
 
 fn sdlc(app: &AppState) -> &SdlcState {
@@ -328,6 +330,7 @@ pub async fn view(
     mark_queued(&mut documents, &queued_stages);
     let approvals = s.store.list_approvals(flow.id).await?;
     let token_usage = s.store.token_usage(flow.id).await?;
+    let gate_approvers = s.store.gate_approvers(flow.project_id).await?;
     let statuses: BTreeMap<_, _> = documents.iter().map(|d| (d.doc_type, d.status)).collect();
     let st = state::derive_flow_state(flow.track, &statuses);
     let multi = !resolve_active_repos(&app.repo, project).await?.is_empty();
@@ -360,6 +363,7 @@ pub async fn view(
         running_stage,
         queued_stages,
         token_usage,
+        gate_approvers,
     })
 }
 
@@ -1269,6 +1273,33 @@ pub async fn merge_precheck(ctx: &Ctx) -> Precheck {
     }
 }
 
+/// Only listed approvers (or system admins) decide a gate that has a list.
+async fn check_gate_approver(ctx: &Ctx, doc: DocType) -> Result<(), WebPlatformError> {
+    let gate = doc.gate().as_str();
+    let lists = sdlc(&ctx.app).store.gate_approvers(ctx.project.id).await?;
+    let approvers = lists.get(gate).cloned().unwrap_or_default();
+    if approvers.is_empty() || approvers.iter().any(|a| a.user_id == ctx.user_id) {
+        return Ok(());
+    }
+    let is_admin = ctx
+        .app
+        .repo
+        .find_by_id(ctx.user_id)
+        .await?
+        .is_some_and(|u| u.role == "admin");
+    if is_admin {
+        return Ok(());
+    }
+    let names: Vec<String> = approvers
+        .iter()
+        .map(|a| a.display_name.clone().unwrap_or_else(|| a.username.clone()))
+        .collect();
+    Err(WebPlatformError::ForbiddenWithReason(format!(
+        "仅 {} 可审批 {gate}",
+        names.join("、")
+    )))
+}
+
 pub async fn decide(
     ctx: &Ctx,
     flow: &ChangeFlow,
@@ -1278,6 +1309,7 @@ pub async fn decide(
 ) -> Result<FlowView, WebPlatformError> {
     let app = &ctx.app;
     let s = sdlc(app);
+    check_gate_approver(ctx, doc).await?;
     if doc == DocType::Plan && action == GateAction::Approve {
         let p = merge_precheck(ctx).await;
         if !p.can_merge {

@@ -86,8 +86,20 @@ export interface FlowView {
   queuedStages?: DocType[];
   /** Accumulated drafting token usage per document. */
   tokenUsage?: Partial<Record<DocType, TokenTotals>>;
+  /** Who may decide each gate; an empty list means every member. */
+  gateApprovers?: GateApproverLists;
   mergePrecheck?: { canMerge: boolean; reason: string | null };
 }
+
+export type GateKey = 'G1' | 'G2' | 'G3';
+
+export interface GateApprover {
+  userId: number;
+  username: string;
+  displayName: string | null;
+}
+
+export type GateApproverLists = Record<GateKey, GateApprover[]>;
 
 export interface TokenTotals {
   input: number;
