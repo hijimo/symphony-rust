@@ -18,5 +18,6 @@ pub mod project_repos;
 pub mod project_service;
 pub mod project_workflow;
 pub mod projects;
+pub mod signals;
 pub mod token_validation;
 pub mod user_profile;

@@ -17,6 +17,7 @@ pub mod router;
 pub mod sdlc;
 pub mod services;
 pub mod shutdown;
+pub mod signals;
 pub mod templates;
 
 use chrono::Utc;

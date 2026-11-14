@@ -1703,13 +1703,15 @@ pub async fn merge_docs(ctx: &Ctx, flow: &ChangeFlow) -> Result<(), WebPlatformE
 
     match result {
         Ok(sha) => {
+            // Record the merge commit before the documents turn `merged`:
+            // readers that see state `todo` must also see the commit.
+            s.store
+                .set_flow_merge_result(flow.id, sha.as_deref(), None)
+                .await?;
             for d in s.store.list_documents(flow.id).await? {
                 s.store.set_status(d.id, DocStatus::Merged, None).await?;
             }
             record_event(app, flow.id, "docs_merged", None, Some(ctx.user_id)).await;
-            s.store
-                .set_flow_merge_result(flow.id, sha.as_deref(), None)
-                .await?;
             let mut note = format!(
                 "📦 文档已合入主干 @ {}",
                 sha.as_deref().map(|h| &h[..h.len().min(8)]).unwrap_or("-")
