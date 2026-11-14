@@ -78,6 +78,12 @@ pub async fn start(
     Json(body): Json<StartBody>,
 ) -> ApiResult {
     let ctx = ctx(&state, &claims, project_id).await?;
+    if body.track == "fast" {
+        let iid = body
+            .issue_iid
+            .ok_or_else(|| WebPlatformError::BadRequest("track:fast 只能用于已有 Issue".into()))?;
+        return ok(service::start_fast(&ctx, iid).await?);
+    }
     let track = Track::parse(&body.track)?;
     if body.issue_iid.is_none()
         && body
@@ -475,6 +481,24 @@ pub async fn revert(
     let ctx = ctx(&state, &claims, project_id).await?;
     let flow = service::load_flow(&state, &ctx.project, iid).await?;
     ok(service::revert(&ctx, &flow, to, body.impl_branch, body.code_mr_iid).await?)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpgradeBody {
+    pub to: String,
+}
+
+/// POST .../upgrade — `track:plan` → `track:full` (never downgrades).
+pub async fn upgrade(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path((project_id, iid)): Path<(i64, i64)>,
+    Json(body): Json<UpgradeBody>,
+) -> ApiResult {
+    let to = Track::parse(&body.to)?;
+    let ctx = ctx(&state, &claims, project_id).await?;
+    let flow = service::load_flow(&state, &ctx.project, iid).await?;
+    ok(service::upgrade(&ctx, &flow, to).await?)
 }
 
 /// GET .../revert-preview — code MRs and implementation branch a revert uses.

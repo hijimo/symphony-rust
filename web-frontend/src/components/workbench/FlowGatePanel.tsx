@@ -202,6 +202,20 @@ export default function FlowGatePanel() {
               )}
             </>
           )}
+          {flow.flow.track === 'plan' && !['todo', 'rejected'].includes(flow.state) && (
+            <Tooltip title="补写 intent 和 spec；已有的 plan 在 spec 批准后需要重新审阅">
+              <span>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  disabled={busy || running}
+                  onClick={() => run(() => api.upgradeFlow(projectId, iid, 'full'))}
+                >
+                  升级为 track:full
+                </Button>
+              </span>
+            </Tooltip>
+          )}
           {flow.state === 'todo' && (
             <Button
               size="small"

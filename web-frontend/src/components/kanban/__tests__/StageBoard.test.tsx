@@ -191,6 +191,39 @@ describe('StageBoard', () => {
     await waitFor(() => expect(bodies).toEqual([{ track: 'plan', issueIid: 1 }]));
   });
 
+  it('offers track:fast only for whitelisted labels; fast start refreshes without navigating', async () => {
+    const user = userEvent.setup();
+    const bodies: unknown[] = [];
+    server.use(
+      http.post(`*/api/projects/${PID}/changes`, async ({ request }) => {
+        bodies.push(await request.json());
+        return HttpResponse.json({ success: true, retCode: '0', retMsg: 'ok', data: { issueIid: 1, track: 'fast' } });
+      }),
+    );
+    const data = stageKanban();
+    data.fastTrackLabels = ['hotfix'];
+    const { onChanged } = renderBoard(data);
+    await user.click(within(screen.getByTestId('stage-card-1')).getByRole('button', { name: '开始文档流程' }));
+    let dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('combobox', { name: '路径' }));
+    const fast = await screen.findByRole('option', { name: /track:fast/ });
+    expect(fast).toHaveAttribute('aria-disabled', 'true');
+    await user.keyboard('{Escape}');
+    await user.click(within(dialog).getByRole('button', { name: '取消' }));
+
+    data.columns[0].issues[0].labels = ['Hotfix'];
+    renderBoard(data, onChanged);
+    const cards = screen.getAllByTestId('stage-card-1');
+    await user.click(within(cards[cards.length - 1]).getByRole('button', { name: '开始文档流程' }));
+    dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('combobox', { name: '路径' }));
+    await user.click(await screen.findByRole('option', { name: /track:fast/ }));
+    await user.click(within(dialog).getByRole('button', { name: '开始' }));
+    await waitFor(() => expect(bodies).toEqual([{ track: 'fast', issueIid: 1 }]));
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByTestId('location').pop()).toHaveTextContent(`/projects/${PID}/kanban`);
+  });
+
   it('keeps the dialog open and shows the server error when start fails', async () => {
     const user = userEvent.setup();
     server.use(

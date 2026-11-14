@@ -66,6 +66,7 @@ struct ProjectContext {
     platform_token: String,
     client: Box<dyn GitPlatformClient>,
     testing_enabled: bool,
+    fast_track_labels: Vec<String>,
 }
 
 async fn resolve_project_context(
@@ -120,12 +121,14 @@ async fn resolve_project_context(
     )
     .map_err(map_platform_error)?;
 
+    let fast_track_labels = project.fast_track_label_list();
     Ok(ProjectContext {
         platform: project.platform,
         project_path,
         platform_token,
         client,
         testing_enabled: project.testing_enabled,
+        fast_track_labels,
     })
 }
 
@@ -943,5 +946,6 @@ pub async fn get_kanban_stages(
     )
     .await?;
     data["platform"] = serde_json::json!(ctx.platform);
+    data["fastTrackLabels"] = serde_json::json!(ctx.fast_track_labels);
     Ok(Json(ResponseData::success(data)))
 }

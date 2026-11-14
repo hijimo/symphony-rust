@@ -273,6 +273,17 @@ impl SdlcStore {
         .await
     }
 
+    pub async fn set_track(&self, flow_id: i64, track: Track) -> Result<()> {
+        blocking(self.pool.clone(), move |c| {
+            c.execute(
+                "UPDATE change_flows SET track = ?2, updated_at = datetime('now') WHERE id = ?1",
+                params![flow_id, track.as_str()],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn set_flow_merge_result(
         &self,
         flow_id: i64,

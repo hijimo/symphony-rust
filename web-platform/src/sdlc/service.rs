@@ -10,7 +10,8 @@ use serde_json::json;
 use super::agent::{Mode, SessionSpec};
 use super::content;
 use super::model::{
-    doc_repo_path, docs_branch, issue_changes_dir, DocStatus, DocType, FlowState, Track, DOC_LABELS,
+    doc_repo_path, docs_branch, issue_changes_dir, DocStatus, DocType, FlowState, Track,
+    DOC_LABELS, FAST_TRACK_LABEL, TRACK_LABELS,
 };
 use super::state::{self, GateAction};
 use super::store::{ChangeDocument, ChangeFlow, NewApproval, NewDocument};
@@ -340,6 +341,13 @@ async fn sync_label_mode(
         }
     };
     add.push(flow.track.label().to_string());
+    let mut remove = remove;
+    remove.extend(
+        TRACK_LABELS
+            .iter()
+            .filter(|l| **l != flow.track.label())
+            .map(|l| l.to_string()),
+    );
     let token = project_token(app, project).await.ok()?;
     let c = client(app, project).await.ok()?;
     match c
@@ -418,6 +426,161 @@ pub struct StartRequest {
     pub initial_content: Option<String>,
 }
 
+/// Labels showing the orchestrator already picked the issue up; the track
+/// can no longer change (P2 design §5 A1).
+const CLAIMED_LABELS: [&str; 6] = [
+    "symphony-claimed",
+    "In Progress",
+    "Rework",
+    "Testing",
+    "Human Review",
+    "Merging",
+];
+
+fn ensure_not_claimed(labels: &[String]) -> Result<(), WebPlatformError> {
+    let claimed = labels
+        .iter()
+        .find(|l| CLAIMED_LABELS.iter().any(|c| c.eq_ignore_ascii_case(l)));
+    match claimed {
+        Some(l) => Err(WebPlatformError::Conflict(format!(
+            "实现阶段已经开始（{l}），不能再切换路径"
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// `track:fast`: no documents, straight to the implementation queue. Only
+/// issues carrying a whitelisted label qualify (P2 design §5 A1).
+pub async fn start_fast(ctx: &Ctx, issue_iid: i64) -> Result<serde_json::Value, WebPlatformError> {
+    let app = &ctx.app;
+    let project = &ctx.project;
+    if sdlc(app)
+        .store
+        .get_flow(project.id, issue_iid)
+        .await?
+        .is_some()
+    {
+        return Err(WebPlatformError::Conflict(
+            "该 Issue 已有文档流程，路径只能升级不能降级".into(),
+        ));
+    }
+    let token = project_token(app, project).await?;
+    let c = client(app, project).await?;
+    let path = project_path(project);
+    let issue = c
+        .get_issue(&token, &path, issue_iid as u64)
+        .await
+        .map_err(map_platform_error)?;
+    ensure_not_claimed(&issue.labels)?;
+    let allowed = project.fast_track_label_list();
+    if !issue
+        .labels
+        .iter()
+        .any(|l| allowed.contains(&l.trim().to_lowercase()))
+    {
+        return Err(WebPlatformError::BadRequest(format!(
+            "track:fast 只用于带以下 label 的 Issue：{}",
+            allowed.join("、")
+        )));
+    }
+    let add = vec![FAST_TRACK_LABEL.to_string(), todo_label(project)];
+    let remove: Vec<String> = DOC_LABELS
+        .iter()
+        .chain(TRACK_LABELS.iter().filter(|l| **l != FAST_TRACK_LABEL))
+        .map(|s| s.to_string())
+        .collect();
+    c.update_issue_labels(&token, &path, issue_iid as u64, &add, &remove)
+        .await
+        .map_err(map_platform_error)?;
+    Ok(json!({"issueIid": issue_iid, "track": "fast"}))
+}
+
+/// `track:plan` → `track:full` before the docs MR is merged: add an intent
+/// draft on the same docs branch; an approved or in-review plan must be
+/// re-reviewed after the new spec (P2 design §5 A1). Never downgrades.
+pub async fn upgrade(
+    ctx: &Ctx,
+    flow: &ChangeFlow,
+    to: Track,
+) -> Result<FlowView, WebPlatformError> {
+    let app = &ctx.app;
+    let s = sdlc(app);
+    if !(flow.track == Track::Plan && to == Track::Full) {
+        return Err(WebPlatformError::BadRequest(
+            "路径只能从 plan 升级为 full，不能降级".into(),
+        ));
+    }
+    let lock = s.flow_lock(flow.id);
+    {
+        let _g = lock.lock().await;
+        let flow = s.store.get_flow_by_id(flow.id).await?.unwrap();
+        if flow.closed {
+            return Err(WebPlatformError::Conflict("流程已关闭".into()));
+        }
+        let statuses = s.store.statuses(flow.id).await?;
+        if matches!(
+            state::derive_flow_state(flow.track, &statuses),
+            FlowState::Todo | FlowState::Rejected
+        ) {
+            return Err(WebPlatformError::Conflict(
+                "文档已合入主干，只能通过“退回文档阶段”修改".into(),
+            ));
+        }
+        ensure_not_drafting(app, &flow, DocType::Plan)?;
+        let token = project_token(app, &ctx.project).await?;
+        let c = client(app, &ctx.project).await?;
+        let issue = c
+            .get_issue(&token, &project_path(&ctx.project), flow.issue_iid as u64)
+            .await
+            .map_err(map_platform_error)?;
+        let spec = workspace_spec(app, &ctx.project, &flow).await?;
+        s.workspaces.ensure(&spec).await?;
+        let mut full = flow.clone();
+        full.track = Track::Full;
+        create_document(
+            app,
+            &spec,
+            &full,
+            DocType::Intent,
+            &issue.title,
+            None,
+            ctx.user_id,
+            flow.base_sha.as_deref(),
+        )
+        .await?;
+        let who = username(app, ctx.user_id).await;
+        commit_pending(app, &spec, &full, &format!("human ({who})")).await?;
+        s.store.set_track(flow.id, Track::Full).await?;
+        for d in s.store.list_documents(flow.id).await? {
+            if d.doc_type == DocType::Plan
+                && matches!(d.status, DocStatus::Approved | DocStatus::InReview)
+            {
+                s.store.set_status(d.id, DocStatus::Stale, None).await?;
+                s.store.invalidate_approvals(d.id).await?;
+            }
+        }
+        comment_both(
+            app,
+            &ctx.project,
+            &full,
+            &format!(
+                "⬆️ {who} 将 #{} 的路径从 track:plan 升级为 track:full",
+                flow.issue_iid
+            ),
+        )
+        .await;
+    }
+    let fresh = s.store.get_flow_by_id(flow.id).await?.unwrap();
+    if let Some(w) = sync_label(app, &ctx.project, &fresh).await {
+        s.notify(
+            flow.id,
+            json!({"type": "notice", "level": "warning", "message": w}),
+        );
+    }
+    s.notify(flow.id, json!({"type": "flow_changed"}));
+    view(app, &ctx.project, fresh).await
+}
+
 pub async fn start_flow(ctx: &Ctx, req: StartRequest) -> Result<FlowView, WebPlatformError> {
     let app = &ctx.app;
     let project = &ctx.project;
@@ -437,6 +600,7 @@ pub async fn start_flow(ctx: &Ctx, req: StartRequest) -> Result<FlowView, WebPla
                 .get_issue(&token, &path, iid as u64)
                 .await
                 .map_err(map_platform_error)?;
+            ensure_not_claimed(&issue.labels)?;
             (iid, issue.title)
         }
         None => {

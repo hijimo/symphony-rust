@@ -340,6 +340,10 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
             post(change_docs::revert),
         )
         .route(
+            "/api/projects/{id}/changes/{iid}/upgrade",
+            post(change_docs::upgrade),
+        )
+        .route(
             "/api/projects/{id}/changes/{iid}/revert-preview",
             get(change_docs::revert_preview),
         )

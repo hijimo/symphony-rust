@@ -98,6 +98,7 @@ export default function ProjectSettingsPage() {
   const [validationGate, setValidationGate] = useState(false);
   const [aiReviewEnabled, setAiReviewEnabled] = useState(false);
   const [aiReviewBlock, setAiReviewBlock] = useState(false);
+  const [fastTrackLabels, setFastTrackLabels] = useState('');
   const [testingConfigSaving, setTestingConfigSaving] = useState(false);
 
   const showSnack = (message: string, severity: 'success' | 'error') => {
@@ -123,6 +124,7 @@ export default function ProjectSettingsPage() {
       setValidationGate(Boolean(p.validation_gate));
       setAiReviewEnabled(Boolean(p.ai_review_enabled));
       setAiReviewBlock(Boolean(p.ai_review_block));
+      setFastTrackLabels(p.fast_track_labels ?? '');
     } catch (err: any) {
       showSnack(err?.message || '加载项目失败', 'error');
     } finally {
@@ -293,6 +295,7 @@ export default function ProjectSettingsPage() {
         validation_gate: validationGate,
         ai_review_enabled: aiReviewEnabled,
         ai_review_block: aiReviewBlock,
+        fast_track_labels: fastTrackLabels,
       });
       setProject(updated);
       showSnack('验证配置已保存，重启项目服务后生效', 'success');
@@ -309,7 +312,8 @@ export default function ProjectSettingsPage() {
       testingMaxTurns !== project.testing_max_turns ||
       validationGate !== Boolean(project.validation_gate) ||
       aiReviewEnabled !== Boolean(project.ai_review_enabled) ||
-      aiReviewBlock !== Boolean(project.ai_review_block));
+      aiReviewBlock !== Boolean(project.ai_review_block) ||
+      fastTrackLabels !== (project.fast_track_labels ?? ''));
 
   // Delete project
   const handleDelete = async () => {
@@ -611,6 +615,14 @@ export default function ProjectSettingsPage() {
                   />
                 }
                 label="Important 自动打回（最多 2 轮）"
+              />
+              <TextField
+                label="track:fast 白名单 label"
+                helperText="逗号分隔，不区分大小写。只有带这些 label 的 Issue 可以跳过文档直接进入实现。"
+                value={fastTrackLabels}
+                onChange={(e) => setFastTrackLabels(e.target.value)}
+                fullWidth
+                inputProps={{ maxLength: 500 }}
               />
             </Box>
             <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 3 }}>
