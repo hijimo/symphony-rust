@@ -84,6 +84,9 @@ pub struct Placement {
     pub anomaly: bool,
     /// Waiting on a human (review states).
     pub waiting_human: bool,
+    /// Why the labels look wrong (several status labels, or labels that
+    /// disagree with the document state).
+    pub anomaly_reason: Option<String>,
 }
 
 /// Place an open issue. Unlabeled issues are "待启动" in 计划.
@@ -102,6 +105,7 @@ pub fn place_open(labels: &[String]) -> Placement {
                 sub_state: sub.to_string(),
                 anomaly,
                 waiting_human: label.ends_with("-review") || *label == "Human Review",
+                anomaly_reason: anomaly.then(|| "Issue 同时带有多个状态 label".to_string()),
             }
         }
         None => Placement {
@@ -109,6 +113,7 @@ pub fn place_open(labels: &[String]) -> Placement {
             sub_state: "待启动".to_string(),
             anomaly: false,
             waiting_human: false,
+            anomaly_reason: None,
         },
     }
 }
@@ -120,6 +125,66 @@ pub fn place_closed() -> Placement {
         sub_state: "已上线".to_string(),
         anomaly: false,
         waiting_human: false,
+        anomaly_reason: None,
+    }
+}
+
+/// Labels of the implementation phase (a person moving a document-phase
+/// issue to one of these bypasses the remaining gates).
+const IMPL_STATUS: [&str; 7] = [
+    "Todo",
+    "symphony-claimed",
+    "In Progress",
+    "Rework",
+    "Testing",
+    "Human Review",
+    "Merging",
+];
+
+/// Why the issue labels disagree with the document state (§4.1: shown, never
+/// auto-corrected). `None` when they agree.
+pub fn label_mismatch(state: crate::sdlc::model::FlowState, labels: &[String]) -> Option<String> {
+    use crate::sdlc::model::{FlowState, DOC_LABELS};
+    let has = |l: &str| labels.iter().any(|x| x == l);
+    let doc_labels: Vec<&str> = DOC_LABELS.iter().copied().filter(|l| has(l)).collect();
+    match state {
+        FlowState::Rejected => None,
+        FlowState::Todo => (!doc_labels.is_empty()).then(|| {
+            format!(
+                "label 与文档状态不一致：文档已合入，但 Issue 还带着 {}",
+                doc_labels.join("、")
+            )
+        }),
+        other => {
+            let expected = other.doc_label()?;
+            if IMPL_STATUS.iter().any(|l| has(l)) {
+                return Some(format!(
+                    "label 与文档状态不一致：文档处于 {expected}，Issue 已被手动改为实现阶段，按 track:fast 处理"
+                ));
+            }
+            (!has(expected))
+                .then(|| format!("label 与文档状态不一致：应为 {expected}，当前没有这个 label"))
+        }
+    }
+}
+
+/// Sub-state details only the flow knows (§9.2 已批准待合并).
+pub fn refine_for_flow(
+    p: &mut Placement,
+    state: crate::sdlc::model::FlowState,
+    waiting_for_ci: bool,
+    merge_failed: bool,
+) {
+    if state == crate::sdlc::model::FlowState::PlanApprovedPendingMerge {
+        p.sub_state = if merge_failed {
+            "合并失败"
+        } else if waiting_for_ci {
+            "等待 CI"
+        } else {
+            "已批准待合并"
+        }
+        .to_string();
+        p.waiting_human = false;
     }
 }
 
@@ -178,5 +243,56 @@ mod tests {
         assert_eq!(track_of(&l(&["track:full", "x"])), Some("full".into()));
         assert_eq!(track_of(&l(&["x"])), None);
         assert!(!query_labels().contains(&"Backlog"));
+    }
+
+    #[test]
+    fn label_mismatch_against_flow_state() {
+        use crate::sdlc::model::FlowState;
+        // Labels in sync with the document state.
+        assert_eq!(
+            label_mismatch(
+                FlowState::PlanReview,
+                &l(&["doc:plan-review", "track:plan"])
+            ),
+            None
+        );
+        assert_eq!(
+            label_mismatch(
+                FlowState::PlanApprovedPendingMerge,
+                &l(&["doc:plan-review"])
+            ),
+            None
+        );
+        assert_eq!(
+            label_mismatch(FlowState::Todo, &l(&["Todo", "track:plan"])),
+            None
+        );
+        assert_eq!(label_mismatch(FlowState::Todo, &l(&["In Progress"])), None);
+        // A person replaced the doc label by hand.
+        let m = label_mismatch(FlowState::SpecReview, &l(&["doc:intent"])).unwrap();
+        assert!(m.contains("doc:spec-review"), "{m}");
+        // Manually moved to Todo during the document phase: treated as fast.
+        let m = label_mismatch(FlowState::PlanReview, &l(&["Todo"])).unwrap();
+        assert!(m.contains("按 track:fast 处理"), "{m}");
+        // Merged documents but a doc label is left.
+        let m = label_mismatch(FlowState::Todo, &l(&["doc:plan-review", "Todo"])).unwrap();
+        assert!(m.contains("doc:plan-review"), "{m}");
+        assert_eq!(label_mismatch(FlowState::Rejected, &l(&[])), None);
+    }
+
+    #[test]
+    fn pending_merge_sub_state() {
+        use crate::sdlc::model::FlowState;
+        let mut p = place_open(&l(&["doc:plan-review"]));
+        refine_for_flow(&mut p, FlowState::PlanApprovedPendingMerge, false, false);
+        assert_eq!(p.sub_state, "已批准待合并");
+        assert!(!p.waiting_human, "approved: no human gate left");
+        refine_for_flow(&mut p, FlowState::PlanApprovedPendingMerge, true, false);
+        assert_eq!(p.sub_state, "等待 CI");
+        refine_for_flow(&mut p, FlowState::PlanApprovedPendingMerge, false, true);
+        assert_eq!(p.sub_state, "合并失败");
+        let mut q = place_open(&l(&["doc:plan-review"]));
+        refine_for_flow(&mut q, FlowState::PlanReview, false, false);
+        assert_eq!(q.sub_state, "待审 plan");
     }
 }

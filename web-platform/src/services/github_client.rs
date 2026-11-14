@@ -1029,6 +1029,27 @@ impl GitPlatformClient for GitHubClient {
         Ok(p("push") || p("maintain") || p("admin"))
     }
 
+    async fn label_added_at(
+        &self,
+        token: &str,
+        project_path: &str,
+        issue_iid: u64,
+        label: &str,
+    ) -> Result<Option<String>, GitPlatformError> {
+        let url = format!(
+            "{}/repos/{}/issues/{}/events?per_page=100",
+            Self::BASE_URL,
+            project_path,
+            issue_iid
+        );
+        let events = self
+            .send_ok(self.authed(self.http.get(&url), token))
+            .await?;
+        Ok(crate::services::git_platform::latest_label_add(
+            &events, label, "event", "labeled",
+        ))
+    }
+
     async fn merge_readiness(
         &self,
         token: &str,

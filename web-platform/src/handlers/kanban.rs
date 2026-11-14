@@ -786,12 +786,41 @@ mod tests {
 
 // ==================== Stage columns (AI-native SDLC §9) ====================
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize)]
 pub struct StageKanbanQuery {
     pub search: Option<String>,
     pub author: Option<String>,
     /// Days of closed issues shown in 运维 (default 7, max 30).
     pub maintain_days: Option<i64>,
+}
+
+/// Upper bound of label-event lookups per board load.
+const MAX_REVIEW_WAIT_LOOKUPS: usize = 30;
+const REVIEW_WAIT_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// When `Human Review` was last added, cached for 60 s per issue.
+async fn human_review_since(
+    client: &dyn GitPlatformClient,
+    token: &str,
+    project_path: &str,
+    project_id: i64,
+    iid: u64,
+) -> Option<String> {
+    type Cache = dashmap::DashMap<(i64, u64), (std::time::Instant, Option<String>)>;
+    static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Cache::new);
+    if let Some(e) = cache.get(&(project_id, iid)) {
+        if e.0.elapsed() < REVIEW_WAIT_TTL {
+            return e.1.clone();
+        }
+    }
+    let at = client
+        .label_added_at(token, project_path, iid, "Human Review")
+        .await
+        .ok()
+        .flatten();
+    cache.insert((project_id, iid), (std::time::Instant::now(), at.clone()));
+    at
 }
 
 /// Build stage columns from open + recently closed issues and open MRs.
@@ -834,10 +863,16 @@ pub(crate) async fn build_stage_columns(
 
     let flows = state.sdlc.store.list_flows(project_id).await?;
     let mut flow_info = std::collections::HashMap::new();
+    // iid → (flow state, waiting for CI, merge failed)
+    let mut flow_state = std::collections::HashMap::new();
     for f in flows {
         let docs = state.sdlc.store.list_documents(f.id).await?;
         let statuses = docs.iter().map(|d| (d.doc_type, d.status)).collect();
         let st = crate::sdlc::state::derive_flow_state(f.track, &statuses);
+        flow_state.insert(
+            f.issue_iid as u64,
+            (st, f.merge_waiting_since.is_some(), f.merge_error.is_some()),
+        );
         flow_info.insert(
             f.issue_iid as u64,
             serde_json::json!({
@@ -845,6 +880,7 @@ pub(crate) async fn build_stage_columns(
                 "track": f.track,
                 "docsMrUrl": f.docs_mr_url,
                 "mergeError": f.merge_error,
+                "mergeWaitingSince": f.merge_waiting_since,
                 "rejected": st == crate::sdlc::model::FlowState::Rejected,
                 "documents": docs.iter().map(|d| serde_json::json!({
                     "docType": d.doc_type, "status": d.status, "draftState": d.draft_state,
@@ -865,6 +901,35 @@ pub(crate) async fn build_stage_columns(
         .collect();
     let idx = |c: StageColumn| StageColumn::ALL.iter().position(|x| *x == c).unwrap();
 
+    // Implementation sessions currently running (rust-platform state, F1).
+    let running: std::collections::HashMap<u64, serde_json::Value> = state
+        .runtime_state
+        .running_issues(project_id)
+        .into_iter()
+        .filter_map(|(inst, r)| {
+            let iid = r
+                .issue_identifier
+                .trim_start_matches('#')
+                .parse::<u64>()
+                .ok()
+                .or_else(|| r.issue_id.parse().ok())?;
+            Some((
+                iid,
+                serde_json::json!({"since": r.started_at, "instance": inst}),
+            ))
+        })
+        .collect();
+    let mut review_since = std::collections::HashMap::new();
+    for i in open
+        .iter()
+        .filter(|i| i.labels.iter().any(|l| l == "Human Review"))
+        .take(MAX_REVIEW_WAIT_LOOKUPS)
+    {
+        if let Some(t) = human_review_since(client, token, project_path, project_id, i.iid).await {
+            review_since.insert(i.iid, t);
+        }
+    }
+
     let card = |i: &PlatformIssue, p: crate::sdlc::kanban::Placement| {
         serde_json::json!({
             "iid": i.iid, "title": i.title, "state": i.state, "labels": i.labels,
@@ -872,10 +937,19 @@ pub(crate) async fn build_stage_columns(
             "updatedAt": i.updated_at, "webUrl": i.web_url,
             "placement": p, "track": track_of(&i.labels),
             "flow": flow_info.get(&i.iid),
+            "aiRunning": running.get(&i.iid),
+            "humanReviewSince": review_since.get(&i.iid),
         })
     };
     for i in &open {
-        let p = place_open(&i.labels);
+        let mut p = place_open(&i.labels);
+        if let Some((st, waiting, failed)) = flow_state.get(&i.iid) {
+            crate::sdlc::kanban::refine_for_flow(&mut p, *st, *waiting, *failed);
+            if let Some(reason) = crate::sdlc::kanban::label_mismatch(*st, &i.labels) {
+                p.anomaly = true;
+                p.anomaly_reason = Some(reason);
+            }
+        }
         let c = idx(p.column);
         columns[c]["issues"]
             .as_array_mut()
