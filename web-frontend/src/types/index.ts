@@ -113,6 +113,8 @@ export interface Project {
   ai_review_enabled?: boolean;
   /** Important AI review findings send the issue back to In Progress. */
   ai_review_block?: boolean;
+  /** Comma-separated labels that allow track:fast. */
+  fast_track_labels?: string;
 }
 
 export interface ProjectMember {
@@ -163,6 +165,7 @@ export interface UpdateProjectParams {
   validation_gate?: boolean;
   ai_review_enabled?: boolean;
   ai_review_block?: boolean;
+  fast_track_labels?: string;
 }
 
 export interface AddMemberParams {

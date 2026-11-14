@@ -147,6 +147,19 @@ pub struct Project {
     pub ai_review_enabled: bool,
     /// Important AI review findings send the issue back (`review.block_on`).
     pub ai_review_block: bool,
+    /// Comma-separated labels that allow `track:fast` (case-insensitive).
+    pub fast_track_labels: String,
+}
+
+impl Project {
+    /// Normalized `track:fast` whitelist (lowercase, trimmed, no empties).
+    pub fn fast_track_label_list(&self) -> Vec<String> {
+        self.fast_track_labels
+            .split(',')
+            .map(|l| l.trim().to_lowercase())
+            .filter(|l| !l.is_empty())
+            .collect()
+    }
 }
 
 /// Data required to create a new project.
@@ -183,6 +196,7 @@ pub struct ProjectUpdate {
     pub validation_gate: Option<bool>,
     pub ai_review_enabled: Option<bool>,
     pub ai_review_block: Option<bool>,
+    pub fast_track_labels: Option<String>,
 }
 
 /// Service status update payload.
@@ -266,6 +280,7 @@ pub struct UpdateProjectRequest {
     pub validation_gate: Option<bool>,
     pub ai_review_enabled: Option<bool>,
     pub ai_review_block: Option<bool>,
+    pub fast_track_labels: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

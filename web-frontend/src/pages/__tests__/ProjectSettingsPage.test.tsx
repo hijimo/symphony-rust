@@ -194,6 +194,46 @@ describe('ProjectSettingsPage', () => {
     expect(body).toMatchObject({ ai_review_enabled: true, ai_review_block: true });
   });
 
+  it('saves the track:fast whitelist', async () => {
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      http.put('*/api/projects/:id', async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          success: true,
+          retCode: 'SUCCESS',
+          retMsg: 'ok',
+          data: {
+            id: 1,
+            name: 'My GitLab Project',
+            git_url: 'https://gitlab.com/a/b.git',
+            platform: 'gitlab',
+            namespace: 'a',
+            repo_name: 'b',
+            default_branch: 'main',
+            service_status: 'stopped',
+            testing_enabled: false,
+            testing_max_turns: 12,
+            fast_track_labels: 'hotfix, typo',
+          },
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderProjectSettings();
+    await waitFor(() => {
+      expect(screen.getByText('项目设置 - My GitLab Project')).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('tab', { name: 'Agent 配置' }));
+    const field = screen.getByLabelText('track:fast 白名单 label');
+    await user.clear(field);
+    await user.type(field, 'hotfix, typo');
+    const saves = screen.getAllByRole('button', { name: '保存' });
+    await user.click(saves[saves.length - 1]);
+    await waitFor(() => expect(body).not.toBeNull());
+    expect(body).toMatchObject({ fast_track_labels: 'hotfix, typo' });
+  });
+
   it('reads back a saved validation gate from GET', async () => {
     server.use(
       http.get('*/api/projects/:id', () =>

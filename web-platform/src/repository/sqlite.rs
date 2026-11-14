@@ -422,10 +422,11 @@ fn row_to_project(row: &rusqlite::Row) -> rusqlite::Result<Project> {
         validation_gate: row.get::<_, i64>(47)? != 0,
         ai_review_enabled: row.get::<_, i64>(48)? != 0,
         ai_review_block: row.get::<_, i64>(49)? != 0,
+        fast_track_labels: row.get(50)?,
     })
 }
 
-const PROJECT_COLUMNS: &str = "id, name, description, git_url, platform, platform_host, namespace, repo_name, default_branch, workflow_template, workflow_content, service_status, service_pid, max_concurrent_agents, auto_restart, restart_count, last_started_at, last_stopped_at, error_message, created_by, created_at, updated_at, hooks_after_create, hooks_before_remove, codex_command, codex_approval_policy, codex_sandbox, web_instance_id, lifecycle_op_id, lifecycle_lease_expires_at, service_owner_web_instance_id, service_owner_lease_expires_at, service_owner_heartbeat_at, service_generation, service_instance_id, service_pgid, service_session_id, service_cmdline_hash, service_workdir, last_lifecycle_op, service_proxy_config_version, testing_enabled, testing_max_turns, testing_service_status, testing_service_pid, testing_service_instance_id, testing_service_generation, validation_gate, ai_review_enabled, ai_review_block";
+const PROJECT_COLUMNS: &str = "id, name, description, git_url, platform, platform_host, namespace, repo_name, default_branch, workflow_template, workflow_content, service_status, service_pid, max_concurrent_agents, auto_restart, restart_count, last_started_at, last_stopped_at, error_message, created_by, created_at, updated_at, hooks_after_create, hooks_before_remove, codex_command, codex_approval_policy, codex_sandbox, web_instance_id, lifecycle_op_id, lifecycle_lease_expires_at, service_owner_web_instance_id, service_owner_lease_expires_at, service_owner_heartbeat_at, service_generation, service_instance_id, service_pgid, service_session_id, service_cmdline_hash, service_workdir, last_lifecycle_op, service_proxy_config_version, testing_enabled, testing_max_turns, testing_service_status, testing_service_pid, testing_service_instance_id, testing_service_generation, validation_gate, ai_review_enabled, ai_review_block, fast_track_labels";
 
 #[async_trait]
 impl ProjectRepository for SqliteRepository {
@@ -726,6 +727,11 @@ impl ProjectRepository for SqliteRepository {
                 let idx = params.len() + 1;
                 set_clauses.push(format!("ai_review_block = ?{}", idx));
                 params.push(Box::new(v as i64));
+            }
+            if let Some(v) = updates.fast_track_labels.clone() {
+                let idx = params.len() + 1;
+                set_clauses.push(format!("fast_track_labels = ?{}", idx));
+                params.push(Box::new(v));
             }
 
             if set_clauses.is_empty() {

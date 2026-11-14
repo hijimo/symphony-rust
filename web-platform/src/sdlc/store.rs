@@ -276,6 +276,17 @@ impl SdlcStore {
         .await
     }
 
+    pub async fn set_track(&self, flow_id: i64, track: Track) -> Result<()> {
+        blocking(self.pool.clone(), move |c| {
+            c.execute(
+                "UPDATE change_flows SET track = ?2, updated_at = datetime('now') WHERE id = ?1",
+                params![flow_id, track.as_str()],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     /// Start (`Some`) or stop (`None`) waiting for CI before merging.
     pub async fn set_merge_waiting(&self, flow_id: i64, since: Option<&str>) -> Result<()> {
         let since = since.map(str::to_string);
