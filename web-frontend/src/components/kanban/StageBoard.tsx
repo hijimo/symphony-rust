@@ -75,6 +75,7 @@ function Card({ card, projectId, onStart }: { card: StageIssueCard; projectId: n
           </Typography>
         )}
         {card.flow?.documents.some((d) => d.draftState === 'running') && <Typography sx={{ fontSize: 11, color: '#0053db' }}>AI 运行中</Typography>}
+        {card.flow?.documents.some((d) => d.draftState === 'queued') && <Typography sx={{ fontSize: 11, color: '#737686' }}>排队中</Typography>}
         {card.track && <Chip size="small" variant="outlined" label={`track:${card.track}`} sx={{ height: 20, fontSize: 10 }} />}
         {p.anomaly && (
           <Tooltip title="Issue 同时带有多个流程 label">

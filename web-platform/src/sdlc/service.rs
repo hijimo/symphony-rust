@@ -100,6 +100,10 @@ pub struct FlowView {
     pub multi_repo: bool,
     pub primary_dir: String,
     pub running_stage: Option<DocType>,
+    /// Drafts waiting for a session slot (P2 §5 A6).
+    pub queued_stages: Vec<DocType>,
+    /// Accumulated drafting token usage per document.
+    pub token_usage: BTreeMap<DocType, super::store::TokenTotals>,
 }
 
 fn sdlc(app: &AppState) -> &SdlcState {
@@ -305,8 +309,11 @@ pub async fn view(
     flow: ChangeFlow,
 ) -> Result<FlowView, WebPlatformError> {
     let s = sdlc(app);
-    let documents = s.store.list_documents(flow.id).await?;
+    let queued_stages = queued_stages(app, flow.id);
+    let mut documents = s.store.list_documents(flow.id).await?;
+    mark_queued(&mut documents, &queued_stages);
     let approvals = s.store.list_approvals(flow.id).await?;
+    let token_usage = s.store.token_usage(flow.id).await?;
     let statuses: BTreeMap<_, _> = documents.iter().map(|d| (d.doc_type, d.status)).collect();
     let st = state::derive_flow_state(flow.track, &statuses);
     let multi = !resolve_active_repos(&app.repo, project).await?.is_empty();
@@ -337,7 +344,30 @@ pub async fn view(
         multi_repo: multi,
         primary_dir,
         running_stage,
+        queued_stages,
+        token_usage,
     })
+}
+
+/// Stages of a flow whose draft waits for a session slot.
+pub fn queued_stages(app: &AppState, flow_id: i64) -> Vec<DocType> {
+    let mut v: Vec<DocType> = sdlc(app)
+        .agents
+        .flow_sessions(flow_id)
+        .iter()
+        .filter(|x| x.is_queued())
+        .map(|x| x.stage)
+        .collect();
+    v.sort();
+    v
+}
+
+/// Show queued drafts as `draft_state = queued` (in memory only; the
+/// stored state stays `running`).
+pub fn mark_queued(docs: &mut [ChangeDocument], queued: &[DocType]) {
+    for d in docs.iter_mut().filter(|d| queued.contains(&d.doc_type)) {
+        d.draft_state = "queued".to_string();
+    }
 }
 
 /// When labels are written.

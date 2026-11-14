@@ -835,7 +835,11 @@ pub(crate) async fn build_stage_columns(
     let flows = state.sdlc.store.list_flows(project_id).await?;
     let mut flow_info = std::collections::HashMap::new();
     for f in flows {
-        let docs = state.sdlc.store.list_documents(f.id).await?;
+        let mut docs = state.sdlc.store.list_documents(f.id).await?;
+        crate::sdlc::service::mark_queued(
+            &mut docs,
+            &crate::sdlc::service::queued_stages(state, f.id),
+        );
         let statuses = docs.iter().map(|d| (d.doc_type, d.status)).collect();
         let st = crate::sdlc::state::derive_flow_state(f.track, &statuses);
         flow_info.insert(

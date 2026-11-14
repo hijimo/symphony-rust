@@ -830,6 +830,7 @@ async fn draft_failure_retry_and_manual() {
     let app = SdlcApp::with(Opts {
         multi_repo: false,
         codex_script: None,
+        ..Default::default()
     })
     .await;
     let iid = start_full(&app, "NoCodex").await;
@@ -1282,6 +1283,7 @@ async fn manual_takeover_right_after_approval_cancels_draft() {
     let app = SdlcApp::with(Opts {
         multi_repo: false,
         codex_script: None,
+        ..Default::default()
     })
     .await;
     let (st, v) = app

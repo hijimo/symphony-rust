@@ -3,6 +3,7 @@ import {
   getGlobalConcurrency,
   getSseTicket,
   updateConcurrencyConfig,
+  type DocSessionStatus,
   type ProjectConcurrencyInfo,
 } from '../api/concurrency';
 
@@ -12,6 +13,7 @@ interface ConcurrencyState {
   utilizationPercent: number;
   projects: ProjectConcurrencyInfo[];
   dataFreshnessSeconds: number;
+  docSessions: DocSessionStatus;
   loading: boolean;
   error: string | null;
   sseConnected: boolean;
@@ -32,6 +34,7 @@ export const useConcurrencyStore = create<ConcurrencyState>((set, get) => ({
   utilizationPercent: 0,
   projects: [],
   dataFreshnessSeconds: 0,
+  docSessions: { active: 0, max: 0, queued: 0 },
   loading: false,
   error: null,
   sseConnected: false,
@@ -47,6 +50,7 @@ export const useConcurrencyStore = create<ConcurrencyState>((set, get) => ({
         utilizationPercent: data.utilization_percent,
         projects: data.projects,
         dataFreshnessSeconds: data.data_freshness_seconds,
+        docSessions: data.doc_sessions ?? { active: 0, max: 0, queued: 0 },
         loading: false,
       });
     } catch (err) {
@@ -153,6 +157,7 @@ export const useConcurrencyStore = create<ConcurrencyState>((set, get) => ({
       utilizationPercent: 0,
       projects: [],
       dataFreshnessSeconds: 0,
+      docSessions: { active: 0, max: 0, queued: 0 },
       loading: false,
       error: null,
       sseConnected: false,

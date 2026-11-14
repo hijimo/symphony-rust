@@ -159,6 +159,8 @@ impl ConcurrencyManager {
             utilization_percent: utilization,
             projects,
             data_freshness_seconds: freshness,
+            // Filled by the handler from the document agent manager.
+            doc_sessions: Default::default(),
         }
     }
 

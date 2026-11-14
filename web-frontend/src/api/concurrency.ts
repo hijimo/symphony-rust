@@ -6,6 +6,14 @@ export interface ConcurrencyStatus {
   utilization_percent: number;
   projects: ProjectConcurrencyInfo[];
   data_freshness_seconds: number;
+  /** Document drafting sessions (separate quota). */
+  doc_sessions?: DocSessionStatus;
+}
+
+export interface DocSessionStatus {
+  active: number;
+  max: number;
+  queued: number;
 }
 
 export interface ProjectConcurrencyInfo {

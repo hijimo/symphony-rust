@@ -585,8 +585,10 @@ pub fn read_branch_file(bare: &Path, branch: &str, path: &str) -> Option<String>
 ///   contains "[ask]"     -> asks for approval of `rm -rf /tmp/x` and records the decision
 ///   otherwise            -> writes a complete document for the target file
 pub const FAKE_CODEX: &str = r###"
-import json, sys, os, re
+import json, sys, os, re, time
 thread = None
+HOLD = os.path.join(os.path.dirname(os.environ.get("FAKE_CODEX_LOG","/tmp/fake-codex.log")), "hold")
+USAGE = {"inputTokens": 100, "cachedInputTokens": 10, "outputTokens": 20, "reasoningOutputTokens": 5, "totalTokens": 120}
 n = 0
 def send(o):
     sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
@@ -663,6 +665,9 @@ while True:
             open(os.environ.get("FAKE_CODEX_LOG","/tmp/fake-codex.log"), "a").write(json.dumps(r) + "\n")
             # misbehave: write anyway to exercise the git-status fallback
             open(outside, "w").write("hacked\n")
+        while os.path.exists(HOLD):
+            time.sleep(0.05)
+        send({"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":thread,"turnId":turn,"tokenUsage":{"total":USAGE,"last":USAGE}}})
         send({"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":thread,"turn":{"id":turn,"status":"completed"}}})
     elif mid is not None:
         send({"jsonrpc":"2.0","id":mid,"result":{}})
@@ -687,6 +692,8 @@ pub struct SdlcApp {
 pub struct Opts {
     pub multi_repo: bool,
     pub codex_script: Option<String>,
+    /// `SYMPHONY_DOC_AGENT_MAX_SESSIONS` of the test app.
+    pub max_sessions: usize,
 }
 
 impl Default for Opts {
@@ -694,6 +701,7 @@ impl Default for Opts {
         Self {
             multi_repo: false,
             codex_script: Some(FAKE_CODEX.to_string()),
+            max_sessions: 4,
         }
     }
 }
@@ -767,8 +775,9 @@ impl SdlcApp {
                 idle_timeout: std::time::Duration::from_secs(600),
                 turn_timeout: std::time::Duration::from_secs(60),
                 stall_timeout: std::time::Duration::from_secs(30),
+                queue_timeout: std::time::Duration::from_secs(30),
             },
-            4,
+            opts.max_sessions,
         );
         let workspace_root = dir.path().join("ws");
         let sdlc = SdlcState::new(
