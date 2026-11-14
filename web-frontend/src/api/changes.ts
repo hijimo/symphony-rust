@@ -3,6 +3,9 @@ import type { ResponseData } from '../types';
 import type {
   ContextStatus,
   DocTemplate,
+  ProjectDocTemplate,
+  SavedDocTemplate,
+  TemplateTrialResult,
   DocType,
   FileContent,
   FlowView,
@@ -239,5 +242,30 @@ export async function getProjectTokenStatus(projectId: number, refresh = false):
   const res = await client.get<ResponseData<ProjectTokenStatus>>(`/api/projects/${projectId}/token-status`, {
     params: refresh ? { refresh: true } : undefined,
   });
+  return res.data.data;
+}
+
+export async function getDocTemplates(projectId: number): Promise<ProjectDocTemplate[]> {
+  const res = await client.get<ResponseData<ProjectDocTemplate[]>>(`/projects/${projectId}/doc-templates`);
+  return res.data.data;
+}
+
+export async function saveDocTemplate(projectId: number, doc: DocType, content: string): Promise<SavedDocTemplate> {
+  const res = await client.put<ResponseData<SavedDocTemplate>>(`/projects/${projectId}/doc-templates/${doc}`, { content });
+  return res.data.data;
+}
+
+export async function trialDocTemplate(
+  projectId: number,
+  doc: DocType,
+  content: string,
+  sample: string,
+): Promise<TemplateTrialResult> {
+  // Drafting can take minutes (and may queue for a session slot).
+  const res = await client.post<ResponseData<TemplateTrialResult>>(
+    `/projects/${projectId}/doc-templates/${doc}/trial`,
+    { content, sample },
+    { timeout: 15 * 60 * 1000 },
+  );
   return res.data.data;
 }

@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::model::{DocType, TEMPLATES_DIR};
 
@@ -78,23 +78,116 @@ fn builtin(doc: DocType) -> DocTemplate {
     }
 }
 
+/// Optional front matter of a project template (P2 §5 A7).
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct TemplateOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checklist: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct TemplateFrontMatter {
+    symphony_template: TemplateOverrides,
+}
+
+/// `(yaml, body)` when the text starts with a `---` block.
+fn split_front_matter(text: &str) -> Option<(&str, &str)> {
+    let rest = text.strip_prefix("---\n")?;
+    let end = rest.find("\n---\n")?;
+    Some((&rest[..end + 1], &rest[end + 5..]))
+}
+
+/// Project template from its file text. A leading front matter with a
+/// `symphony_template` key overrides prompt and checklist; the rest is the
+/// skeleton. Without that key the whole text is the skeleton.
+pub fn from_project_text(doc: DocType, text: &str) -> Result<DocTemplate, String> {
+    let mut tpl = builtin(doc);
+    let hash = super::content::content_version(text.as_bytes());
+    tpl.source = "project".to_string();
+    tpl.template_ref = format!("{doc}@project:{}", &hash[..8]);
+    tpl.skeleton = text.to_string();
+    let Some((yaml, body)) = split_front_matter(text) else {
+        return Ok(tpl);
+    };
+    let value: serde_yaml::Value =
+        serde_yaml::from_str(yaml).map_err(|e| format!("front matter 不是合法的 YAML：{e}"))?;
+    if value.get("symphony_template").is_none() {
+        return Ok(tpl);
+    }
+    let fm: TemplateFrontMatter = serde_yaml::from_value(value)
+        .map_err(|e| format!("front matter 的 symphony_template 格式不正确：{e}"))?;
+    if let Some(p) = fm.symphony_template.prompt {
+        tpl.prompt = p;
+    }
+    if let Some(c) = fm.symphony_template.checklist {
+        tpl.checklist = c;
+    }
+    tpl.skeleton = body.to_string();
+    Ok(tpl)
+}
+
+/// Problems that block saving a project template.
+pub fn validate_template(doc: DocType, text: &str) -> Vec<String> {
+    if text.trim().is_empty() {
+        return vec!["模板不能为空".to_string()];
+    }
+    let tpl = match from_project_text(doc, text) {
+        Ok(t) => t,
+        Err(e) => return vec![e],
+    };
+    let mut out: Vec<String> = super::content::required_sections(doc)
+        .iter()
+        .filter(|r| !tpl.skeleton.contains(&format!("## {r}")))
+        .map(|r| format!("骨架缺少必填章节 ## {r}"))
+        .collect();
+    if tpl.prompt.trim().is_empty() {
+        out.push("prompt 不能为空".to_string());
+    }
+    out
+}
+
+/// Editable file text of a template: front matter with prompt and
+/// checklist, then the skeleton.
+pub fn editable_text(tpl: &DocTemplate) -> String {
+    let fm = TemplateFrontMatter {
+        symphony_template: TemplateOverrides {
+            prompt: Some(tpl.prompt.clone()),
+            checklist: Some(tpl.checklist.clone()),
+        },
+    };
+    let yaml = serde_yaml::to_string(&fm).unwrap_or_default();
+    format!("---\n{yaml}---\n{}", tpl.skeleton)
+}
+
 /// Resolve the effective template: project override when
 /// `<repo_root>/docs/changes/_templates/<doc>.md` exists, else built-in.
-/// A project override replaces the skeleton only; prompt and checklist stay.
 pub fn resolve(doc: DocType, repo_root: Option<&Path>) -> DocTemplate {
-    let mut tpl = builtin(doc);
     if let Some(root) = repo_root {
         let path = root.join(TEMPLATES_DIR).join(doc.file_name());
         if let Ok(text) = std::fs::read_to_string(&path) {
-            if !text.trim().is_empty() {
-                let hash = super::content::content_version(text.as_bytes());
-                tpl.source = "project".to_string();
-                tpl.template_ref = format!("{doc}@project:{}", &hash[..8]);
-                tpl.skeleton = text;
+            if let Some(t) = resolve_text(doc, &text) {
+                return t;
             }
         }
     }
-    tpl
+    builtin(doc)
+}
+
+/// Project template from file text; `None` (built-in applies) when empty or
+/// unparseable.
+pub fn resolve_text(doc: DocType, text: &str) -> Option<DocTemplate> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    match from_project_text(doc, text) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            tracing::warn!(%doc, "ignoring invalid project template: {e}");
+            None
+        }
+    }
 }
 
 pub fn all(repo_root: Option<&Path>) -> Vec<DocTemplate> {
@@ -152,5 +245,69 @@ mod tests {
         assert!(t.template_ref.starts_with("plan@project:"));
         assert_eq!(render_skeleton(&t, "X"), "# Plan: X\n## Files\n");
         assert_eq!(resolve(DocType::Spec, Some(dir.path())).source, "builtin");
+    }
+
+    const PLAN_WITH_FM: &str = "---\nsymphony_template:\n  prompt: |\n    Write a short plan.\n  checklist:\n    - 是否列出回滚步骤？\n---\n# Plan: <title>\n\n## Files\n\n## Steps\n\n## Tests\n\n## Risks\n\n## Alternatives considered\n";
+
+    #[test]
+    fn front_matter_overrides_prompt_and_checklist() {
+        let t = from_project_text(DocType::Plan, PLAN_WITH_FM).unwrap();
+        assert_eq!(t.source, "project");
+        assert_eq!(t.prompt, "Write a short plan.\n");
+        assert_eq!(t.checklist, vec!["是否列出回滚步骤？".to_string()]);
+        assert!(t.skeleton.starts_with("# Plan: <title>"), "{}", t.skeleton);
+        assert!(!t.skeleton.contains("symphony_template"));
+        assert!(t.template_ref.starts_with("plan@project:"));
+
+        // Only the prompt: checklist stays built-in.
+        let only_prompt = "---\nsymphony_template:\n  prompt: P\n---\n# Plan\n";
+        let t = from_project_text(DocType::Plan, only_prompt).unwrap();
+        assert_eq!(t.prompt, "P");
+        assert_eq!(t.checklist, builtin(DocType::Plan).checklist);
+
+        // No front matter: skeleton only (P1 behaviour).
+        let t = from_project_text(DocType::Plan, "# Plan\n## Files\n").unwrap();
+        assert_eq!(t.prompt, builtin(DocType::Plan).prompt);
+        assert_eq!(t.skeleton, "# Plan\n## Files\n");
+    }
+
+    #[test]
+    fn resolve_reads_front_matter_from_the_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let tdir = dir.path().join(TEMPLATES_DIR);
+        std::fs::create_dir_all(&tdir).unwrap();
+        std::fs::write(tdir.join("plan.md"), PLAN_WITH_FM).unwrap();
+        let t = resolve(DocType::Plan, Some(dir.path()));
+        assert_eq!(t.prompt, "Write a short plan.\n");
+        assert!(t.skeleton.starts_with("# Plan: <title>"));
+    }
+
+    #[test]
+    fn validation_reports_bad_front_matter_and_missing_sections() {
+        assert!(validate_template(DocType::Plan, PLAN_WITH_FM).is_empty());
+        let bad_yaml = "---\nsymphony_template: [\n---\n# Plan\n";
+        assert!(validate_template(DocType::Plan, bad_yaml)[0].contains("front matter"));
+        let bad_list = "---\nsymphony_template:\n  checklist: nope\n---\n# Plan\n";
+        assert!(validate_template(DocType::Plan, bad_list)[0].contains("front matter"));
+        let missing = validate_template(DocType::Plan, "# Plan\n\n## Files\n");
+        assert!(
+            missing.iter().any(|e| e.contains("## Steps")),
+            "{missing:?}"
+        );
+        assert!(!validate_template(DocType::Plan, "  \n").is_empty());
+    }
+
+    #[test]
+    fn editable_text_round_trips() {
+        for d in DocType::ALL {
+            let b = builtin(d);
+            let text = editable_text(&b);
+            let t = from_project_text(d, &text).unwrap();
+            assert_eq!(
+                (t.prompt, t.checklist, t.skeleton),
+                (b.prompt, b.checklist, b.skeleton)
+            );
+            assert!(validate_template(d, &text).is_empty());
+        }
     }
 }

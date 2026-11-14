@@ -4,6 +4,7 @@
 
 pub mod agent;
 pub mod content;
+pub mod doc_templates;
 pub mod kanban;
 pub mod model;
 pub mod platform;
@@ -46,6 +47,10 @@ impl SdlcState {
         let writer = store.clone();
         tokio::spawn(async move {
             while let Some(u) = rx.recv().await {
+                // Template trial sessions have no flow row.
+                if u.flow_id <= 0 {
+                    continue;
+                }
                 if let Err(e) = writer.insert_token_usage(u).await {
                     tracing::warn!("failed to record agent token usage: {e}");
                 }
