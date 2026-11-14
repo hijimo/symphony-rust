@@ -114,6 +114,23 @@ describe('StageBoard', () => {
     expect(within(c6).queryByText('AI 运行中')).not.toBeInTheDocument();
   });
 
+  it('shows 排队中 for drafts waiting for a session slot', () => {
+    const data = stageKanban();
+    const tpl = data.columns[0].issues[1];
+    data.columns[1].issues = [
+      {
+        ...tpl,
+        iid: 12,
+        placement: { column: 'design', subState: '起草 spec', anomaly: false, waitingHuman: false },
+        flow: { ...tpl.flow!, state: 'spec', documents: [{ docType: 'spec', status: 'draft', draftState: 'queued' }] },
+      },
+    ];
+    renderBoard(data);
+    const c = screen.getByTestId('stage-card-12');
+    expect(within(c).getByText('排队中')).toBeInTheDocument();
+    expect(within(c).queryByText(/AI 运行中/)).not.toBeInTheDocument();
+  });
+
   it('shows a label anomaly warning icon only on anomalous cards', () => {
     renderBoard(stageKanban());
     expect(within(screen.getByTestId('stage-card-3')).getByLabelText('label 异常')).toBeInTheDocument();

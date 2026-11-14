@@ -11,6 +11,18 @@ pub struct ConcurrencyStatus {
     pub utilization_percent: f64,
     pub projects: Vec<ProjectConcurrencyInfo>,
     pub data_freshness_seconds: i64,
+    /// Document drafting sessions (`SYMPHONY_DOC_AGENT_MAX_SESSIONS`), not
+    /// counted in `global_max` (P2 §5 A6).
+    #[serde(default)]
+    pub doc_sessions: DocSessionStatus,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DocSessionStatus {
+    pub active: usize,
+    pub max: usize,
+    /// Non-interactive drafts waiting for a slot.
+    pub queued: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

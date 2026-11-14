@@ -59,6 +59,27 @@ describe('FlowGatePanel', () => {
     await waitFor(() => expect(calls.submits).toEqual(['intent']));
   });
 
+  it('queued draft shows 排队中 and the stage token usage is shown', () => {
+    setup(
+      makeFlow({
+        state: 'intent',
+        documents: [doc('intent', { status: 'draft', draftState: 'queued' })],
+        queuedStages: ['intent'],
+        tokenUsage: { intent: { input: 1000, cachedInput: 200, output: 234, reasoning: 30, total: 1234 } },
+      }),
+      'intent',
+      calls,
+    );
+    expect(screen.getByText('排队等待 AI 会话，名额空出后开始起草 intent')).toBeInTheDocument();
+    expect(screen.queryByText(/AI 正在起草/)).not.toBeInTheDocument();
+    expect(screen.getByTestId('doc-token-usage')).toHaveTextContent('AI 用量 1,234 tokens（输入 1,000 · 缓存 200 · 输出 234）');
+  });
+
+  it('hides token usage when the stage has none', () => {
+    setup(makeFlow({ tokenUsage: {} }), 'intent', calls);
+    expect(screen.queryByTestId('doc-token-usage')).not.toBeInTheDocument();
+  });
+
   it('校验 with no issues shows 校验通过', async () => {
     const user = userEvent.setup();
     setup(makeFlow({ state: 'intent', documents: [doc('intent', { status: 'changes_requested', lastFeedback: '补充约束' })] }), 'intent', calls);

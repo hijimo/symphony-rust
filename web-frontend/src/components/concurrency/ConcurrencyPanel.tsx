@@ -19,6 +19,7 @@ export default function ConcurrencyPanel() {
     utilizationPercent,
     projects,
     dataFreshnessSeconds,
+    docSessions,
     loading,
     error,
     sseConnected,
@@ -123,6 +124,24 @@ export default function ConcurrencyPanel() {
             {Math.round(utilizationPercent)}%
           </Typography>
         </Box>
+      </Box>
+
+      <Box
+        data-testid="doc-sessions"
+        sx={{ p: 2, bgcolor: '#f8f8fc', borderRadius: 2, mb: 3, display: 'flex', alignItems: 'baseline', gap: 1 }}
+      >
+        <Typography variant="subtitle2" sx={{ fontWeight: 500 }}>
+          文档起草会话
+        </Typography>
+        <Typography variant="h6" sx={{ fontWeight: 600 }}>
+          {docSessions.active} / {docSessions.max}
+        </Typography>
+        {docSessions.queued > 0 && (
+          <Chip size="small" color="warning" variant="outlined" label={`排队 ${docSessions.queued}`} />
+        )}
+        <Typography variant="body2" color="text.secondary">
+          独立配额，不计入上方 Agent 并行数
+        </Typography>
       </Box>
 
       {/* Per-project breakdown */}

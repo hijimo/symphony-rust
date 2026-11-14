@@ -40,8 +40,19 @@ impl SdlcState {
         agents: Arc<agent::AgentManager>,
         platforms: Arc<dyn platform::PlatformFactory>,
     ) -> Self {
+        let store = store::SdlcStore::new(pool);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<agent::TokenUsageRecord>();
+        agents.set_usage_sink(tx);
+        let writer = store.clone();
+        tokio::spawn(async move {
+            while let Some(u) = rx.recv().await {
+                if let Err(e) = writer.insert_token_usage(u).await {
+                    tracing::warn!("failed to record agent token usage: {e}");
+                }
+            }
+        });
         Self {
-            store: store::SdlcStore::new(pool),
+            store,
             workspaces: workspace::WorkspaceService::new(workspace_root),
             agents,
             platforms,

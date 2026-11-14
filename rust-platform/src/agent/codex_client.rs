@@ -227,7 +227,10 @@ fn extract_usage_from_message(
 ) -> (Option<u64>, Option<u64>, Option<u64>) {
     let usage = message
         .get("usage")
-        .or_else(|| message.pointer("/params/turn/usage"));
+        .or_else(|| message.pointer("/params/turn/usage"))
+        // thread/tokenUsage/updated: cumulative thread totals, which match
+        // the orchestrator's absolute-value delta accounting.
+        .or_else(|| message.pointer("/params/tokenUsage/total"));
 
     usage
         .map(|u| {
@@ -292,6 +295,42 @@ mod tests {
     use crate::proxy::test_support::async_env_lock;
     use serde_json::json;
     use std::path::Path;
+
+    #[test]
+    fn thread_token_usage_notification_reports_thread_totals() {
+        // codex app-server 0.158: Turn has no usage; tokens arrive only via
+        // thread/tokenUsage/updated (cumulative `total`, per-call `last`).
+        let msg = json!({
+            "jsonrpc": "2.0",
+            "method": "thread/tokenUsage/updated",
+            "params": {
+                "threadId": "t1", "turnId": "u1",
+                "tokenUsage": {
+                    "total": {"inputTokens": 1200, "cachedInputTokens": 200, "outputTokens": 300,
+                              "reasoningOutputTokens": 50, "totalTokens": 1500},
+                    "last": {"inputTokens": 400, "cachedInputTokens": 0, "outputTokens": 100,
+                             "reasoningOutputTokens": 10, "totalTokens": 500}
+                }
+            }
+        });
+        assert_eq!(
+            extract_usage_from_message(&msg),
+            (Some(1200), Some(300), Some(1500))
+        );
+        // Legacy shapes still work.
+        assert_eq!(
+            extract_usage_from_message(
+                &json!({"usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}})
+            ),
+            (Some(1), Some(2), Some(3))
+        );
+        assert_eq!(
+            extract_usage_from_message(
+                &json!({"method": "turn/completed", "params": {"turn": {"id": "u1"}}})
+            ),
+            (None, None, None)
+        );
+    }
 
     #[test]
     fn turn_start_request_uses_app_server_schema() {

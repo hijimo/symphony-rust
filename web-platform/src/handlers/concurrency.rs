@@ -78,6 +78,7 @@ async fn get_live_concurrency_status(
         utilization_percent,
         projects,
         data_freshness_seconds,
+        doc_sessions: state.sdlc.agents.session_status(),
     })
 }
 

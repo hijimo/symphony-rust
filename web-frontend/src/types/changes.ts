@@ -50,7 +50,8 @@ export interface ChangeDocument {
   path: string;
   currentBlobSha: string | null;
   templateRef: string | null;
-  draftState: 'idle' | 'running' | 'failed';
+  /** `queued`: waiting for a drafting session slot (not stored). */
+  draftState: 'idle' | 'running' | 'failed' | 'queued';
   draftFailures: number;
   draftError: string | null;
   lastFeedback: string | null;
@@ -81,7 +82,19 @@ export interface FlowView {
   multiRepo: boolean;
   primaryDir: string;
   runningStage: DocType | null;
+  /** Drafts waiting for a session slot. */
+  queuedStages?: DocType[];
+  /** Accumulated drafting token usage per document. */
+  tokenUsage?: Partial<Record<DocType, TokenTotals>>;
   mergePrecheck?: { canMerge: boolean; reason: string | null };
+}
+
+export interface TokenTotals {
+  input: number;
+  cachedInput: number;
+  output: number;
+  reasoning: number;
+  total: number;
 }
 
 export interface TreeEntry {

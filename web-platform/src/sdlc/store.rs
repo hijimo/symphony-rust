@@ -615,6 +615,69 @@ impl SdlcStore {
         })
         .await
     }
+
+    pub async fn insert_token_usage(&self, u: super::agent::TokenUsageRecord) -> Result<()> {
+        blocking(self.pool.clone(), move |c| {
+            c.execute(
+                "INSERT INTO agent_token_usage (flow_id, doc_type, thread_id, turn_id, input, cached_input, output, reasoning, total)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    u.flow_id,
+                    u.doc_type.as_str(),
+                    u.thread_id,
+                    u.turn_id,
+                    u.input,
+                    u.cached_input,
+                    u.output,
+                    u.reasoning,
+                    u.total
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Accumulated drafting token usage of a flow, per document.
+    pub async fn token_usage(&self, flow_id: i64) -> Result<BTreeMap<DocType, TokenTotals>> {
+        blocking(self.pool.clone(), move |c| {
+            let mut stmt = c.prepare(
+                "SELECT doc_type, SUM(input), SUM(cached_input), SUM(output), SUM(reasoning), SUM(total)
+                 FROM agent_token_usage WHERE flow_id = ?1 GROUP BY doc_type",
+            )?;
+            let rows = stmt.query_map(params![flow_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    TokenTotals {
+                        input: r.get(1)?,
+                        cached_input: r.get(2)?,
+                        output: r.get(3)?,
+                        reasoning: r.get(4)?,
+                        total: r.get(5)?,
+                    },
+                ))
+            })?;
+            let mut out = BTreeMap::new();
+            for row in rows {
+                let (d, t) = row?;
+                if let Ok(d) = d.parse::<DocType>() {
+                    out.insert(d, t);
+                }
+            }
+            Ok(out)
+        })
+        .await
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenTotals {
+    pub input: i64,
+    pub cached_input: i64,
+    pub output: i64,
+    pub reasoning: i64,
+    pub total: i64,
 }
 
 /// Remove a flow (rollback of a failed start).

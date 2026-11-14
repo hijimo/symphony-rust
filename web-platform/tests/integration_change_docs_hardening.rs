@@ -111,6 +111,7 @@ async fn app() -> SdlcApp {
     SdlcApp::with(Opts {
         multi_repo: false,
         codex_script: Some(EVIL.to_string()),
+        ..Default::default()
     })
     .await
 }

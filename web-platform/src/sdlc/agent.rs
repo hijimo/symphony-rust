@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -17,10 +17,11 @@ use dashmap::DashMap;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{broadcast, oneshot, Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
 use super::model::DocType;
 use crate::error::WebPlatformError;
+use crate::models::concurrency::DocSessionStatus;
 
 /// Commands whose parsed actions are all in this set run without asking.
 const READ_ONLY_ACTIONS: &[&str] = &["read", "listFiles", "search"];
@@ -38,6 +39,8 @@ pub struct AgentConfig {
     pub turn_timeout: Duration,
     /// No event for this long during a turn = stalled.
     pub stall_timeout: Duration,
+    /// How long a non-interactive draft waits for a free session slot.
+    pub queue_timeout: Duration,
 }
 
 impl Default for AgentConfig {
@@ -48,6 +51,7 @@ impl Default for AgentConfig {
             idle_timeout: Duration::from_secs(15 * 60),
             turn_timeout: Duration::from_secs(20 * 60),
             stall_timeout: Duration::from_secs(5 * 60),
+            queue_timeout: Duration::from_secs(10 * 60),
         }
     }
 }
@@ -57,6 +61,23 @@ pub enum Mode {
     Interactive,
     NonInteractive,
 }
+
+/// `tokenUsage.last` of one `thread/tokenUsage/updated` notification
+/// (one model call), stored in `agent_token_usage`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenUsageRecord {
+    pub flow_id: i64,
+    pub doc_type: DocType,
+    pub thread_id: String,
+    pub turn_id: Option<String>,
+    pub input: i64,
+    pub cached_input: i64,
+    pub output: i64,
+    pub reasoning: i64,
+    pub total: i64,
+}
+
+type UsageSink = Arc<StdMutex<Option<mpsc::UnboundedSender<TokenUsageRecord>>>>;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TurnOutcome {
@@ -162,9 +183,18 @@ pub struct AgentSession {
     pending_user: DashMap<String, oneshot::Sender<Value>>,
     events: broadcast::Sender<Value>,
     last_activity: StdMutex<Instant>,
+    /// Waiting for a session slot (non-interactive drafts only).
+    queued: AtomicBool,
+    queue_cancel: Notify,
+    queue_len: Arc<AtomicUsize>,
+    usage_sink: UsageSink,
 }
 
 impl AgentSession {
+    pub fn is_queued(&self) -> bool {
+        self.queued.load(Ordering::SeqCst)
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<Value> {
         self.events.subscribe()
     }
@@ -287,18 +317,61 @@ impl AgentSession {
         rel == self.writable_rel || rel.starts_with(&format!("{}/", self.writable_rel))
     }
 
+    /// Take a session slot. Interactive sessions fail at once when all are
+    /// in use; non-interactive drafts wait up to `queue_timeout` (P2 §5 A6)
+    /// and stop waiting when interrupted.
+    async fn acquire_slot(&self) -> Result<OwnedSemaphorePermit, WebPlatformError> {
+        if let Ok(p) = self.semaphore.clone().try_acquire_owned() {
+            return Ok(p);
+        }
+        if self.running_mode() != Some(Mode::NonInteractive) {
+            return Err(WebPlatformError::Conflict(
+                "AI 会话已达上限，请稍后再试".to_string(),
+            ));
+        }
+        let cancelled = self.queue_cancel.notified();
+        tokio::pin!(cancelled);
+        cancelled.as_mut().enable();
+        self.queued.store(true, Ordering::SeqCst);
+        self.queue_len.fetch_add(1, Ordering::SeqCst);
+        self.emit(json!({"type": "queued"}));
+        let timeout = self.config.queue_timeout;
+        let result = tokio::select! {
+            p = self.semaphore.clone().acquire_owned() => {
+                p.map_err(|_| WebPlatformError::Internal("session semaphore closed".into()))
+            }
+            _ = tokio::time::sleep(timeout) => Err(WebPlatformError::Conflict(format!(
+                "排队等待 AI 会话超时（{} 秒），请稍后重试",
+                timeout.as_secs()
+            ))),
+            _ = &mut cancelled => Err(WebPlatformError::Conflict("排队已取消".to_string())),
+        };
+        self.queued.store(false, Ordering::SeqCst);
+        self.queue_len.fetch_sub(1, Ordering::SeqCst);
+        result
+    }
+
     async fn ensure_process(self: &Arc<Self>) -> Result<(), WebPlatformError> {
-        let mut guard = self.process.lock().await;
-        if let Some(p) = guard.as_ref() {
-            if p.alive.load(Ordering::SeqCst) {
+        {
+            let guard = self.process.lock().await;
+            if guard
+                .as_ref()
+                .is_some_and(|p| p.alive.load(Ordering::SeqCst))
+            {
                 return Ok(());
             }
         }
+        // Wait for a slot without holding the process lock, so interrupt /
+        // stop are not blocked by a queued draft.
+        let permit = self.acquire_slot().await?;
+        let mut guard = self.process.lock().await;
+        if guard
+            .as_ref()
+            .is_some_and(|p| p.alive.load(Ordering::SeqCst))
+        {
+            return Ok(());
+        }
         *guard = None;
-        let permit =
-            self.semaphore.clone().try_acquire_owned().map_err(|_| {
-                WebPlatformError::Conflict("AI 会话已达上限，请稍后再试".to_string())
-            })?;
 
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
@@ -488,6 +561,7 @@ impl AgentSession {
                 "type": "command_output", "itemId": params.get("itemId"), "delta": params.get("delta")
             })),
             "turn/diff/updated" => self.emit(json!({"type": "diff", "diff": params.get("diff")})),
+            "thread/tokenUsage/updated" => self.record_usage(params),
             "item/started" | "item/completed" => {
                 let item = params.get("item").cloned().unwrap_or(Value::Null);
                 if item.get("type").and_then(|t| t.as_str()) == Some("fileChange") {
@@ -637,6 +711,35 @@ impl AgentSession {
         answer.ok().and_then(|r| r.ok()).unwrap_or(Value::Null)
     }
 
+    fn record_usage(&self, params: &Value) {
+        let Some(last) = params.pointer("/tokenUsage/last") else {
+            return;
+        };
+        let n = |k: &str| last.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+        let record = TokenUsageRecord {
+            flow_id: self.flow_id,
+            doc_type: self.stage,
+            thread_id: params
+                .get("threadId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .or_else(|| self.thread_id())
+                .unwrap_or_default(),
+            turn_id: params
+                .get("turnId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            input: n("inputTokens"),
+            cached_input: n("cachedInputTokens"),
+            output: n("outputTokens"),
+            reasoning: n("reasoningOutputTokens"),
+            total: n("totalTokens"),
+        };
+        if let Some(tx) = self.usage_sink.lock().unwrap().as_ref() {
+            let _ = tx.send(record);
+        }
+    }
+
     fn finish_turn(&self, outcome: TurnOutcome) {
         let mut t = self.turn.lock().unwrap();
         if let Some(tx) = t.done.take() {
@@ -669,6 +772,7 @@ impl AgentSession {
 
     /// Interrupt the running turn.
     pub async fn interrupt(self: &Arc<Self>) -> Result<(), WebPlatformError> {
+        self.queue_cancel.notify_waiters();
         let (turn_id, thread_id) = {
             let t = self.turn.lock().unwrap();
             (t.turn_id.clone(), self.thread_id())
@@ -849,6 +953,9 @@ fn compact_item(item: &Value, rel: impl Fn(&str) -> String) -> Option<Value> {
 pub struct AgentManager {
     sessions: DashMap<(i64, DocType), Arc<AgentSession>>,
     semaphore: Arc<Semaphore>,
+    max_sessions: usize,
+    queued: Arc<AtomicUsize>,
+    usage_sink: UsageSink,
     config: StdMutex<AgentConfig>,
 }
 
@@ -868,6 +975,9 @@ impl AgentManager {
         let mgr = Arc::new(Self {
             sessions: DashMap::new(),
             semaphore: Arc::new(Semaphore::new(max_sessions.max(1))),
+            max_sessions: max_sessions.max(1),
+            queued: Arc::new(AtomicUsize::new(0)),
+            usage_sink: Arc::new(StdMutex::new(None)),
             config: StdMutex::new(config),
         });
         // Idle reaper.
@@ -889,6 +999,20 @@ impl AgentManager {
             }
         });
         mgr
+    }
+
+    /// Receive token usage of every session (written to `agent_token_usage`).
+    pub fn set_usage_sink(&self, tx: mpsc::UnboundedSender<TokenUsageRecord>) {
+        *self.usage_sink.lock().unwrap() = Some(tx);
+    }
+
+    /// Slots in use, the limit and drafts waiting for a slot.
+    pub fn session_status(&self) -> DocSessionStatus {
+        DocSessionStatus {
+            active: self.max_sessions - self.semaphore.available_permits(),
+            max: self.max_sessions,
+            queued: self.queued.load(Ordering::SeqCst),
+        }
     }
 
     pub fn set_env_passthrough(&self, keys: Vec<String>) {
@@ -920,6 +1044,10 @@ impl AgentManager {
             pending_user: DashMap::new(),
             events,
             last_activity: StdMutex::new(Instant::now()),
+            queued: AtomicBool::new(false),
+            queue_cancel: Notify::new(),
+            queue_len: self.queued.clone(),
+            usage_sink: self.usage_sink.clone(),
         });
         self.sessions.entry(key).or_insert(session).clone()
     }
@@ -979,5 +1107,174 @@ mod tests {
             Some("t1".into())
         );
         assert_eq!(extract_thread_id(&json!({})), None);
+    }
+
+    /// Minimal app-server: holds every turn while `$HOLD` exists, then
+    /// reports token usage and completes.
+    const HOLDING_CODEX: &str = r#"
+import json, sys, os, time
+hold = os.environ["HOLD"]
+def send(o):
+    sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
+for line in sys.stdin:
+    m = json.loads(line); meth = m.get("method"); mid = m.get("id")
+    if meth == "initialize":
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+    elif meth in ("thread/start", "thread/resume"):
+        send({"jsonrpc": "2.0", "id": mid, "result": {"thread": {"id": "t1"}}})
+    elif meth == "turn/start":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"turn": {"id": "u1"}}})
+        while os.path.exists(hold):
+            time.sleep(0.02)
+        last = {"inputTokens": 100, "cachedInputTokens": 10, "outputTokens": 20,
+                "reasoningOutputTokens": 5, "totalTokens": 120}
+        send({"jsonrpc": "2.0", "method": "thread/tokenUsage/updated",
+              "params": {"threadId": "t1", "turnId": "u1", "tokenUsage": {"total": last, "last": last}}})
+        send({"jsonrpc": "2.0", "method": "turn/completed",
+              "params": {"threadId": "t1", "turn": {"id": "u1", "status": "completed"}}})
+    elif mid is not None:
+        send({"jsonrpc": "2.0", "id": mid, "result": {}})
+"#;
+
+    struct Rig {
+        dir: tempfile::TempDir,
+        hold: PathBuf,
+        mgr: Arc<AgentManager>,
+    }
+
+    fn rig(max: usize, queue_timeout: Duration) -> Rig {
+        let dir = tempfile::TempDir::new().unwrap();
+        let script = dir.path().join("codex.py");
+        std::fs::write(&script, HOLDING_CODEX).unwrap();
+        let hold = dir.path().join("hold");
+        std::fs::write(&hold, "").unwrap();
+        let mgr = AgentManager::new(
+            AgentConfig {
+                command: format!("HOLD={} python3 {}", hold.display(), script.display()),
+                queue_timeout,
+                ..Default::default()
+            },
+            max,
+        );
+        Rig { dir, hold, mgr }
+    }
+
+    impl Rig {
+        fn session(&self, flow_id: i64, mode: Mode) -> Arc<AgentSession> {
+            let s = self.mgr.get_or_create(SessionSpec {
+                flow_id,
+                stage: DocType::Plan,
+                cwd: self.dir.path().to_path_buf(),
+                writable_rel: "docs".into(),
+                developer_instructions: String::new(),
+                thread_id: None,
+                first_turn_prefix: None,
+            });
+            assert!(s.try_begin(mode));
+            s
+        }
+    }
+
+    fn spawn_turn(s: &Arc<AgentSession>) -> tokio::task::JoinHandle<TurnOutcome> {
+        let s = s.clone();
+        tokio::spawn(async move {
+            let o = s.run_turn("go").await;
+            s.end();
+            s.release_after_draft().await;
+            o
+        })
+    }
+
+    async fn until(what: &str, f: impl Fn() -> bool) {
+        for _ in 0..200 {
+            if f() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    #[tokio::test]
+    async fn drafts_queue_for_a_slot_while_interactive_fails_fast() {
+        let r = rig(1, Duration::from_secs(20));
+        let (tx, mut usage) = tokio::sync::mpsc::unbounded_channel();
+        r.mgr.set_usage_sink(tx);
+
+        let a = r.session(1, Mode::NonInteractive);
+        let ta = spawn_turn(&a);
+        until("first draft holds the slot", || {
+            r.mgr.session_status().active == 1
+        })
+        .await;
+
+        let b = r.session(2, Mode::NonInteractive);
+        let tb = spawn_turn(&b);
+        until("second draft queued", || b.is_queued()).await;
+        let st = r.mgr.session_status();
+        assert_eq!((st.active, st.max, st.queued), (1, 1, 1));
+
+        let c = r.session(3, Mode::Interactive);
+        let oc = c.run_turn("hi").await;
+        c.end();
+        assert!(!oc.is_ok());
+        assert!(oc.error.unwrap().contains("已达上限"));
+
+        std::fs::remove_file(&r.hold).unwrap();
+        assert!(ta.await.unwrap().is_ok());
+        assert!(tb.await.unwrap().is_ok());
+        assert!(!b.is_queued());
+        let st = r.mgr.session_status();
+        assert_eq!((st.active, st.queued), (0, 0));
+
+        let mut flows = Vec::new();
+        for _ in 0..2 {
+            let u = usage.recv().await.unwrap();
+            assert_eq!(
+                (u.doc_type, u.thread_id.as_str(), u.turn_id.as_deref()),
+                (DocType::Plan, "t1", Some("u1"))
+            );
+            assert_eq!(
+                (u.input, u.cached_input, u.output, u.reasoning, u.total),
+                (100, 10, 20, 5, 120)
+            );
+            flows.push(u.flow_id);
+        }
+        flows.sort();
+        assert_eq!(flows, vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn queued_draft_times_out_or_is_cancelled_by_interrupt() {
+        let r = rig(1, Duration::from_millis(300));
+        let a = r.session(1, Mode::NonInteractive);
+        let ta = spawn_turn(&a);
+        until("slot taken", || r.mgr.session_status().active == 1).await;
+
+        let b = r.session(2, Mode::NonInteractive);
+        let ob = b.run_turn("go").await;
+        b.end();
+        assert!(ob.error.unwrap().contains("排队"), "timeout reported");
+        assert_eq!(r.mgr.session_status().queued, 0);
+
+        // Cancelling a queued draft (manual takeover) ends the wait at once.
+        let long = rig(1, Duration::from_secs(60));
+        let x = long.session(1, Mode::NonInteractive);
+        let tx_ = spawn_turn(&x);
+        until("slot taken", || long.mgr.session_status().active == 1).await;
+        let y = long.session(2, Mode::NonInteractive);
+        let ty = spawn_turn(&y);
+        until("queued", || y.is_queued()).await;
+        y.interrupt().await.unwrap();
+        let oy = tokio::time::timeout(Duration::from_secs(5), ty)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(oy.error.unwrap().contains("取消"));
+
+        std::fs::remove_file(&r.hold).unwrap();
+        std::fs::remove_file(&long.hold).unwrap();
+        assert!(ta.await.unwrap().is_ok());
+        assert!(tx_.await.unwrap().is_ok());
     }
 }

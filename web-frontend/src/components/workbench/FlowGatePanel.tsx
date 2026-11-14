@@ -52,6 +52,8 @@ export const FLOW_LABEL: Record<FlowState, string> = {
 
 const GATE: Record<DocType, string> = { intent: 'G1', spec: 'G2', plan: 'G3' };
 
+const fmt = (n: number): string => n.toLocaleString('en-US');
+
 export default function FlowGatePanel() {
   const { flow, projectId, iid, stage, setStage, applyFlow, pushNotice, openFile, stages, context } = useWorkbenchStore();
   const [busy, setBusy] = useState(false);
@@ -73,6 +75,7 @@ export default function FlowGatePanel() {
 
   if (!flow) return null;
   const doc = flow.documents.find((d) => d.docType === stage);
+  const usage = flow.tokenUsage?.[stage];
   const checklist = templates.find((t) => t.docType === stage)?.checklist ?? [];
   const running = stages[stage].running;
   const precheck = flow.mergePrecheck;
@@ -140,6 +143,14 @@ export default function FlowGatePanel() {
       </Box>
 
       {doc?.draftState === 'running' && <Alert severity="info" sx={{ py: 0 }}>AI 正在起草 {stage}…</Alert>}
+      {doc?.draftState === 'queued' && (
+        <Alert severity="info" sx={{ py: 0 }}>排队等待 AI 会话，名额空出后开始起草 {stage}</Alert>
+      )}
+      {usage && usage.total > 0 && (
+        <Typography data-testid="doc-token-usage" sx={{ fontSize: 12, color: '#737686' }}>
+          AI 用量 {fmt(usage.total)} tokens（输入 {fmt(usage.input)} · 缓存 {fmt(usage.cachedInput)} · 输出 {fmt(usage.output)}）
+        </Typography>
+      )}
       {doc?.draftState === 'failed' && (
         <Alert
           severity="error"
