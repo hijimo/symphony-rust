@@ -2,7 +2,7 @@
 
 > **范围**：承接 [ai-native-sdlc-flow-design.md](./ai-native-sdlc-flow-design.md)（下称“P1 方案”）第 12 节的 P3，以及 [ai-native-sdlc-p2-design.md](./ai-native-sdlc-p2-design.md)（下称“P2 方案”）第 3 行划给 P3 的组织规则仓库。组织规则仓库的需求见 [codex-org-config-requirements.md](./codex-org-config-requirements.md)（下称“ORG 需求”）。teamwork 运行时不在本文范围（第 9 节、决策 D8）。
 >
-> **状态**：草案（2026-11-14），第 12 节的决策待确认。
+> **状态**：已定稿（2026-11-14）。第 12 节的决策全部按推荐项确定。
 >
 > **任务管理**：GitHub 里程碑 “AI 原生 SDLC P3”，每个父 issue 对应本文一节，子 issue 对应一个可独立合并的 PR（第 11 节）。
 >
@@ -296,30 +296,30 @@ symphony-eval --org-config . --tasks evals/tasks --codex "codex app-server" \
 
 ## 11. 任务拆分
 
-里程碑：AI 原生 SDLC P3。每个父 issue 对应本文一节，子 issue 用 GitHub 的 sub-issue 关联，每个子 issue 对应一个 PR。
+里程碑：[AI 原生 SDLC P3](https://github.com/hijimo/symphony-rust/milestone/2)。每个父 issue 对应本文一节，子 issue 用 GitHub 的 sub-issue 关联，每个子 issue 对应一个 PR。
 
 | 父 issue | 子 issue | 依赖 |
 |---|---|---|
-| P3-0 方案文档 | 本文定稿 | — |
-| P3-1 外部信号 | S1 信号接入、鉴权与存储 | 方案 |
-| | S2 Sentry、Alertmanager、generic 适配 | S1 |
-| | S3 运维列待分诊与忽略 | S1 |
-| | S4 incident 模板与生成 intent | S1、S3 |
-| | S5 告警 dispatch 接入与新信号通知 | S1 |
-| P3-2 组织规则仓库 | O1 同步、导出与版本 | 方案 |
-| | O2 CODEX_HOME 接入与编排器去掉平台 Token | O1 |
-| | O3 模板与审查政策的组织层 | O1 |
-| | O4 版本追溯、项目锁定与管理页 | O2、O3 |
-| P3-3 组织配置 eval | E1 `symphony-eval` 运行器 | O2、O3 |
-| | E2 组织仓库模板与 CI 工作流 | E1 |
+| #105 P3-0 方案文档 | #106 本文定稿 | — |
+| #108 P3-1 外部信号 | #109 S1 信号接入、鉴权与存储 | #106 |
+| | #110 S2 Sentry、Alertmanager、generic 适配 | #109 |
+| | #111 S3 运维列待分诊与忽略 | #109 |
+| | #112 S4 incident 模板与生成 intent | #109、#111 |
+| | #113 S5 告警 dispatch 接入与新信号通知 | #109 |
+| #114 P3-2 组织规则仓库 | #115 O1 同步、导出与版本 | #106 |
+| | #116 O2 CODEX_HOME 接入与编排器去掉平台 Token | #115 |
+| | #117 O3 模板与审查政策的组织层 | #115 |
+| | #118 O4 版本追溯、项目锁定与管理页 | #116、#117 |
+| #119 P3-3 组织配置 eval | #120 E1 `symphony-eval` 运行器 | #116、#117 |
+| | #121 E2 组织仓库模板与 CI 工作流 | #120 |
 
 S 和 O 两条线互不依赖，可以并行。
 
 ## 12. 决策记录
 
-待确认。“推荐”一列为本文按推荐项写成的设计。
+2026-11-14 确认：全部采用下表“结论”一列的选项。
 
-| 编号 | 问题 | 选项 | 推荐 |
+| 编号 | 问题 | 选项 | 结论 |
 |---|---|---|---|
 | D1 | 信号如何进来 | (a) 来源推送到 Symphony 的接收接口；(b) Symphony 定时轮询来源 API；(c) 两者都做 | **a**。三种来源都支持 webhook；轮询要为每个来源维护凭据和游标。代价是部署需要来源能访问到 Symphony |
 | D2 | 信号如何变成 intent | (a) 人在运维列点“生成 intent”；(b) 自动生成；(c) 按严重度自动生成 critical | **a**。点击者就是 flow 的发起人；`start_flow` 和起草的成本只花在值得处理的信号上；P1 也规定运维列显示“还没生成 intent 的信号” |
