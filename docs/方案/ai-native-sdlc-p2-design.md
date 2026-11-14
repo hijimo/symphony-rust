@@ -256,16 +256,16 @@ review:
 |---|---|---|
 | intent 存活率 | 窗口内 G1 的接受数 ÷（接受数 + 拒绝数） | `document_approvals` |
 | 设计阶段周期 | G1 批准到 G2 批准的中位数和 P90 | `document_approvals` |
-| 需求返工 | plan 首次提交审阅后，spec 又被修改或被级联置为 stale 的次数 | 新表 `flow_events`（V022） |
+| 需求返工 | plan 首次提交审阅后，spec 又被修改或被级联置为 stale 的次数 | 新表 `flow_events`（V026） |
 | 首轮合并率 | 已关闭且未被拒绝的 issue 中，从未带过 `Rework` label 的比例 | 平台 label 事件（GitLab `resource_label_events`、GitHub issue events），结果按 issue 缓存 |
 | 计划一致性 | 已关闭的有 plan 的 issue 中，关闭时不带 `plan-deviation` 的比例 | 已关闭 issue 的 label |
 | 起草 token | 窗口内文档起草会话的 token 总量 | A6 的 `agent_token_usage` |
 
-`flow_events` 记录 `flow_id, kind（cascade_stale / revision_started / docs_merged / revert）, doc_type, actor, created_at`，在 `service.rs` 的对应位置写入。
+`flow_events` 记录 `flow_id, kind（submitted / edited / cascade_stale / revision_started / docs_merged / revert）, doc_type, actor, created_at`，在 `service.rs` 的对应位置写入。`submitted` 用来确定“plan 首次提交审阅”的时间，`edited` 表示已提交或已批准的文档内容被改动后退回草稿，两者是实现时为计算“需求返工”补充的。
 
 ### B6 闸门审批人配置
 
-- 新表 `gate_approvers(project_id, gate, user_id)`（V023）。某道闸门没有配置人时，保持现状：任何项目成员都能批准。
+- 新表 `gate_approvers(project_id, gate, user_id)`（V025）。某道闸门没有配置人时，保持现状：任何项目成员都能批准。
 - `service::decide` 在批准、要求修改、拒绝前检查调用者是否在该闸门名单里（系统管理员不受限）。
 - 接口 `GET/PUT /api/projects/{id}/gate-approvers`，只有项目 owner 能修改。
 - 项目设置新增“闸门审批人”一节；工作台的流程插槽在不能批准时禁用按钮，并显示“仅 X、Y 可批准”。
@@ -275,7 +275,7 @@ review:
 
 ### A1 `track:fast` 与路径升级
 
-- **fast**：看板卡片“开始文档流程”增加 `fast` 选项，只有 issue 带有白名单 label 时可选。白名单是项目设置 `fast_track_labels`，默认 `hotfix`、`docs-only`（V021）。选择后加 `track:fast` 和 Todo label，不创建 flow 记录，不开文档 MR。
+- **fast**：看板卡片“开始文档流程”增加 `fast` 选项，只有 issue 带有白名单 label 时可选。白名单是项目设置 `fast_track_labels`，默认 `hotfix`、`docs-only`（V023）。选择后加 `track:fast` 和 Todo label，不创建 flow 记录，不开文档 MR。
 - **升级**：新增 `POST /api/projects/{id}/changes/{iid}/upgrade`。
   - `fast → plan / full`：只在 issue 还停在 Todo、没被编排器领取时允许；移除 Todo label 后按 `start_flow` 建立文档流程。
   - `plan → full`：只在文档 MR 合并前允许；在同一个文档分支上创建 intent 草稿，track 改为 full。已有的 plan 如果是已批准或待审，置为 stale，G2 通过后重新审阅。
@@ -315,7 +315,7 @@ review:
 
 - **排队**：非交互起草（`spawn_draft`）改为等待名额，最多等 10 分钟，期间卡片显示“排队中”；交互会话仍然立即返回“AI 会话已达上限”。
 - **配额**：继续使用 `SYMPHONY_DOC_AGENT_MAX_SESSIONS`，不计入 `MAX_CONCURRENT_CODEX`（决策 D9）。`ConcurrencyManager::get_status` 增加 `doc_sessions {active, max, queued}` 字段供展示。
-- **token**：`sdlc/agent.rs` 处理 `thread/tokenUsage/updated`，取 `tokenUsage.last` 写入新表 `agent_token_usage(flow_id, doc_type, thread_id, turn_id, input, cached_input, output, reasoning, total, created_at)`（V022）。工作台显示当前文档累计用量。
+- **token**：`sdlc/agent.rs` 处理 `thread/tokenUsage/updated`，取 `tokenUsage.last` 写入新表 `agent_token_usage(flow_id, doc_type, thread_id, turn_id, input, cached_input, output, reasoning, total, created_at)`（V024）。工作台显示当前文档累计用量。
 - **rust-platform**：`codex_client.rs` 的 `extract_usage_from_message` 目前只读 `usage` 和 `/params/turn/usage`，不认识 `thread/tokenUsage/updated`。增加这个通知的解析，用 `tokenUsage.total` 计算增量，修正编排器的 token 统计。先用真实事件确认目前是否确实漏计。
 
 ### A7 文档模板设置页
@@ -345,10 +345,12 @@ review:
 
 | 变更 | 内容 |
 |---|---|
-| V021 `projects` | `ai_review_enabled INTEGER DEFAULT 0`、`ai_review_block INTEGER DEFAULT 0`、`fast_track_labels TEXT DEFAULT '["hotfix","docs-only"]'` |
-| V022 | `flow_events`、`agent_token_usage` |
-| V023 | `gate_approvers` |
-| `change_flows` | 增加 `merge_waiting_since`，用于“等待 CI” |
+| V021 `projects` | `ai_review_enabled INTEGER DEFAULT 0`、`ai_review_block INTEGER DEFAULT 0` |
+| V022 `change_flows` | `merge_waiting_since`，用于“等待 CI” |
+| V023 `projects` | `fast_track_labels TEXT DEFAULT '["hotfix","docs-only"]'` |
+| V024 | `agent_token_usage` |
+| V025 | `gate_approvers` |
+| V026 | `flow_events` |
 | WORKFLOW front matter | `review.{enabled, block_on, max_rounds, timeout_ms}` |
 | liquid 变量 | `change_docs` |
 | label | `plan-deviation`、`ai-review-running`、`ai-review-important`、`ai-review-unresolved`、`track:fast`。GitHub 和 GitLab 在给 issue 加 label 时会自动创建不存在的 label |

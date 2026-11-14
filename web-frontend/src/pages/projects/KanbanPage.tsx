@@ -14,6 +14,7 @@ import { Refresh, Add, Description } from '@mui/icons-material';
 import { ToggleButton, ToggleButtonGroup } from '@mui/material';
 import KanbanBoard from '../../components/kanban/KanbanBoard';
 import StageBoard from '../../components/kanban/StageBoard';
+import SdlcMetricsBar from '../../components/kanban/SdlcMetricsBar';
 import ProjectTokenAlert from '../../components/projects/ProjectTokenAlert';
 import { getStageKanban } from '../../api/changes';
 import type { StageKanban } from '../../types/changes';
@@ -329,6 +330,8 @@ export default function KanbanPage() {
           {error}
         </Alert>
       )}
+
+      <SdlcMetricsBar projectId={projectId} />
 
       {/* Content */}
       {view === 'stage' ? (

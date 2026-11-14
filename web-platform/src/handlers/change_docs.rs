@@ -429,6 +429,29 @@ pub async fn trial_doc_template(
     )
 }
 
+#[derive(Debug, Deserialize)]
+pub struct MetricsQuery {
+    pub days: Option<i64>,
+}
+
+/// GET /api/projects/{id}/sdlc/metrics?days=30 (P2 §4 B5).
+pub async fn sdlc_metrics(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(project_id): Path<i64>,
+    Query(q): Query<MetricsQuery>,
+) -> ApiResult {
+    let ctx = ctx(&state, &claims, project_id).await?;
+    if let Err(retry_after) = state
+        .phase3_rate_limiter
+        .check("sdlc_metrics", ctx.user_id, 20)
+    {
+        return Err(WebPlatformError::RateLimited(retry_after));
+    }
+    let days = q.days.unwrap_or(30).clamp(1, 180);
+    ok(crate::sdlc::metrics::project_metrics(&state, &ctx.project, days).await?)
+}
+
 /// POST .../docs/{doc}/validate — run submit validation without submitting.
 pub async fn validate(
     State(state): State<AppState>,
