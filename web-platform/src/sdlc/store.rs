@@ -680,6 +680,78 @@ pub struct TokenTotals {
     pub total: i64,
 }
 
+/// One configured approver of a document gate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GateApprover {
+    pub user_id: i64,
+    pub username: String,
+    pub display_name: Option<String>,
+}
+
+impl SdlcStore {
+    /// Approver lists per gate (`G1`/`G2`/`G3`, always present).
+    pub async fn gate_approvers(
+        &self,
+        project_id: i64,
+    ) -> Result<BTreeMap<String, Vec<GateApprover>>> {
+        blocking(self.pool.clone(), move |c| {
+            let mut out: BTreeMap<String, Vec<GateApprover>> = ["G1", "G2", "G3"]
+                .iter()
+                .map(|g| (g.to_string(), Vec::new()))
+                .collect();
+            let mut stmt = c.prepare(
+                "SELECT g.gate, u.id, u.username, u.display_name FROM gate_approvers g
+                 JOIN users u ON u.id = g.user_id
+                 WHERE g.project_id = ?1 AND u.deleted_at IS NULL
+                 ORDER BY g.gate, u.username",
+            )?;
+            let rows = stmt.query_map(params![project_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    GateApprover {
+                        user_id: r.get(1)?,
+                        username: r.get(2)?,
+                        display_name: r.get(3)?,
+                    },
+                ))
+            })?;
+            for row in rows {
+                let (g, a) = row?;
+                out.entry(g).or_default().push(a);
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    /// Replace all approver lists of a project.
+    pub async fn set_gate_approvers(
+        &self,
+        project_id: i64,
+        lists: Vec<(super::model::Gate, Vec<i64>)>,
+    ) -> Result<()> {
+        blocking(self.pool.clone(), move |c| {
+            let tx = c.unchecked_transaction()?;
+            tx.execute(
+                "DELETE FROM gate_approvers WHERE project_id = ?1",
+                params![project_id],
+            )?;
+            for (gate, users) in &lists {
+                for u in users {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO gate_approvers (project_id, gate, user_id) VALUES (?1, ?2, ?3)",
+                        params![project_id, gate.as_str(), u],
+                    )?;
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+    }
+}
+
 /// A recorded document-flow event (P2 §4 B5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlowEvent {

@@ -16,6 +16,7 @@ import {
 } from '@mui/material';
 import * as api from '../../api/changes';
 import { useWorkbenchStore } from '../../store/workbenchStore';
+import { useAuthStore } from '../../store/auth';
 import type { DocStatus, DocTemplate, DocType, FlowState, GateAction, ValidationIssue } from '../../types/changes';
 
 export const STATUS_LABEL: Record<DocStatus, string> = {
@@ -76,6 +77,10 @@ export default function FlowGatePanel() {
   if (!flow) return null;
   const doc = flow.documents.find((d) => d.docType === stage);
   const usage = flow.tokenUsage?.[stage];
+  const me = useAuthStore((st) => st.user);
+  const approvers = flow.gateApprovers?.[GATE[stage] as 'G1' | 'G2' | 'G3'] ?? [];
+  const notApprover =
+    approvers.length > 0 && me?.role !== 'admin' && !approvers.some((a) => a.userId === me?.id);
   const checklist = templates.find((t) => t.docType === stage)?.checklist ?? [];
   const running = stages[stage].running;
   const precheck = flow.mergePrecheck;
@@ -201,20 +206,25 @@ export default function FlowGatePanel() {
                     size="small"
                     variant="contained"
                     color="success"
-                    disabled={busy || running || (stage === 'plan' && precheck !== undefined && !precheck.canMerge)}
+                    disabled={busy || running || notApprover || (stage === 'plan' && precheck !== undefined && !precheck.canMerge)}
                     onClick={() => decide('approve')}
                   >
                     批准（{GATE[stage]}）
                   </Button>
                 </span>
               </Tooltip>
-              <Button size="small" variant="outlined" disabled={busy || running} onClick={() => setDialog('request_changes')}>
+              <Button size="small" variant="outlined" disabled={busy || running || notApprover} onClick={() => setDialog('request_changes')}>
                 要求修改
               </Button>
               {stage === 'intent' && (
-                <Button size="small" color="error" disabled={busy || running} onClick={() => setDialog('reject')}>
+                <Button size="small" color="error" disabled={busy || running || notApprover} onClick={() => setDialog('reject')}>
                   拒绝
                 </Button>
+              )}
+              {notApprover && (
+                <Typography sx={{ fontSize: 12, color: '#737686', alignSelf: 'center' }}>
+                  仅 {approvers.map((a) => a.displayName ?? a.username).join('、')} 可批准
+                </Typography>
               )}
             </>
           )}

@@ -4,6 +4,8 @@ import type {
   ContextStatus,
   DocTemplate,
   SdlcMetrics,
+  GateApproverLists,
+  GateKey,
   ProjectDocTemplate,
   SavedDocTemplate,
   TemplateTrialResult,
@@ -243,6 +245,19 @@ export async function getProjectTokenStatus(projectId: number, refresh = false):
   const res = await client.get<ResponseData<ProjectTokenStatus>>(`/api/projects/${projectId}/token-status`, {
     params: refresh ? { refresh: true } : undefined,
   });
+  return res.data.data;
+}
+
+export async function getGateApprovers(projectId: number): Promise<GateApproverLists> {
+  const res = await client.get<ResponseData<GateApproverLists>>(`/projects/${projectId}/gate-approvers`);
+  return res.data.data;
+}
+
+export async function putGateApprovers(
+  projectId: number,
+  lists: Record<GateKey, number[]>,
+): Promise<GateApproverLists> {
+  const res = await client.put<ResponseData<GateApproverLists>>(`/projects/${projectId}/gate-approvers`, lists);
   return res.data.data;
 }
 

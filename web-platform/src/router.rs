@@ -13,8 +13,9 @@ use utoipa_swagger_ui::SwaggerUi;
 use crate::auth::middleware::{jwt_auth, require_admin};
 use crate::handlers::{
     admin_config, admin_users, ai_generate, alerts, auth, change_docs, concurrency, contributors,
-    issue_mrs, issues, kanban, merge_requests, network_proxy, overview, project_members,
-    project_repos, project_service, project_workflow, projects, token_validation, user_profile,
+    gate_approvers, issue_mrs, issues, kanban, merge_requests, network_proxy, overview,
+    project_members, project_repos, project_service, project_workflow, projects, token_validation,
+    user_profile,
 };
 use crate::AppState;
 
@@ -283,6 +284,10 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
         .route(
             "/api/projects/{id}/doc-templates/{doc}/trial",
             post(change_docs::trial_doc_template),
+        )
+        .route(
+            "/api/projects/{id}/gate-approvers",
+            get(gate_approvers::get_gate_approvers).put(gate_approvers::put_gate_approvers),
         )
         .route("/api/projects/{id}/changes/{iid}", get(change_docs::get))
         .route(
