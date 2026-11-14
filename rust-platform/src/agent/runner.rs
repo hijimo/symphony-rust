@@ -1304,4 +1304,51 @@ mod self_verification_tests {
         assert!(is_state("Human Review", &["human review"]));
         assert!(is_state("human_review", &["human review"]));
     }
+
+    /// A tracker without platform capabilities (P2 F2/F3 defaults).
+    struct Minimal;
+
+    #[async_trait::async_trait]
+    impl IssueStateRefresher for Minimal {
+        async fn refresh_issue_state(&self, _: &str) -> Result<Option<AgentIssue>, String> {
+            Ok(None)
+        }
+        fn is_terminal_state(&self, _: &str) -> bool {
+            false
+        }
+        fn is_active_state(&self, _: &str) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn default_refresher_reports_unsupported_platform_calls() {
+        let r = Minimal;
+        let pr = crate::platform::PullRequestRef {
+            repo_slug: "acme/app".into(),
+            number: 1,
+            url: String::new(),
+        };
+        assert!(r
+            .list_repo_directory("acme/app", "docs", "main")
+            .await
+            .unwrap_err()
+            .contains("not supported"));
+        assert!(r
+            .find_open_pull_request("acme/app", "b")
+            .await
+            .unwrap_err()
+            .contains("not supported"));
+        assert!(r
+            .list_pull_request_comments(&pr)
+            .await
+            .unwrap_err()
+            .contains("not supported"));
+        assert!(r
+            .upsert_pull_request_comment(&pr, "m", "b", crate::platform::CommentMode::Append)
+            .await
+            .unwrap_err()
+            .contains("not supported"));
+        assert!(!r.supports_workpad());
+    }
 }

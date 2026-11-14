@@ -148,6 +148,7 @@ test.describe.serial('AI-native SDLC document flow', () => {
     await page.getByRole('button', { name: '保存' }).click();
     await expect(page.getByText(/已提交 [0-9a-f]{8}/)).toBeVisible();
     await expect(page.getByLabel('未保存')).toHaveCount(0);
+    await page.getByRole('button', { name: '预览' }).click();
     await expect(preview).toContainText('门户展示理赔进度');
     const pushed = await gitShow(`symphony/docs-${iid}`, `${dir}/intent.md`);
     expect(pushed).toContain('门户展示理赔进度');
@@ -261,6 +262,8 @@ test.describe.serial('AI-native SDLC document flow', () => {
       return ((await r.json()).data?.content ?? '') as string;
     };
 
+    // Markdown opens in 预览; the Monaco editor renders in 源码 mode.
+    await page.getByRole('button', { name: '源码' }).click();
     await expect(page.locator('.monaco-editor').first()).toBeVisible({ timeout: 60_000 });
     await page.getByTestId('tree-README.md').click();
     await expect(page.getByRole('tab', { name: /README\.md/ })).toBeVisible();

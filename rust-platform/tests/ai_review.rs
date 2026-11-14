@@ -138,6 +138,7 @@ const FAKE_SERVER: &str = r#"
 import json, os, sys
 rec = os.environ["FAKE_RECORD"]
 fixture = json.load(open(os.environ["FAKE_FIXTURE"]))
+mode = os.environ.get("FAKE_FAIL", "0")
 def out(o):
     sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
 def save(k, v):
@@ -154,14 +155,31 @@ for line in sys.stdin:
         out({"jsonrpc": "2.0", "id": m["id"], "result": {"thread": {"id": "rev-t"}}})
     elif meth == "review/start":
         save("review_start", m["params"])
+        if mode == "reject":
+            out({"jsonrpc": "2.0", "id": m["id"], "error": {"message": "review rejected by server"}})
+            continue
         out({"jsonrpc": "2.0", "id": m["id"], "result": {"turn": {"id": "r1"}, "reviewThreadId": "rev-t"}})
+        if mode == "exit":
+            sys.exit(3)
+        if mode == "hang":
+            continue
+        if mode == "noise":
+            # Oversized and malformed lines are skipped.
+            sys.stdout.write("x" * (10 * 1024 * 1024 + 10) + "\n")
+            sys.stdout.write("not json\n")
+            sys.stdout.flush()
+            out({"jsonrpc": "2.0", "id": 78, "method": "item/permissions/requestApproval", "params": {}})
+            out({"jsonrpc": "2.0", "id": 79, "method": "execCommandApproval", "params": {}})
+            out({"jsonrpc": "2.0", "id": 80, "method": "some/unknownRequest", "params": {}})
         # A sub-agent finishing must not end the review.
         out({"method": "turn/completed", "params": {"threadId": "other", "turn": {"id": "x", "status": "completed"}}})
         out({"jsonrpc": "2.0", "id": 77, "method": "item/commandExecution/requestApproval",
              "params": {"threadId": "rev-t", "turnId": "r1", "itemId": "i"}})
+    elif m.get("id") in (78, 79, 80):
+        save("reply_%d" % m["id"], m)
     elif m.get("id") == 77:
         save("approval_reply", m)
-        if os.environ.get("FAKE_FAIL") == "1":
+        if mode == "1":
             out({"method": "turn/completed", "params": {"threadId": "rev-t", "turn": {"id": "r1", "status": "failed", "error": {"message": "boom"}}}})
             continue
         for f in fixture["messages"]:
@@ -306,6 +324,13 @@ struct Env {
 }
 
 fn env(review_md: Option<&str>, fail: bool) -> Env {
+    env_mode(review_md, if fail { "1" } else { "0" })
+}
+
+/// `mode`: `0` ok, `1` review turn fails, `reject` review/start error,
+/// `exit` server exits, `hang` never completes, `noise` junk lines and
+/// extra server requests before the normal review.
+fn env_mode(review_md: Option<&str>, mode: &str) -> Env {
     let tmp = TempDir::new().unwrap();
     let dir = repo(tmp.path(), "app", review_md);
     let server = tmp.path().join("fake.py");
@@ -317,7 +342,7 @@ fn env(review_md: Option<&str>, fail: bool) -> Env {
         command: format!(
             "FAKE_WS='{}' FAKE_FAIL={} FAKE_RECORD='{}' FAKE_FIXTURE='{}' python3 '{}'",
             dir.display(),
-            u8::from(fail),
+            mode,
             record.display(),
             fixture.display(),
             server.display()
@@ -462,6 +487,50 @@ async fn test_failed_review_reports_unknown_counts_and_clears_label() {
     let labels = fake.labels.lock().unwrap();
     assert!(labels.contains(&format!("-{LABEL_RUNNING}")));
     assert!(labels.contains(&format!("-{LABEL_IMPORTANT}")));
+}
+
+#[tokio::test]
+async fn test_reviewer_answers_server_requests_and_skips_junk_lines() {
+    let e = env_mode(None, "noise");
+    let repos = review_repo(&e);
+    let fake = Fake::default();
+    let out = run(&fake, &input(&e, &repos, &[])).await.expect("ran");
+    assert_eq!(out.important, Some(1), "review still parsed");
+    let rec = record(&e);
+    assert_eq!(
+        rec["reply_78"][0]["result"],
+        serde_json::json!({"permissions": {}, "scope": "turn"})
+    );
+    assert_eq!(rec["reply_79"][0]["result"]["decision"], "denied");
+    assert_eq!(rec["reply_80"][0]["error"]["code"], -32601);
+}
+
+#[tokio::test]
+async fn test_review_errors_are_reported_as_unfinished() {
+    for (mode, needle) in [
+        ("reject", "review rejected by server"),
+        ("exit", "exited"),
+        ("hang", "timeout"),
+    ] {
+        let e = env_mode(None, mode);
+        let repos = review_repo(&e);
+        let fake = Fake::default();
+        let mut inp = input(&e, &repos, &[]);
+        inp.timeout = Duration::from_secs(2);
+        let out = run(&fake, &inp).await.expect("ran");
+        assert_eq!(out.important, None, "{mode}");
+        let comments = fake.pr_comments.lock().unwrap();
+        assert!(
+            comments[0].0.contains("审查未完成"),
+            "{mode}: {}",
+            comments[0].0
+        );
+        assert!(
+            comments[0].0.to_lowercase().contains(needle),
+            "{mode}: {}",
+            comments[0].0
+        );
+    }
 }
 
 // ------------------------------------------------------------ blocking
