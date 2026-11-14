@@ -6,6 +6,7 @@
 //!
 //! SPEC reference: Section 10
 
+pub mod ai_review;
 pub mod change_docs;
 pub mod codex_client;
 pub mod plan_check;

@@ -118,6 +118,14 @@ pub trait Tracker: Send + Sync {
         Err(TrackerError::Unsupported("pull requests".to_string()))
     }
 
+    /// User comments on a PR/MR.
+    async fn list_pull_request_comments(
+        &self,
+        _pr: &crate::platform::PullRequestRef,
+    ) -> Result<Vec<crate::platform::Comment>, TrackerError> {
+        Err(TrackerError::Unsupported("pull requests".to_string()))
+    }
+
     /// Write a marker-identified PR/MR comment (see `Platform::upsert_pull_request_comment`).
     async fn upsert_pull_request_comment(
         &self,

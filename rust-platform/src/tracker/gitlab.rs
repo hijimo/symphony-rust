@@ -233,6 +233,16 @@ impl Tracker for GitlabTrackerAdapter {
             .map_err(platform_error_to_tracker_error)
     }
 
+    async fn list_pull_request_comments(
+        &self,
+        pr: &crate::platform::PullRequestRef,
+    ) -> Result<Vec<crate::platform::Comment>, TrackerError> {
+        self.platform
+            .list_pull_request_comments(pr)
+            .await
+            .map_err(platform_error_to_tracker_error)
+    }
+
     async fn upsert_pull_request_comment(
         &self,
         pr: &crate::platform::PullRequestRef,
