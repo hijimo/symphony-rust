@@ -716,6 +716,115 @@ async fn revert_creates_r2_revision() {
     assert_eq!(app.gitlab.mr(2).source, format!("symphony/docs-{iid}-r2"));
 }
 
+/// A2: the revert resolves the implementation branch and every open code
+/// MR itself, and turns those MRs into drafts.
+#[tokio::test]
+async fn revert_without_parameters_finds_code_mrs_and_impl_branch() {
+    let app = SdlcApp::new().await;
+    let iid = app.gitlab.add_issue("Rev2", &[]) as i64;
+    app.post(&app.base(), json!({"track": "plan", "issueIid": iid}))
+        .await;
+    let base = format!("{}/{iid}", app.base());
+    let cur = read(&app, iid, &file_path(iid, "plan")).await;
+    let fm_end = cur["content"].as_str().unwrap().find("\n---\n").unwrap() + 5;
+    let text = format!("{}# Plan\n\n## Files\n- src/main.rs\n\n## Steps\n1\n\n## Tests\n- t\n\n## Risks\n- r\n\n## Alternatives considered\n- n\n", &cur["content"].as_str().unwrap()[..fm_end]);
+    app.put(
+        &format!("{base}/file"),
+        json!({"path": file_path(iid, "plan"), "content": text, "baseVersion": cur["version"]}),
+    )
+    .await;
+    app.post(&format!("{base}/docs/plan/submit"), json!({}))
+        .await;
+    app.post(
+        &format!("{base}/docs/plan/decision"),
+        json!({"action": "approve"}),
+    )
+    .await;
+    app.wait_flow(iid, |f| f["state"] == "todo").await;
+
+    // The agent pushed an implementation branch with a plan revision and
+    // opened a code MR for it.
+    let seed = app.dir.path().join("impl2");
+    git(
+        app.dir.path(),
+        &[
+            "clone",
+            "-q",
+            app.bare.to_str().unwrap(),
+            seed.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    let plan_path = seed.join(file_path(iid, "plan"));
+    let mut t = std::fs::read_to_string(&plan_path).unwrap();
+    t.push_str("- revised during implementation\n");
+    std::fs::write(&plan_path, t).unwrap();
+    git(&seed, &["checkout", "-q", "-b", "feat/rev2"]).unwrap();
+    git(
+        &seed,
+        &[
+            "-c",
+            "user.name=a",
+            "-c",
+            "user.email=a@a",
+            "commit",
+            "-qam",
+            "impl",
+        ],
+    )
+    .unwrap();
+    git(&seed, &["push", "-q", "origin", "feat/rev2"]).unwrap();
+    let code_mr = app
+        .gitlab
+        .add_mr(&format!("feat: rev2 (#{iid})"), "feat/rev2", "main");
+
+    let (st, preview) = app.get(&format!("{base}/revert-preview")).await;
+    assert_eq!(st, StatusCode::OK, "{preview}");
+    assert_eq!(preview["data"]["implBranch"], "feat/rev2");
+    let mrs = preview["data"]["codeMrs"].as_array().unwrap();
+    assert_eq!(mrs.len(), 1, "docs MR excluded: {preview}");
+    assert_eq!(mrs[0]["iid"], code_mr);
+
+    let (st, v) = app
+        .post(&format!("{base}/revert"), json!({"to": "plan"}))
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert!(
+        app.gitlab.mr(code_mr).title.starts_with("Draft:"),
+        "code MR is a draft: {}",
+        app.gitlab.mr(code_mr).title
+    );
+    let plan = read_branch_file(
+        &app.bare,
+        &format!("symphony/docs-{iid}-r2"),
+        &file_path(iid, "plan"),
+    )
+    .unwrap();
+    assert!(
+        plan.contains("revised during implementation"),
+        "docs copied from the resolved branch"
+    );
+
+    // r2 approved and merged: the issue gets the docs-revision marker.
+    app.post(&format!("{base}/docs/plan/submit"), json!({}))
+        .await;
+    let (st, v) = app
+        .post(
+            &format!("{base}/docs/plan/decision"),
+            json!({"action": "approve"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    app.wait_flow(iid, |f| f["state"] == "todo").await;
+    let notes = app.gitlab.issue(iid as u64).notes;
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains("<!-- symphony:docs-revision r2 sha=")),
+        "{notes:?}"
+    );
+}
+
 #[tokio::test]
 async fn draft_failure_retry_and_manual() {
     let app = SdlcApp::with(Opts {

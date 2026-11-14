@@ -60,7 +60,7 @@ export default function FlowGatePanel() {
   const [dialog, setDialog] = useState<null | 'request_changes' | 'reject' | 'revert'>(null);
   const [comment, setComment] = useState('');
   const [revertTo, setRevertTo] = useState<DocType>('plan');
-  const [implBranch, setImplBranch] = useState('');
+  const [revertTargets, setRevertTargets] = useState<api.RevertTargets | null | 'error'>(null);
 
   // Validation results belong to one document state (verify B minor).
   const docKey = `${stage}:${flow?.documents.find((d) => d.docType === stage)?.status ?? ''}`;
@@ -203,7 +203,16 @@ export default function FlowGatePanel() {
             </>
           )}
           {flow.state === 'todo' && (
-            <Button size="small" color="warning" variant="outlined" onClick={() => setDialog('revert')}>
+            <Button
+              size="small"
+              color="warning"
+              variant="outlined"
+              onClick={() => {
+                setDialog('revert');
+                setRevertTargets(null);
+                api.revertPreview(projectId, iid).then(setRevertTargets, () => setRevertTargets('error'));
+              }}
+            >
               退回文档阶段
             </Button>
           )}
@@ -290,7 +299,23 @@ export default function FlowGatePanel() {
               <MenuItem key={d.docType} value={d.docType}>{d.docType} 审阅</MenuItem>
             ))}
           </TextField>
-          <TextField fullWidth size="small" label="实现分支（可选，用于复制实现期修订）" value={implBranch} onChange={(e) => setImplBranch(e.target.value)} />
+          {revertTargets === null && <Typography sx={{ fontSize: 13 }} color="text.secondary">正在查询代码 MR…</Typography>}
+          {revertTargets === 'error' && (
+            <Alert severity="warning" sx={{ py: 0 }}>未能查询代码 MR，退回时由服务端再查一次。</Alert>
+          )}
+          {revertTargets && revertTargets !== 'error' && (
+            <Box sx={{ fontSize: 13 }}>
+              <Typography sx={{ fontSize: 13 }}>
+                文档复制自：{revertTargets.implBranch ? <code>{revertTargets.implBranch}</code> : '主干（没有找到实现分支）'}
+              </Typography>
+              <Typography sx={{ fontSize: 13, mt: 0.5 }}>转为 Draft 的代码 MR：{revertTargets.codeMrs.length === 0 && '无'}</Typography>
+              {revertTargets.codeMrs.map((m) => (
+                <Box key={m.iid} sx={{ pl: 1 }}>
+                  <Link href={m.webUrl} target="_blank" rel="noopener noreferrer">{`!${m.iid} ${m.title}`}</Link>
+                </Box>
+              ))}
+            </Box>
+          )}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDialog(null)}>取消</Button>
@@ -299,7 +324,7 @@ export default function FlowGatePanel() {
             color="warning"
             onClick={async () => {
               setDialog(null);
-              await run(() => api.revertFlow(projectId, iid, { to: revertTo, implBranch: implBranch.trim() || undefined }));
+              await run(() => api.revertFlow(projectId, iid, { to: revertTo }));
               await useWorkbenchStore.getState().init(projectId, iid);
             }}
           >
