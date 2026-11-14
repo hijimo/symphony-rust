@@ -33,6 +33,8 @@ export interface ChangeFlow {
   docsMrUrl: string | null;
   mergeCommitSha: string | null;
   mergeError: string | null;
+  /** Set while the docs MR merge waits for CI. */
+  mergeWaitingSince?: string | null;
   baseSha: string | null;
   closed: boolean;
   createdBy: number;

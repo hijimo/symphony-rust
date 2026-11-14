@@ -14,6 +14,7 @@ import { Refresh, Add, Description } from '@mui/icons-material';
 import { ToggleButton, ToggleButtonGroup } from '@mui/material';
 import KanbanBoard from '../../components/kanban/KanbanBoard';
 import StageBoard from '../../components/kanban/StageBoard';
+import ProjectTokenAlert from '../../components/projects/ProjectTokenAlert';
 import { getStageKanban } from '../../api/changes';
 import type { StageKanban } from '../../types/changes';
 import KanbanSkeleton from '../../components/kanban/KanbanSkeleton';
@@ -200,6 +201,7 @@ export default function KanbanPage() {
 
   return (
     <Box>
+      {projectId ? <ProjectTokenAlert projectId={projectId} /> : null}
       {/* Header */}
       <Box
         sx={{
