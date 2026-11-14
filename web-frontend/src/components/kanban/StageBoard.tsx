@@ -18,7 +18,7 @@ import {
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { useNavigate } from 'react-router-dom';
 import type { DocStatus, StageIssueCard, StageKanban, Track } from '../../types/changes';
-import { startFlow } from '../../api/changes';
+import { startFast, startFlow } from '../../api/changes';
 
 const DOC_ICON: Record<DocStatus | 'none', string> = {
   none: '○',
@@ -112,9 +112,12 @@ function Card({ card, projectId, onStart }: { card: StageIssueCard; projectId: n
 export default function StageBoard({ data, projectId, onChanged }: { data: StageKanban; projectId: number; onChanged: () => void }) {
   const navigate = useNavigate();
   const [starting, setStarting] = useState<StageIssueCard | null>(null);
-  const [track, setTrack] = useState<Track>('plan');
+  const [track, setTrack] = useState<Track | 'fast'>('plan');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const fastAllowed = Boolean(
+    starting?.labels.some((l) => (data.fastTrackLabels ?? []).includes(l.trim().toLowerCase())),
+  );
 
   return (
     <>
@@ -150,10 +153,18 @@ export default function StageBoard({ data, projectId, onChanged }: { data: Stage
       <Dialog open={Boolean(starting)} onClose={() => setStarting(null)} fullWidth>
         <DialogTitle>开始文档流程 · #{starting?.iid}</DialogTitle>
         <DialogContent>
-          <TextField select fullWidth size="small" label="路径" value={track} onChange={(e) => setTrack(e.target.value as Track)} sx={{ mt: 1 }}>
+          <TextField select fullWidth size="small" label="路径" value={track} onChange={(e) => setTrack(e.target.value as Track | 'fast')} sx={{ mt: 1 }}>
             <MenuItem value="plan">track:plan（只写 plan，默认）</MenuItem>
             <MenuItem value="full">track:full（intent → spec → plan）</MenuItem>
+            <MenuItem value="fast" disabled={!fastAllowed}>
+              track:fast（不写文档，直接进入实现）
+            </MenuItem>
           </TextField>
+          {!fastAllowed && (
+            <Typography sx={{ fontSize: 12, color: '#737686', mt: 0.5 }}>
+              track:fast 只用于带 {(data.fastTrackLabels ?? []).join('、') || '白名单'} label 的 Issue
+            </Typography>
+          )}
           {err && <Alert severity="error" sx={{ mt: 1 }}>{err}</Alert>}
         </DialogContent>
         <DialogActions>
@@ -166,8 +177,14 @@ export default function StageBoard({ data, projectId, onChanged }: { data: Stage
               setBusy(true);
               setErr('');
               try {
-                await startFlow(projectId, { track, issueIid: starting.iid });
                 const iid = starting.iid;
+                if (track === 'fast') {
+                  await startFast(projectId, iid);
+                  setStarting(null);
+                  onChanged();
+                  return;
+                }
+                await startFlow(projectId, { track, issueIid: iid });
                 setStarting(null);
                 onChanged();
                 navigate(`/projects/${projectId}/changes/${iid}`);

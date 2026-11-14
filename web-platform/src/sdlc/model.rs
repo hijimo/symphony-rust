@@ -188,6 +188,11 @@ impl Track {
     }
 }
 
+/// `track:fast` label (no documents, P2 design §5 A1).
+pub const FAST_TRACK_LABEL: &str = "track:fast";
+/// All track labels; an issue carries exactly one.
+pub const TRACK_LABELS: [&str; 3] = ["track:full", "track:plan", FAST_TRACK_LABEL];
+
 /// Issue flow state derived from document states (§4.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

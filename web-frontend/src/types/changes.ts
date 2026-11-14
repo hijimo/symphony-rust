@@ -180,6 +180,8 @@ export interface StageKanban {
   columns: StageColumnData[];
   prError: string | null;
   platform: string;
+  /** Labels that allow track:fast (lowercase). */
+  fastTrackLabels?: string[];
 }
 
 // ---------------------------------------------------------- agent events

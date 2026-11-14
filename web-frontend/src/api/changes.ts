@@ -24,6 +24,17 @@ export interface StartFlowBody {
   initialContent?: string;
 }
 
+/** track:fast: no documents; the issue goes straight to the Todo queue. */
+export async function startFast(projectId: number, issueIid: number): Promise<void> {
+  await client.post(base(projectId), { track: 'fast', issueIid }, { timeout: 120000 });
+}
+
+/** Upgrade track:plan → track:full before the docs MR is merged. */
+export async function upgradeFlow(projectId: number, iid: number, to: Track): Promise<FlowView> {
+  const res = await client.post<ResponseData<FlowView>>(`${base(projectId)}/${iid}/upgrade`, { to }, { timeout: 120000 });
+  return res.data.data;
+}
+
 export async function startFlow(projectId: number, body: StartFlowBody): Promise<FlowView> {
   const res = await client.post<ResponseData<FlowView>>(base(projectId), body, { timeout: 120000 });
   return res.data.data;

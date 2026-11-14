@@ -279,6 +279,33 @@ describe('FlowGatePanel', () => {
     expect(screen.queryByRole('button', { name: '重试合并' })).not.toBeInTheDocument();
   });
 
+  it('plan track offers the upgrade to track:full', async () => {
+    const user = userEvent.setup();
+    let upgradeBody: unknown = null;
+    setup(
+      makeFlow({
+        state: 'plan_review',
+        flow: { ...makeFlow().flow, track: 'plan' },
+        documents: [doc('plan', { status: 'in_review' })],
+      }),
+      'plan',
+      calls,
+    );
+    server.use(
+      http.post(`${base}/upgrade`, async ({ request }) => {
+        upgradeBody = await request.json();
+        return HttpResponse.json({ success: true, retCode: 'SUCCESS', retMsg: 'ok', data: makeFlow() });
+      }),
+    );
+    await user.click(screen.getByRole('button', { name: '升级为 track:full' }));
+    await waitFor(() => expect(upgradeBody).toEqual({ to: 'full' }));
+  });
+
+  it('full track has no upgrade button', () => {
+    setup(makeFlow(), 'intent', calls);
+    expect(screen.queryByRole('button', { name: '升级为 track:full' })).not.toBeInTheDocument();
+  });
+
   it('pending merge with error offers 重试合并 gated by pre-check', () => {
     setup(
       makeFlow({

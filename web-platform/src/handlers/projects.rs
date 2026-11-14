@@ -51,6 +51,7 @@ pub struct ProjectResponse {
     pub validation_gate: bool,
     pub ai_review_enabled: bool,
     pub ai_review_block: bool,
+    pub fast_track_labels: String,
 }
 
 impl ProjectResponse {
@@ -85,6 +86,7 @@ impl ProjectResponse {
             validation_gate: project.validation_gate,
             ai_review_enabled: project.ai_review_enabled,
             ai_review_block: project.ai_review_block,
+            fast_track_labels: project.fast_track_labels,
         }
     }
 
@@ -308,6 +310,13 @@ pub async fn update_project(
             ));
         }
     }
+    if let Some(ref labels) = req.fast_track_labels {
+        if labels.chars().count() > 500 {
+            return Err(WebPlatformError::BadRequest(
+                "fast_track_labels must be at most 500 characters".to_string(),
+            ));
+        }
+    }
     if let Some(v) = req.testing_max_turns {
         if !(5..=30).contains(&v) {
             return Err(WebPlatformError::BadRequest(
@@ -345,6 +354,7 @@ pub async fn update_project(
         validation_gate: req.validation_gate,
         ai_review_enabled: req.ai_review_enabled,
         ai_review_block: req.ai_review_block,
+        fast_track_labels: req.fast_track_labels,
     };
 
     state.repo.update_project(id, &updates).await?;
