@@ -282,6 +282,138 @@ pub trait GitPlatformClient: Send + Sync {
     async fn can_merge(&self, _token: &str, _project_path: &str) -> Result<bool, GitPlatformError> {
         Err(unsupported("can_merge"))
     }
+
+    /// CI state and the platform's reason the MR cannot merge yet
+    /// (P2 design §5 A3).
+    async fn merge_readiness(
+        &self,
+        _token: &str,
+        _project_path: &str,
+        _mr_iid: u64,
+    ) -> Result<MergeReadiness, GitPlatformError> {
+        Err(unsupported("merge_readiness"))
+    }
+}
+
+/// Aggregated CI state of an MR's head commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CiState {
+    /// No pipeline / checks.
+    None,
+    Pending,
+    Success,
+    Failed,
+}
+
+/// Why the platform does not (yet) allow merging.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeBlocker {
+    NotApproved,
+    DiscussionsUnresolved,
+    Conflict,
+    /// Branch must be updated with the target branch.
+    Behind,
+    Draft,
+    /// Required checks not finished / not green.
+    CiMustPass,
+    /// Branch protection without a more specific reason (GitHub `blocked`).
+    Blocked,
+    Other(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeReadiness {
+    pub ci: CiState,
+    pub ci_url: Option<String>,
+    pub blocker: Option<MergeBlocker>,
+}
+
+impl MergeBlocker {
+    /// Hint shown to the person who approved G3.
+    pub fn hint(&self) -> String {
+        match self {
+            Self::NotApproved => "平台要求另一位成员审批，请在 MR 上完成审批".into(),
+            Self::DiscussionsUnresolved => "MR 上还有未解决的讨论".into(),
+            Self::Conflict => "文档分支与目标分支存在冲突".into(),
+            Self::Behind => "文档分支落后于目标分支，需要先更新".into(),
+            Self::Draft => "MR 仍是 Draft".into(),
+            Self::CiMustPass => "平台要求 CI 通过后才能合并".into(),
+            Self::Blocked => "分支保护规则阻止合并（可能需要审批或必需检查）".into(),
+            Self::Other(s) => format!("平台返回的合并状态为 {s}"),
+        }
+    }
+}
+
+/// GitLab pipeline status → CI state.
+pub fn gitlab_ci_state(status: Option<&str>) -> CiState {
+    match status {
+        None => CiState::None,
+        Some("success" | "skipped" | "manual") => CiState::Success,
+        Some("failed" | "canceled" | "cancelled") => CiState::Failed,
+        Some(_) => CiState::Pending,
+    }
+}
+
+/// GitLab `detailed_merge_status` → blocker (`None` = mergeable or still
+/// being computed).
+pub fn gitlab_blocker(detailed: Option<&str>) -> Option<MergeBlocker> {
+    match detailed? {
+        "mergeable" | "checking" | "unchecked" | "preparing" | "approvals_syncing" => None,
+        "not_approved" | "requested_changes" => Some(MergeBlocker::NotApproved),
+        "discussions_not_resolved" => Some(MergeBlocker::DiscussionsUnresolved),
+        "conflict" | "broken_status" => Some(MergeBlocker::Conflict),
+        "need_rebase" => Some(MergeBlocker::Behind),
+        "draft_status" => Some(MergeBlocker::Draft),
+        "ci_must_pass" | "ci_still_running" => Some(MergeBlocker::CiMustPass),
+        other => Some(MergeBlocker::Other(other.to_string())),
+    }
+}
+
+/// GitHub combined status + check runs → CI state.
+pub fn github_ci_state(combined: &serde_json::Value, check_runs: &serde_json::Value) -> CiState {
+    let mut any = false;
+    let mut pending = false;
+    let mut failed = false;
+    if combined["total_count"].as_u64().unwrap_or(0) > 0 {
+        any = true;
+        match combined["state"].as_str() {
+            Some("pending") => pending = true,
+            Some("failure" | "error") => failed = true,
+            _ => {}
+        }
+    }
+    for run in check_runs["check_runs"].as_array().into_iter().flatten() {
+        any = true;
+        if run["status"].as_str() != Some("completed") {
+            pending = true;
+        } else if matches!(
+            run["conclusion"].as_str(),
+            Some("failure" | "timed_out" | "cancelled" | "action_required" | "startup_failure")
+        ) {
+            failed = true;
+        }
+    }
+    if failed {
+        CiState::Failed
+    } else if pending {
+        CiState::Pending
+    } else if any {
+        CiState::Success
+    } else {
+        CiState::None
+    }
+}
+
+/// GitHub `mergeable_state` → blocker.
+pub fn github_blocker(mergeable_state: Option<&str>) -> Option<MergeBlocker> {
+    match mergeable_state? {
+        "clean" | "has_hooks" | "unstable" | "unknown" => None,
+        "blocked" => Some(MergeBlocker::Blocked),
+        "behind" => Some(MergeBlocker::Behind),
+        "dirty" => Some(MergeBlocker::Conflict),
+        "draft" => Some(MergeBlocker::Draft),
+        other => Some(MergeBlocker::Other(other.to_string())),
+    }
 }
 
 fn unsupported(op: &str) -> GitPlatformError {
@@ -323,5 +455,101 @@ pub fn create_platform_client_with_proxy(
                 super::gitlab_client::GitLabClient::new_with_proxy(base_url, proxy)?,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_gitlab_mappings() {
+        assert_eq!(gitlab_ci_state(None), CiState::None);
+        for p in [
+            "created",
+            "pending",
+            "running",
+            "preparing",
+            "scheduled",
+            "waiting_for_resource",
+        ] {
+            assert_eq!(gitlab_ci_state(Some(p)), CiState::Pending, "{p}");
+        }
+        assert_eq!(gitlab_ci_state(Some("success")), CiState::Success);
+        assert_eq!(gitlab_ci_state(Some("manual")), CiState::Success);
+        assert_eq!(gitlab_ci_state(Some("failed")), CiState::Failed);
+        assert_eq!(gitlab_ci_state(Some("canceled")), CiState::Failed);
+
+        assert_eq!(gitlab_blocker(None), None);
+        assert_eq!(gitlab_blocker(Some("mergeable")), None);
+        assert_eq!(gitlab_blocker(Some("checking")), None);
+        assert_eq!(
+            gitlab_blocker(Some("not_approved")),
+            Some(MergeBlocker::NotApproved)
+        );
+        assert_eq!(
+            gitlab_blocker(Some("discussions_not_resolved")),
+            Some(MergeBlocker::DiscussionsUnresolved)
+        );
+        assert_eq!(
+            gitlab_blocker(Some("conflict")),
+            Some(MergeBlocker::Conflict)
+        );
+        assert_eq!(
+            gitlab_blocker(Some("need_rebase")),
+            Some(MergeBlocker::Behind)
+        );
+        assert_eq!(
+            gitlab_blocker(Some("ci_must_pass")),
+            Some(MergeBlocker::CiMustPass)
+        );
+        assert_eq!(
+            gitlab_blocker(Some("jira_association_missing")),
+            Some(MergeBlocker::Other("jira_association_missing".into()))
+        );
+    }
+
+    #[test]
+    fn test_github_ci_state_combines_statuses_and_check_runs() {
+        let none = json!({"state": "pending", "total_count": 0});
+        assert_eq!(
+            github_ci_state(&none, &json!({"check_runs": []})),
+            CiState::None
+        );
+        assert_eq!(
+            github_ci_state(&json!({"state": "success", "total_count": 1}), &json!({})),
+            CiState::Success
+        );
+        let running = json!({"check_runs": [
+            {"status": "completed", "conclusion": "success"},
+            {"status": "in_progress", "conclusion": null}
+        ]});
+        assert_eq!(github_ci_state(&none, &running), CiState::Pending);
+        let failed = json!({"check_runs": [
+            {"status": "in_progress", "conclusion": null},
+            {"status": "completed", "conclusion": "failure"}
+        ]});
+        assert_eq!(github_ci_state(&none, &failed), CiState::Failed);
+        assert_eq!(
+            github_ci_state(&json!({"state": "error", "total_count": 2}), &json!({})),
+            CiState::Failed
+        );
+        assert_eq!(
+            github_ci_state(&serde_json::Value::Null, &serde_json::Value::Null),
+            CiState::None
+        );
+    }
+
+    #[test]
+    fn test_github_blocker_and_hints() {
+        assert_eq!(github_blocker(Some("clean")), None);
+        assert_eq!(github_blocker(Some("unstable")), None);
+        assert_eq!(github_blocker(Some("blocked")), Some(MergeBlocker::Blocked));
+        assert_eq!(github_blocker(Some("behind")), Some(MergeBlocker::Behind));
+        assert_eq!(github_blocker(Some("dirty")), Some(MergeBlocker::Conflict));
+        assert_eq!(github_blocker(Some("draft")), Some(MergeBlocker::Draft));
+        assert!(MergeBlocker::NotApproved.hint().contains("另一位成员审批"));
+        assert!(MergeBlocker::Other("x".into()).hint().contains("x"));
     }
 }

@@ -23,6 +23,8 @@ pub struct ChangeFlow {
     pub docs_mr_url: Option<String>,
     pub merge_commit_sha: Option<String>,
     pub merge_error: Option<String>,
+    /// Set while the docs MR merge waits for CI (UTC, RFC 3339).
+    pub merge_waiting_since: Option<String>,
     pub base_sha: Option<String>,
     pub closed: bool,
     pub created_by: i64,
@@ -86,7 +88,7 @@ where
     .map_err(|e| WebPlatformError::Internal(format!("db task failed: {e}")))?
 }
 
-const FLOW_COLS: &str = "id, project_id, issue_iid, track, revision, branch, docs_mr_iid, docs_mr_url, merge_commit_sha, merge_error, base_sha, closed, created_by, created_at, updated_at";
+const FLOW_COLS: &str = "id, project_id, issue_iid, track, revision, branch, docs_mr_iid, docs_mr_url, merge_commit_sha, merge_error, base_sha, closed, created_by, created_at, updated_at, merge_waiting_since";
 const DOC_COLS: &str = "id, flow_id, doc_type, status, path, current_blob_sha, template_ref, org_config_sha, base_sha, draft_state, draft_failures, draft_error, last_feedback, updated_by, updated_at, COALESCE(status_changed_at, updated_at)";
 
 fn row_flow(r: &rusqlite::Row) -> rusqlite::Result<(ChangeFlow, String)> {
@@ -108,6 +110,7 @@ fn row_flow(r: &rusqlite::Row) -> rusqlite::Result<(ChangeFlow, String)> {
             created_by: r.get(12)?,
             created_at: r.get(13)?,
             updated_at: r.get(14)?,
+            merge_waiting_since: r.get(15)?,
         },
         track,
     ))
@@ -278,6 +281,19 @@ impl SdlcStore {
             c.execute(
                 "UPDATE change_flows SET track = ?2, updated_at = datetime('now') WHERE id = ?1",
                 params![flow_id, track.as_str()],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Start (`Some`) or stop (`None`) waiting for CI before merging.
+    pub async fn set_merge_waiting(&self, flow_id: i64, since: Option<&str>) -> Result<()> {
+        let since = since.map(str::to_string);
+        blocking(self.pool.clone(), move |c| {
+            c.execute(
+                "UPDATE change_flows SET merge_waiting_since = ?2, updated_at = datetime('now') WHERE id = ?1",
+                params![flow_id, since],
             )?;
             Ok(())
         })

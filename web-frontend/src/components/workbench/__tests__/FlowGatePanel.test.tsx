@@ -265,6 +265,20 @@ describe('FlowGatePanel', () => {
     await waitFor(() => expect(revertBody).toEqual({ to: 'plan' }));
   });
 
+  it('pending merge waiting for CI shows the wait, not an error', () => {
+    setup(
+      makeFlow({
+        state: 'plan_approved_pending_merge',
+        flow: { ...makeFlow().flow, mergeError: null, mergeWaitingSince: '2026-11-14T00:00:00Z' },
+        documents: [doc('plan', { status: 'approved' })],
+      }),
+      'plan',
+      calls,
+    );
+    expect(screen.getByTestId('merge-waiting-ci')).toHaveTextContent('等待 CI 通过后自动合并');
+    expect(screen.queryByRole('button', { name: '重试合并' })).not.toBeInTheDocument();
+  });
+
   it('plan track offers the upgrade to track:full', async () => {
     const user = userEvent.setup();
     let upgradeBody: unknown = null;

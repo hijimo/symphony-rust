@@ -23,6 +23,7 @@ import WorkflowEditor from '../../components/WorkflowEditor';
 import ServiceControlPanel from '../../components/ServiceControlPanel';
 import ProjectReposEditor from '../../components/projects/ProjectReposEditor';
 import { useAuthStore } from '../../store/auth';
+import ProjectTokenAlert from '../../components/projects/ProjectTokenAlert';
 import { getProject, updateProject, deleteProject, getServiceStatus, startService, stopService, restartService } from '../../api/projects';
 import { getWorkflow, updateWorkflow, resetWorkflow } from '../../api/workflow';
 import type { Project, ServiceStatusData, WorkflowData } from '../../types';
@@ -361,6 +362,7 @@ export default function ProjectSettingsPage() {
       <Typography variant="h5" color="text.primary" sx={{ mb: 3 }}>
         项目设置 - {project.name}
       </Typography>
+      <ProjectTokenAlert projectId={projectId} />
 
       {/* Tabs */}
       <Card>

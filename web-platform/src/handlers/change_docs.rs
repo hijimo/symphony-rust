@@ -501,6 +501,23 @@ pub async fn upgrade(
     ok(service::upgrade(&ctx, &flow, to).await?)
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TokenStatusQuery {
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+/// GET /api/projects/{id}/token-status — is the project token usable?
+pub async fn token_status(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path(project_id): Path<i64>,
+    axum::extract::Query(q): axum::extract::Query<TokenStatusQuery>,
+) -> ApiResult {
+    let ctx = ctx(&state, &claims, project_id).await?;
+    ok(service::project_token_status(&state, &ctx.project, q.refresh).await)
+}
+
 /// GET .../revert-preview — code MRs and implementation branch a revert uses.
 pub async fn revert_preview(
     State(state): State<AppState>,

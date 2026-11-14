@@ -336,6 +336,10 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
             post(change_docs::retry_merge),
         )
         .route(
+            "/api/projects/{id}/token-status",
+            get(change_docs::token_status),
+        )
+        .route(
             "/api/projects/{id}/changes/{iid}/revert",
             post(change_docs::revert),
         )

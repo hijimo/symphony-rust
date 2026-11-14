@@ -157,6 +157,11 @@ export default function FlowGatePanel() {
       {doc?.lastFeedback && doc.status !== 'approved' && (
         <Alert severity="warning" sx={{ py: 0 }}>审阅意见：{doc.lastFeedback}</Alert>
       )}
+      {!flow.flow.mergeError && flow.flow.mergeWaitingSince && flow.state === 'plan_approved_pending_merge' && (
+        <Alert severity="info" sx={{ py: 0 }} data-testid="merge-waiting-ci">
+          已批准，等待 CI 通过后自动合并
+        </Alert>
+      )}
       {flow.flow.mergeError && flow.state === 'plan_approved_pending_merge' && (
         <Alert
           severity="error"

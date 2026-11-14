@@ -79,6 +79,12 @@ pub struct GitLabState {
     pub mr_merge_status: Mutex<Option<String>>,
     /// Tokens seen on merge calls (to check approver token is used).
     pub merge_tokens: Mutex<Vec<String>>,
+    /// `head_pipeline.status` reported for MRs (None = no pipeline).
+    pub pipeline_status: Mutex<Option<String>>,
+    /// `detailed_merge_status` reported for MRs (default `mergeable`).
+    pub detailed_merge_status: Mutex<Option<String>>,
+    /// When set, project lookups answer 401 (invalid token).
+    pub reject_token: Mutex<bool>,
 }
 
 impl GitLabState {
@@ -156,6 +162,20 @@ fn mr_json_status(m: &FakeMr, merge_status: &str) -> Value {
     })
 }
 
+fn mr_json_full(st: &GitLabState, m: &FakeMr, merge_status: &str) -> Value {
+    let mut v = mr_json_status(m, merge_status);
+    if let Some(p) = st.pipeline_status.lock().unwrap().clone() {
+        v["head_pipeline"] = json!({"status": p, "web_url": "http://gitlab.local/pipelines/1"});
+    }
+    v["detailed_merge_status"] = json!(st
+        .detailed_merge_status
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| "mergeable".into()));
+    v
+}
+
 fn split_labels(v: Option<&Value>) -> Vec<String> {
     v.and_then(|x| x.as_str())
         .map(|s| {
@@ -168,10 +188,19 @@ fn split_labels(v: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-async fn get_project(State(st): State<GS>, AxPath(_p): AxPath<String>) -> Json<Value> {
+async fn get_project(
+    State(st): State<GS>,
+    AxPath(_p): AxPath<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if *st.reject_token.lock().unwrap() {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"message": "401 Unauthorized"})),
+        ));
+    }
     let level = *st.access_level.lock().unwrap();
-    Json(json!({"path_with_namespace": format!("{NS}/{REPO}"),
-        "permissions": {"project_access": {"access_level": level}, "group_access": null}}))
+    Ok(Json(json!({"path_with_namespace": format!("{NS}/{REPO}"),
+        "permissions": {"project_access": {"access_level": level}, "group_access": null}})))
 }
 
 async fn list_issues(
@@ -318,7 +347,7 @@ async fn get_mr(
         .lock()
         .unwrap()
         .get(&iid)
-        .map(|m| Json(mr_json_status(m, &ms)))
+        .map(|m| Json(mr_json_full(&st, m, &ms)))
         .ok_or(StatusCode::NOT_FOUND)
 }
 
