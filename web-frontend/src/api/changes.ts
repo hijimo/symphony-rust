@@ -171,6 +171,24 @@ export async function revertFlow(
   return res.data.data;
 }
 
+export interface CodeMr {
+  iid: number;
+  title: string;
+  webUrl: string;
+  sourceBranch: string;
+}
+
+export interface RevertTargets {
+  implBranch: string | null;
+  codeMrs: CodeMr[];
+}
+
+/** Code MRs that become drafts and the branch documents are copied from. */
+export async function revertPreview(projectId: number, iid: number): Promise<RevertTargets> {
+  const res = await client.get<ResponseData<RevertTargets>>(`${base(projectId)}/${iid}/revert-preview`);
+  return res.data.data;
+}
+
 export async function retryDraft(projectId: number, iid: number, doc: DocType): Promise<void> {
   await client.post(`${base(projectId)}/${iid}/docs/${doc}/draft/retry`, {});
 }

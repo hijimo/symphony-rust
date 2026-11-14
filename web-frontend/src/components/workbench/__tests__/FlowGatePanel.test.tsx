@@ -228,6 +228,43 @@ describe('FlowGatePanel', () => {
     expect(screen.getByTestId('doc-chip-plan')).toHaveTextContent('plan · 已合入');
   });
 
+  it('revert dialog previews code MRs and the implementation branch, no manual input', async () => {
+    const user = userEvent.setup();
+    let revertBody: Record<string, unknown> | null = null;
+    setup(
+      makeFlow({
+        state: 'todo',
+        documents: [doc('plan', { status: 'merged' })],
+      }),
+      'plan',
+      calls,
+    );
+    server.use(
+      http.get(`${base}/revert-preview`, () =>
+        HttpResponse.json({
+          success: true,
+          retCode: 'SUCCESS',
+          retMsg: 'ok',
+          data: {
+            implBranch: 'feat/claims',
+            codeMrs: [{ iid: 9, title: 'feat: claims (#5)', webUrl: 'http://x/9', sourceBranch: 'feat/claims' }],
+          },
+        }),
+      ),
+      http.post(`${base}/revert`, async ({ request }) => {
+        revertBody = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ success: true, retCode: 'SUCCESS', retMsg: 'ok', data: makeFlow() });
+      }),
+    );
+    await user.click(screen.getByRole('button', { name: '退回文档阶段' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText('feat/claims')).toBeInTheDocument();
+    expect(within(dialog).getByRole('link', { name: '!9 feat: claims (#5)' })).toHaveAttribute('href', 'http://x/9');
+    expect(within(dialog).queryByLabelText(/实现分支/)).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: '退回' }));
+    await waitFor(() => expect(revertBody).toEqual({ to: 'plan' }));
+  });
+
   it('pending merge with error offers 重试合并 gated by pre-check', () => {
     setup(
       makeFlow({
