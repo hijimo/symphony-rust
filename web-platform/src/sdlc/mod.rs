@@ -6,6 +6,7 @@ pub mod agent;
 pub mod content;
 pub mod doc_templates;
 pub mod kanban;
+pub mod metrics;
 pub mod model;
 pub mod platform;
 pub mod service;

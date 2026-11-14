@@ -675,6 +675,14 @@ pub async fn upgrade(
             {
                 s.store.set_status(d.id, DocStatus::Stale, None).await?;
                 s.store.invalidate_approvals(d.id).await?;
+                record_event(
+                    app,
+                    flow.id,
+                    "cascade_stale",
+                    Some(d.doc_type),
+                    Some(ctx.user_id),
+                )
+                .await;
             }
         }
         comment_both(
@@ -931,6 +939,7 @@ pub async fn reconcile_content(
         if next != d.status {
             s.store.set_status(d.id, next, None).await?;
             s.store.invalidate_approvals(d.id).await?;
+            record_event(app, flow.id, "edited", Some(d.doc_type), None).await;
             changed = true;
         }
     }
@@ -1185,8 +1194,26 @@ pub async fn submit(
         let who = username(app, ctx.user_id).await;
         commit_pending(app, &spec, flow, &format!("human ({who})")).await?;
         s.store.set_status(d.id, next, Some(ctx.user_id)).await?;
+        record_event(app, flow.id, "submitted", Some(doc), Some(ctx.user_id)).await;
     }
     after_change(app, &ctx.project, flow).await
+}
+
+/// Best-effort flow event for metrics (P2 §4 B5).
+async fn record_event(
+    app: &AppState,
+    flow_id: i64,
+    kind: &str,
+    doc: Option<DocType>,
+    actor: Option<i64>,
+) {
+    if let Err(e) = sdlc(app)
+        .store
+        .add_flow_event(flow_id, kind, doc, actor)
+        .await
+    {
+        tracing::warn!(flow = flow_id, kind, "failed to record flow event: {e}");
+    }
 }
 
 fn ensure_not_drafting(
@@ -1350,6 +1377,8 @@ pub async fn decide(
                     if let Some(dd) = s.store.get_document(flow.id, t).await? {
                         s.store.set_status(dd.id, DocStatus::Stale, None).await?;
                         s.store.invalidate_approvals(dd.id).await?;
+                        record_event(app, flow.id, "cascade_stale", Some(t), Some(ctx.user_id))
+                            .await;
                     }
                 }
                 match doc.next().filter(|n| flow.track.doc_types().contains(n)) {
@@ -1645,6 +1674,7 @@ pub async fn merge_docs(ctx: &Ctx, flow: &ChangeFlow) -> Result<(), WebPlatformE
             for d in s.store.list_documents(flow.id).await? {
                 s.store.set_status(d.id, DocStatus::Merged, None).await?;
             }
+            record_event(app, flow.id, "docs_merged", None, Some(ctx.user_id)).await;
             s.store
                 .set_flow_merge_result(flow.id, sha.as_deref(), None)
                 .await?;
@@ -1873,6 +1903,15 @@ pub async fn revert(
             .map(|d| (d.doc_type, d.current_blob_sha))
             .collect();
         let new_flow = s.store.start_revision(flow.id, &branch, to).await?;
+        record_event(app, flow.id, "revert", Some(to), Some(ctx.user_id)).await;
+        record_event(
+            app,
+            flow.id,
+            "revision_started",
+            Some(to),
+            Some(ctx.user_id),
+        )
+        .await;
         let spec = workspace_spec(app, &ctx.project, &new_flow).await?;
         for d in s.store.list_documents(flow.id).await? {
             let rel = ws_doc_path(&spec, flow.issue_iid, d.doc_type);

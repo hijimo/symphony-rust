@@ -3,6 +3,7 @@ import type { ResponseData } from '../types';
 import type {
   ContextStatus,
   DocTemplate,
+  SdlcMetrics,
   ProjectDocTemplate,
   SavedDocTemplate,
   TemplateTrialResult,
@@ -267,5 +268,10 @@ export async function trialDocTemplate(
     { content, sample },
     { timeout: 15 * 60 * 1000 },
   );
+  return res.data.data;
+}
+
+export async function getSdlcMetrics(projectId: number, days = 30): Promise<SdlcMetrics> {
+  const res = await client.get<ResponseData<SdlcMetrics>>(`/projects/${projectId}/sdlc/metrics`, { params: { days } });
   return res.data.data;
 }

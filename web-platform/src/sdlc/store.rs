@@ -680,6 +680,131 @@ pub struct TokenTotals {
     pub total: i64,
 }
 
+/// A recorded document-flow event (P2 §4 B5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlowEvent {
+    pub flow_id: i64,
+    pub kind: String,
+    pub doc_type: Option<String>,
+    /// `YYYY-MM-DD HH:MM:SS` UTC.
+    pub created_at: String,
+}
+
+/// First approval time per (flow, gate), `YYYY-MM-DD HH:MM:SS` UTC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstApproval {
+    pub flow_id: i64,
+    pub gate: String,
+    pub created_at: String,
+}
+
+impl SdlcStore {
+    pub async fn add_flow_event(
+        &self,
+        flow_id: i64,
+        kind: &str,
+        doc: Option<DocType>,
+        actor: Option<i64>,
+    ) -> Result<()> {
+        let kind = kind.to_string();
+        blocking(self.pool.clone(), move |c| {
+            c.execute(
+                "INSERT INTO flow_events (flow_id, kind, doc_type, actor) VALUES (?1, ?2, ?3, ?4)",
+                params![flow_id, kind, doc.map(|d| d.as_str()), actor],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// All flow events of a project, oldest first.
+    pub async fn project_flow_events(&self, project_id: i64) -> Result<Vec<FlowEvent>> {
+        blocking(self.pool.clone(), move |c| {
+            let mut stmt = c.prepare(
+                "SELECT e.flow_id, e.kind, e.doc_type, e.created_at FROM flow_events e
+                 JOIN change_flows f ON f.id = e.flow_id
+                 WHERE f.project_id = ?1 ORDER BY e.created_at, e.id",
+            )?;
+            let rows = stmt.query_map(params![project_id], |r| {
+                Ok(FlowEvent {
+                    flow_id: r.get(0)?,
+                    kind: r.get(1)?,
+                    doc_type: r.get(2)?,
+                    created_at: r.get(3)?,
+                })
+            })?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+        .await
+    }
+
+    /// Distinct flows with a G1 decision of `action` since `since`.
+    pub async fn count_gate_decisions(
+        &self,
+        project_id: i64,
+        gate: &'static str,
+        action: &'static str,
+        since: String,
+    ) -> Result<i64> {
+        blocking(self.pool.clone(), move |c| {
+            Ok(c.query_row(
+                "SELECT COUNT(DISTINCT d.flow_id) FROM document_approvals a
+                 JOIN change_documents d ON d.id = a.document_id
+                 JOIN change_flows f ON f.id = d.flow_id
+                 WHERE f.project_id = ?1 AND a.gate = ?2 AND a.action = ?3 AND a.created_at >= ?4",
+                params![project_id, gate, action, since],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+    }
+
+    /// First `approve` per (flow, gate) of a project.
+    pub async fn first_approvals(&self, project_id: i64) -> Result<Vec<FirstApproval>> {
+        blocking(self.pool.clone(), move |c| {
+            let mut stmt = c.prepare(
+                "SELECT d.flow_id, a.gate, MIN(a.created_at) FROM document_approvals a
+                 JOIN change_documents d ON d.id = a.document_id
+                 JOIN change_flows f ON f.id = d.flow_id
+                 WHERE f.project_id = ?1 AND a.action = 'approve'
+                 GROUP BY d.flow_id, a.gate",
+            )?;
+            let rows = stmt.query_map(params![project_id], |r| {
+                Ok(FirstApproval {
+                    flow_id: r.get(0)?,
+                    gate: r.get(1)?,
+                    created_at: r.get(2)?,
+                })
+            })?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+        .await
+    }
+
+    /// Drafting token usage of a project since `since` (RFC 3339 UTC).
+    pub async fn project_token_usage(&self, project_id: i64, since: String) -> Result<TokenTotals> {
+        blocking(self.pool.clone(), move |c| {
+            Ok(c.query_row(
+                "SELECT COALESCE(SUM(u.input), 0), COALESCE(SUM(u.cached_input), 0), COALESCE(SUM(u.output), 0),
+                        COALESCE(SUM(u.reasoning), 0), COALESCE(SUM(u.total), 0)
+                 FROM agent_token_usage u JOIN change_flows f ON f.id = u.flow_id
+                 WHERE f.project_id = ?1 AND u.created_at >= ?2",
+                params![project_id, since],
+                |r| {
+                    Ok(TokenTotals {
+                        input: r.get(0)?,
+                        cached_input: r.get(1)?,
+                        output: r.get(2)?,
+                        reasoning: r.get(3)?,
+                        total: r.get(4)?,
+                    })
+                },
+            )?)
+        })
+        .await
+    }
+}
+
 /// Remove a flow (rollback of a failed start).
 pub async fn delete_flow(store: &SdlcStore, flow_id: i64) -> Result<()> {
     blocking(store.pool.clone(), move |c| {

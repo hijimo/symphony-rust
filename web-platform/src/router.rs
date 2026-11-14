@@ -273,6 +273,10 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
             get(change_docs::doc_templates),
         )
         .route(
+            "/api/projects/{id}/sdlc/metrics",
+            get(change_docs::sdlc_metrics),
+        )
+        .route(
             "/api/projects/{id}/doc-templates/{doc}",
             put(change_docs::save_doc_template),
         )

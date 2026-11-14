@@ -279,3 +279,14 @@ export type AgentEvent =
   | { type: 'error'; message: string }
   | { type: 'turn_completed'; status: string; error: string | null }
   | { type: 'lagged' };
+
+/** `GET /projects/{id}/sdlc/metrics` (P2 §4 B5). Rates are 0-1 or null. */
+export interface SdlcMetrics {
+  days: number;
+  intentSurvival: { accepted: number; rejected: number; rate: number | null };
+  designCycle: { count: number; medianHours: number | null; p90Hours: number | null };
+  rework: { count: number; flows: number };
+  firstPassMerge: { closed?: number; firstPass?: number; rate: number | null; partial?: boolean; error?: string };
+  planConformance: { closed?: number; conforming?: number; rate: number | null; error?: string };
+  draftTokens: TokenTotals;
+}
