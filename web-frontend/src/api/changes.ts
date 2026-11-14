@@ -5,6 +5,9 @@ import type {
   DocTemplate,
   GateApproverLists,
   GateKey,
+  ProjectDocTemplate,
+  SavedDocTemplate,
+  TemplateTrialResult,
   DocType,
   FileContent,
   FlowView,
@@ -254,5 +257,30 @@ export async function putGateApprovers(
   lists: Record<GateKey, number[]>,
 ): Promise<GateApproverLists> {
   const res = await client.put<ResponseData<GateApproverLists>>(`/projects/${projectId}/gate-approvers`, lists);
+  return res.data.data;
+}
+
+export async function getDocTemplates(projectId: number): Promise<ProjectDocTemplate[]> {
+  const res = await client.get<ResponseData<ProjectDocTemplate[]>>(`/projects/${projectId}/doc-templates`);
+  return res.data.data;
+}
+
+export async function saveDocTemplate(projectId: number, doc: DocType, content: string): Promise<SavedDocTemplate> {
+  const res = await client.put<ResponseData<SavedDocTemplate>>(`/projects/${projectId}/doc-templates/${doc}`, { content });
+  return res.data.data;
+}
+
+export async function trialDocTemplate(
+  projectId: number,
+  doc: DocType,
+  content: string,
+  sample: string,
+): Promise<TemplateTrialResult> {
+  // Drafting can take minutes (and may queue for a session slot).
+  const res = await client.post<ResponseData<TemplateTrialResult>>(
+    `/projects/${projectId}/doc-templates/${doc}/trial`,
+    { content, sample },
+    { timeout: 15 * 60 * 1000 },
+  );
   return res.data.data;
 }

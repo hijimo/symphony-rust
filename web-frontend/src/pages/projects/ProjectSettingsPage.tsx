@@ -23,6 +23,7 @@ import WorkflowEditor from '../../components/WorkflowEditor';
 import ServiceControlPanel from '../../components/ServiceControlPanel';
 import ProjectReposEditor from '../../components/projects/ProjectReposEditor';
 import GateApproversEditor from '../../components/projects/GateApproversEditor';
+import DocTemplatesEditor from '../../components/projects/DocTemplatesEditor';
 import { useAuthStore } from '../../store/auth';
 import ProjectTokenAlert from '../../components/projects/ProjectTokenAlert';
 import { getProject, updateProject, deleteProject, getServiceStatus, startService, stopService, restartService } from '../../api/projects';
@@ -382,6 +383,7 @@ export default function ProjectSettingsPage() {
             <Tab label="服务控制" />
             <Tab label="Agent 配置" />
             <Tab label="关联仓库" />
+            <Tab label="文档模板" />
             <Tab label="危险操作" />
           </Tabs>
 
@@ -653,8 +655,13 @@ export default function ProjectSettingsPage() {
             />
           </TabPanel>
 
-          {/* Tab 6: Danger Zone */}
+          {/* Tab 6: Document templates */}
           <TabPanel value={tab} index={5}>
+            {tab === 5 && <DocTemplatesEditor projectId={projectId} />}
+          </TabPanel>
+
+          {/* Tab 7: Danger Zone */}
+          <TabPanel value={tab} index={6}>
             <Box
               sx={{
                 p: 3,

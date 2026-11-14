@@ -131,7 +131,10 @@ async fn user_token(
 }
 
 /// Project token = creator's token (same as the orchestrator, §10.1).
-async fn project_token(app: &AppState, project: &Project) -> Result<String, WebPlatformError> {
+pub(crate) async fn project_token(
+    app: &AppState,
+    project: &Project,
+) -> Result<String, WebPlatformError> {
     let owner = project
         .created_by
         .ok_or_else(|| WebPlatformError::BadRequest("项目没有创建者，无法使用项目 Token".into()))?;
@@ -213,7 +216,7 @@ pub async fn project_token_status(app: &AppState, project: &Project, refresh: bo
     status
 }
 
-async fn client(
+pub(crate) async fn client(
     app: &AppState,
     project: &Project,
 ) -> Result<Arc<dyn GitPlatformClient>, WebPlatformError> {
@@ -221,7 +224,7 @@ async fn client(
     sdlc(app).platforms.client(project, &proxy).await
 }
 
-fn project_path(project: &Project) -> String {
+pub(crate) fn project_path(project: &Project) -> String {
     format!("{}/{}", project.namespace, project.repo_name)
 }
 
@@ -232,6 +235,17 @@ pub async fn workspace_spec(
     app: &AppState,
     project: &Project,
     flow: &ChangeFlow,
+) -> Result<WorkspaceSpec, WebPlatformError> {
+    project_workspace_spec(app, project, &flow.issue_iid.to_string(), &flow.branch).await
+}
+
+/// Workspace of the project's repositories under `key`, primary checked out
+/// on `branch` (created from the default branch when it does not exist).
+pub async fn project_workspace_spec(
+    app: &AppState,
+    project: &Project,
+    key: &str,
+    branch: &str,
 ) -> Result<WorkspaceSpec, WebPlatformError> {
     let token = project_token(app, project).await?;
     let factory = &sdlc(app).platforms;
@@ -254,10 +268,10 @@ pub async fn workspace_spec(
         .collect();
     Ok(WorkspaceSpec {
         project_id: project.id,
-        key: flow.issue_iid.to_string(),
+        key: key.to_string(),
         primary,
         secondaries,
-        branch: flow.branch.clone(),
+        branch: branch.to_string(),
         token: Some(token),
     })
 }
@@ -512,7 +526,7 @@ async fn comment_both(app: &AppState, project: &Project, flow: &ChangeFlow, body
     }
 }
 
-async fn username(app: &AppState, user_id: i64) -> String {
+pub(crate) async fn username(app: &AppState, user_id: i64) -> String {
     app.repo
         .find_by_id(user_id)
         .await
@@ -1938,7 +1952,7 @@ pub async fn revert(
 
 // --------------------------------------------------------------- drafting
 
-fn developer_instructions(writable: &str, doc: DocType) -> String {
+pub(crate) fn developer_instructions(writable: &str, doc: DocType) -> String {
     format!(
         "You are working inside Symphony's document workbench.\n\
          - You may read any file in the workspace (all repositories, full history).\n\
