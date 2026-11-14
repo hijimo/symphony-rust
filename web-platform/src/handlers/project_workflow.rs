@@ -56,6 +56,10 @@ pub async fn get_workflow(
             testing_max_turns: Some(project.testing_max_turns),
             repos,
             validation_gate: project.validation_gate,
+            ai_review: templates::AiReviewSettings {
+                enabled: project.ai_review_enabled,
+                block_important: project.ai_review_block,
+            },
         };
         templates::render_template(&ctx)
     };
@@ -136,6 +140,10 @@ pub async fn update_workflow(
             testing_max_turns: Some(project.testing_max_turns),
             repos,
             validation_gate: project.validation_gate,
+            ai_review: templates::AiReviewSettings {
+                enabled: project.ai_review_enabled,
+                block_important: project.ai_review_block,
+            },
         };
         templates::render_template(&ctx)
     };
@@ -192,6 +200,10 @@ pub async fn reset_workflow(
         testing_max_turns: Some(project.testing_max_turns),
         repos,
         validation_gate: project.validation_gate,
+        ai_review: templates::AiReviewSettings {
+            enabled: project.ai_review_enabled,
+            block_important: project.ai_review_block,
+        },
     };
     let content = templates::render_template(&ctx);
 

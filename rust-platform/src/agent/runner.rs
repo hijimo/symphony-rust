@@ -1034,13 +1034,13 @@ impl AgentRunner {
         if !refresher.supports_workpad() || is_state(&issue.state, &["human review"]) {
             return;
         }
-        let ended_human_review = matches!(
-            refresher.refresh_issue_state(&issue.id).await,
-            Ok(Some(i)) if is_state(&i.state, &["human review"])
-        );
-        if !ended_human_review {
-            return;
-        }
+        let refreshed = match refresher.refresh_issue_state(&issue.id).await {
+            Ok(Some(i)) if is_state(&i.state, &["human review"]) => i,
+            _ => return,
+        };
+        let blocked_handoff = refreshed.labels.iter().any(|l| {
+            l == validation::LABEL_VALIDATION_BLOCKED || l == validation::LABEL_BLOCKED_ACCESS
+        });
         let Some(target) = super::change_docs::doc_target(
             &issue.identifier,
             &issue.id,
@@ -1112,14 +1112,33 @@ impl AgentRunner {
             // worker's token; the review uses its own, bounded by `timeout`.
             cancel: CancellationToken::new(),
         };
-        if let Some(outcome) = super::ai_review::run(refresher.as_ref(), &input).await {
-            tracing::info!(
-                issue_id = %issue.id,
-                round = outcome.round,
-                important = ?outcome.important,
-                nit = ?outcome.nit,
-                "AI review finished"
-            );
+        let Some(outcome) = super::ai_review::run(refresher.as_ref(), &input).await else {
+            return;
+        };
+        let decision = super::ai_review::block_decision(&service.review, &outcome, blocked_handoff);
+        tracing::info!(
+            issue_id = %issue.id,
+            round = outcome.round,
+            important = ?outcome.important,
+            nit = ?outcome.nit,
+            ?decision,
+            "AI review finished"
+        );
+        let unresolved = [super::ai_review::LABEL_UNRESOLVED.to_string()];
+        match decision {
+            super::ai_review::BlockDecision::SendBack => {
+                let _ = refresher.remove_labels(&issue.id, &unresolved).await;
+                if let Err(e) = refresher.set_issue_state(&issue.id, "In Progress").await {
+                    tracing::warn!(issue_id = %issue.id, error = %e, "AI review: moving back to In Progress failed");
+                }
+            }
+            super::ai_review::BlockDecision::Unresolved => {
+                let _ = refresher.add_labels(&issue.id, &unresolved).await;
+            }
+            super::ai_review::BlockDecision::Clear => {
+                let _ = refresher.remove_labels(&issue.id, &unresolved).await;
+            }
+            super::ai_review::BlockDecision::Keep => {}
         }
     }
 

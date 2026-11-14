@@ -543,12 +543,17 @@ struct PlanRefresher {
     workpad: Mutex<String>,
     added: Mutex<Vec<String>>,
     pr_comments: Mutex<Vec<String>>,
+    states: Mutex<Vec<String>>,
 }
 
 #[async_trait]
 impl IssueStateRefresher for PlanRefresher {
     async fn refresh_issue_state(&self, id: &str) -> Result<Option<AgentIssue>, String> {
         Ok(Some(issue(id, "Human Review", None)))
+    }
+    async fn set_issue_state(&self, _id: &str, state: &str) -> Result<(), String> {
+        self.states.lock().unwrap().push(state.to_string());
+        Ok(())
     }
     fn is_terminal_state(&self, _s: &str) -> bool {
         false
@@ -661,10 +666,10 @@ async fn development_run_handing_off_runs_plan_deviation_check() {
         .contains("### Symphony plan check"));
 }
 
-#[tokio::test]
-async fn review_enabled_run_posts_ai_review_after_plan_check() {
-    let _g = ENV_LOCK.lock().await;
-    let e = env();
+async fn run_reviewed_issue(
+    e: &Env,
+    review: symphony_platform::config::ReviewConfig,
+) -> Arc<PlanRefresher> {
     let bare = e.host.join("acme/app.git");
     std::fs::create_dir_all(&bare).unwrap();
     git(&bare, &["init", "--bare", "-q", "--initial-branch=main"]);
@@ -690,14 +695,10 @@ async fn review_enabled_run_posts_ai_review_after_plan_check() {
         bare.display()
     );
     let r = runner(
-        &e,
+        e,
         ServiceConfig {
             tracker_project_slug: "acme/app".into(),
-            review: symphony_platform::config::ReviewConfig {
-                enabled: true,
-                timeout_ms: 20_000,
-                ..Default::default()
-            },
+            review,
             ..ServiceConfig::default()
         },
         &agent,
@@ -707,6 +708,26 @@ async fn review_enabled_run_posts_ai_review_after_plan_check() {
     r.run_attempt(issue("62", "In Progress", None), None, refresher.clone())
         .await
         .unwrap();
+    refresher
+}
+
+#[tokio::test]
+async fn review_enabled_run_posts_ai_review_after_plan_check() {
+    let _g = ENV_LOCK.lock().await;
+    let e = env();
+    let refresher = run_reviewed_issue(
+        &e,
+        symphony_platform::config::ReviewConfig {
+            enabled: true,
+            timeout_ms: 20_000,
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(
+        refresher.states.lock().unwrap().is_empty(),
+        "not blocking by default"
+    );
 
     let comments = refresher.pr_comments.lock().unwrap().clone();
     assert_eq!(comments.len(), 2, "plan check + AI review: {comments:?}");
@@ -741,5 +762,25 @@ async fn review_enabled_run_posts_ai_review_after_plan_check() {
     assert!(
         dev.contains("计划外的改动"),
         "plan check passed to the reviewer"
+    );
+}
+
+#[tokio::test]
+async fn blocking_review_sends_important_findings_back_to_in_progress() {
+    let _g = ENV_LOCK.lock().await;
+    let e = env();
+    let refresher = run_reviewed_issue(
+        &e,
+        symphony_platform::config::ReviewConfig {
+            enabled: true,
+            block_on: symphony_platform::config::ReviewBlockOn::Important,
+            max_rounds: 2,
+            timeout_ms: 20_000,
+        },
+    )
+    .await;
+    assert_eq!(
+        refresher.states.lock().unwrap().as_slice(),
+        &["In Progress".to_string()]
     );
 }

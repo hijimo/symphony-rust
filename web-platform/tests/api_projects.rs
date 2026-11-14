@@ -350,6 +350,51 @@ async fn test_update_project_validation_config_round_trips() {
 }
 
 #[tokio::test]
+async fn test_update_project_ai_review_settings_round_trip_into_workflow() {
+    let app = common::TestApp::new().await;
+    let create_body = app
+        .create_test_project("https://github.com/owner/review-proj", &app.admin_token)
+        .await;
+    let project_id = app.get_project_id(&create_body);
+    assert_eq!(
+        create_body["data"]["aiReviewEnabled"], false,
+        "off by default"
+    );
+
+    let resp = app
+        .put(
+            &format!("/api/projects/{}", project_id),
+            &json!({"ai_review_enabled": true, "ai_review_block": true}),
+            Some(&app.admin_token),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = app
+        .get(
+            &format!("/api/projects/{}", project_id),
+            Some(&app.admin_token),
+        )
+        .await;
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["data"]["aiReviewEnabled"], true);
+    assert_eq!(body["data"]["aiReviewBlock"], true);
+
+    let resp = app
+        .get(
+            &format!("/api/projects/{}/workflow", project_id),
+            Some(&app.admin_token),
+        )
+        .await;
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let content = body["data"]["content"].as_str().unwrap();
+    assert!(
+        content.contains("\nreview:\n  enabled: true\n  block_on: important\n---\n"),
+        "{content}"
+    );
+}
+
+#[tokio::test]
 async fn test_update_project_member_forbidden() {
     let app = common::TestApp::new().await;
 

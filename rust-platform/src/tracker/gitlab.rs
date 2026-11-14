@@ -171,8 +171,10 @@ impl Tracker for GitlabTrackerAdapter {
     }
 
     async fn set_workflow_state(&self, issue_id: &str, state: &str) -> Result<(), TrackerError> {
+        // Callers pass display names ("Human Review"); platform adapters key
+        // workflow states by the normalized form ("human_review").
         self.platform
-            .set_workflow_state(parse_issue_id(issue_id)?, state)
+            .set_workflow_state(parse_issue_id(issue_id)?, &normalize_tracker_state(state))
             .await
             .map_err(platform_error_to_tracker_error)
     }

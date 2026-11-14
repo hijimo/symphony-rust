@@ -109,6 +109,10 @@ export interface Project {
   testing_max_turns: number;
   /** Deterministic self-verification gate (default false). */
   validation_gate?: boolean;
+  /** AI review of PRs before human review (default false). */
+  ai_review_enabled?: boolean;
+  /** Important AI review findings send the issue back to In Progress. */
+  ai_review_block?: boolean;
 }
 
 export interface ProjectMember {
@@ -157,6 +161,8 @@ export interface UpdateProjectParams {
   testing_enabled?: boolean;
   testing_max_turns?: number;
   validation_gate?: boolean;
+  ai_review_enabled?: boolean;
+  ai_review_block?: boolean;
 }
 
 export interface AddMemberParams {
