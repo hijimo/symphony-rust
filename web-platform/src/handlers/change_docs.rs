@@ -368,6 +368,11 @@ pub async fn list_templates(
 ) -> ApiResult {
     let (_, flow, spec, _) = flow_spec(&state, &claims, project_id, iid).await?;
     let root = state.sdlc.workspaces.primary_dir(&spec);
+    let org = state
+        .sdlc
+        .org_config
+        .project_templates(&state.repo, project_id)
+        .await?;
     // Each document keeps the variant it was created with (incident intent).
     let docs = state.sdlc.store.list_documents(flow.id).await?;
     let list: Vec<_> = DocType::ALL
@@ -381,6 +386,7 @@ pub async fn list_templates(
             templates::resolve(
                 templates::TemplateKey::of_template_ref(*d, &tref),
                 Some(&root),
+                org.as_ref(),
             )
         })
         .collect();

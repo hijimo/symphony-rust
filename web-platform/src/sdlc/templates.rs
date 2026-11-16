@@ -1,8 +1,9 @@
 //! Document templates (§5): built-in defaults based on the Playbook, optionally
 //! overridden by `docs/changes/_templates/<doc>.md` in the primary repository.
-//! Organisation-level templates (codex-org-config) are not in phase 1.
+//! Between the two sits the organization rules repository's
+//! `templates/<doc>.md` (P3 design §4 O3).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -86,9 +87,9 @@ pub struct DocTemplate {
     pub doc_type: DocType,
     /// `intent`, `spec`, `plan` or `intent.incident`.
     pub key: String,
-    /// `builtin` or `project`.
+    /// `builtin`, `org` or `project`.
     pub source: String,
-    /// e.g. `spec@1` or `spec@project:<hash8>`.
+    /// e.g. `spec@1`, `spec@org:<sha8>` or `spec@project:<hash8>`.
     pub template_ref: String,
     pub skeleton: String,
     pub prompt: String,
@@ -191,10 +192,40 @@ fn split_front_matter(text: &str) -> Option<(&str, &str)> {
 /// skeleton. Without that key the whole text is the skeleton.
 pub fn from_project_text(key: impl Into<TemplateKey>, text: &str) -> Result<DocTemplate, String> {
     let key = key.into();
-    let mut tpl = builtin(key);
     let hash = super::content::content_version(text.as_bytes());
-    tpl.source = "project".to_string();
-    tpl.template_ref = format!("{}@project:{}", key.as_str(), &hash[..8]);
+    parse_text(
+        key,
+        text,
+        "project",
+        format!("{}@project:{}", key.as_str(), &hash[..8]),
+    )
+}
+
+/// Organization template (same format as a project template) of the
+/// organization rules version `sha`.
+pub fn from_org_text(
+    key: impl Into<TemplateKey>,
+    text: &str,
+    sha: &str,
+) -> Result<DocTemplate, String> {
+    let key = key.into();
+    parse_text(
+        key,
+        text,
+        "org",
+        format!("{}@org:{}", key.as_str(), &sha[..sha.len().min(8)]),
+    )
+}
+
+fn parse_text(
+    key: TemplateKey,
+    text: &str,
+    source: &str,
+    template_ref: String,
+) -> Result<DocTemplate, String> {
+    let mut tpl = builtin(key);
+    tpl.source = source.to_string();
+    tpl.template_ref = template_ref;
     tpl.skeleton = text.to_string();
     let Some((yaml, body)) = split_front_matter(text) else {
         return Ok(tpl);
@@ -250,9 +281,22 @@ pub fn editable_text(tpl: &DocTemplate) -> String {
     format!("---\n{yaml}---\n{}", tpl.skeleton)
 }
 
+/// Organization templates of one organization rules version:
+/// `<export>/templates/<key>.md` (P3 design §4 O3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrgTemplates {
+    pub dir: PathBuf,
+    pub sha: String,
+}
+
 /// Resolve the effective template: project override when
-/// `<repo_root>/docs/changes/_templates/<doc>.md` exists, else built-in.
-pub fn resolve(key: impl Into<TemplateKey>, repo_root: Option<&Path>) -> DocTemplate {
+/// `<repo_root>/docs/changes/_templates/<doc>.md` exists, else the
+/// organization template, else built-in.
+pub fn resolve(
+    key: impl Into<TemplateKey>,
+    repo_root: Option<&Path>,
+    org: Option<&OrgTemplates>,
+) -> DocTemplate {
     let key = key.into();
     if let Some(root) = repo_root {
         let path = root.join(TEMPLATES_DIR).join(key.file_name());
@@ -262,7 +306,22 @@ pub fn resolve(key: impl Into<TemplateKey>, repo_root: Option<&Path>) -> DocTemp
             }
         }
     }
-    builtin(key)
+    resolve_org(key, org).unwrap_or_else(|| builtin(key))
+}
+
+/// Organization template, `None` when missing, empty or invalid.
+pub fn resolve_org(key: impl Into<TemplateKey>, org: Option<&OrgTemplates>) -> Option<DocTemplate> {
+    let key = key.into();
+    let org = org?;
+    let text = std::fs::read_to_string(org.dir.join(key.file_name())).ok()?;
+    if text.trim().is_empty() {
+        return None;
+    }
+    from_org_text(key, &text, &org.sha)
+        .map_err(|e| {
+            tracing::warn!(template = %key.as_str(), "ignoring invalid organization template: {e}");
+        })
+        .ok()
 }
 
 /// Project template from file text; `None` (built-in applies) when empty or
@@ -281,10 +340,10 @@ pub fn resolve_text(key: impl Into<TemplateKey>, text: &str) -> Option<DocTempla
     }
 }
 
-pub fn all(repo_root: Option<&Path>) -> Vec<DocTemplate> {
+pub fn all(repo_root: Option<&Path>, org: Option<&OrgTemplates>) -> Vec<DocTemplate> {
     DocType::ALL
         .iter()
-        .map(|d| resolve(*d, repo_root))
+        .map(|d| resolve(*d, repo_root, org))
         .collect()
 }
 
@@ -301,7 +360,7 @@ mod tests {
     #[test]
     fn builtin_skeletons_contain_required_sections() {
         for d in DocType::ALL {
-            let t = resolve(d, None);
+            let t = resolve(d, None, None);
             assert_eq!(t.source, "builtin");
             for req in content::required_sections(d) {
                 assert!(
@@ -311,7 +370,7 @@ mod tests {
             }
             assert!(!t.checklist.is_empty());
         }
-        assert!(resolve(DocType::Spec, None)
+        assert!(resolve(DocType::Spec, None, None)
             .prompt
             .starts_with("Read the attached intent.md"));
     }
@@ -320,7 +379,7 @@ mod tests {
     fn empty_skeleton_fails_validation() {
         // A fresh skeleton must not pass submit validation.
         for d in DocType::ALL {
-            let t = resolve(d, None);
+            let t = resolve(d, None, None);
             assert!(!content::validate(d, &t.skeleton, &[]).is_empty());
         }
     }
@@ -331,11 +390,62 @@ mod tests {
         let tdir = dir.path().join(TEMPLATES_DIR);
         std::fs::create_dir_all(&tdir).unwrap();
         std::fs::write(tdir.join("plan.md"), "# Plan: <title>\n## Files\n").unwrap();
-        let t = resolve(DocType::Plan, Some(dir.path()));
+        let t = resolve(DocType::Plan, Some(dir.path()), None);
         assert_eq!(t.source, "project");
         assert!(t.template_ref.starts_with("plan@project:"));
         assert_eq!(render_skeleton(&t, "X"), "# Plan: X\n## Files\n");
-        assert_eq!(resolve(DocType::Spec, Some(dir.path())).source, "builtin");
+        assert_eq!(
+            resolve(DocType::Spec, Some(dir.path()), None).source,
+            "builtin"
+        );
+    }
+
+    #[test]
+    fn organization_layer_sits_between_project_and_builtin() {
+        let dir = tempfile::tempdir().unwrap();
+        let org = OrgTemplates {
+            dir: dir.path().join("org/templates"),
+            sha: "0123456789abcdef0123456789abcdef01234567".into(),
+        };
+        std::fs::create_dir_all(&org.dir).unwrap();
+        std::fs::write(org.dir.join("plan.md"), PLAN_WITH_FM).unwrap();
+        std::fs::write(org.dir.join("intent.incident.md"), "# Incident <title>\n").unwrap();
+        std::fs::write(org.dir.join("spec.md"), "  \n").unwrap();
+        std::fs::write(
+            org.dir.join("intent.md"),
+            "---\nsymphony_template: [\n---\nx",
+        )
+        .unwrap();
+
+        let t = resolve(DocType::Plan, None, Some(&org));
+        assert_eq!(t.source, "org");
+        assert_eq!(t.template_ref, "plan@org:01234567");
+        assert_eq!(t.prompt, "Write a short plan.\n");
+        assert_eq!(t.checklist, ["是否列出回滚步骤？"]);
+        assert!(t.skeleton.starts_with("# Plan: <title>"));
+        let t = resolve(TemplateKey::INCIDENT, None, Some(&org));
+        assert_eq!(t.template_ref, "intent.incident@org:01234567");
+        assert_eq!(
+            TemplateKey::of_template_ref(DocType::Intent, &t.template_ref),
+            TemplateKey::INCIDENT
+        );
+        // Empty or invalid organization templates fall back to built-in.
+        assert_eq!(resolve(DocType::Spec, None, Some(&org)).source, "builtin");
+        assert_eq!(resolve(DocType::Intent, None, Some(&org)).source, "builtin");
+
+        // The project template wins over the organization one.
+        let tdir = dir.path().join(TEMPLATES_DIR);
+        std::fs::create_dir_all(&tdir).unwrap();
+        std::fs::write(tdir.join("plan.md"), "# Plan: <title>\n## Files\n").unwrap();
+        assert_eq!(
+            resolve(DocType::Plan, Some(dir.path()), Some(&org)).source,
+            "project"
+        );
+        let sources: Vec<String> = all(Some(dir.path()), Some(&org))
+            .into_iter()
+            .map(|t| t.source)
+            .collect();
+        assert_eq!(sources, ["builtin", "builtin", "project"]);
     }
 
     const PLAN_WITH_FM: &str = "---\nsymphony_template:\n  prompt: |\n    Write a short plan.\n  checklist:\n    - 是否列出回滚步骤？\n---\n# Plan: <title>\n\n## Files\n\n## Steps\n\n## Tests\n\n## Risks\n\n## Alternatives considered\n";
@@ -368,7 +478,7 @@ mod tests {
         let tdir = dir.path().join(TEMPLATES_DIR);
         std::fs::create_dir_all(&tdir).unwrap();
         std::fs::write(tdir.join("plan.md"), PLAN_WITH_FM).unwrap();
-        let t = resolve(DocType::Plan, Some(dir.path()));
+        let t = resolve(DocType::Plan, Some(dir.path()), None);
         assert_eq!(t.prompt, "Write a short plan.\n");
         assert!(t.skeleton.starts_with("# Plan: <title>"));
     }
@@ -416,7 +526,7 @@ mod tests {
         );
         assert_eq!(TemplateKey::ALL.len(), 4);
 
-        let t = resolve(TemplateKey::INCIDENT, None);
+        let t = resolve(TemplateKey::INCIDENT, None, None);
         assert_eq!(t.doc_type, DocType::Intent);
         assert_eq!(t.key, "intent.incident");
         assert_eq!(t.template_ref, "intent.incident@1");
@@ -457,13 +567,16 @@ mod tests {
         let tdir = dir.path().join(TEMPLATES_DIR);
         std::fs::create_dir_all(&tdir).unwrap();
         std::fs::write(tdir.join("intent.incident.md"), "# Incident\n## Problem\n").unwrap();
-        let t = resolve(k, Some(dir.path()));
+        let t = resolve(k, Some(dir.path()), None);
         assert_eq!(t.source, "project");
         assert!(
             t.template_ref.starts_with("intent.incident@project:"),
             "{}",
             t.template_ref
         );
-        assert_eq!(resolve(DocType::Intent, Some(dir.path())).source, "builtin");
+        assert_eq!(
+            resolve(DocType::Intent, Some(dir.path()), None).source,
+            "builtin"
+        );
     }
 }

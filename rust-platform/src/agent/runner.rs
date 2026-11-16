@@ -1099,6 +1099,11 @@ impl AgentRunner {
                     .unzip(),
                 _ => (Vec::new(), Vec::new()),
             };
+        // web-platform points CODEX_HOME at the organization rules and sets
+        // SYMPHONY_ORG_CONFIG_SHA when they are in use (P3 O2/O3).
+        let org_home = std::env::var_os("SYMPHONY_ORG_CONFIG_SHA")
+            .and(std::env::var_os("CODEX_HOME"))
+            .map(std::path::PathBuf::from);
         let input = super::ai_review::ReviewInput {
             issue_id: &issue.id,
             repos: &review_repos,
@@ -1108,6 +1113,7 @@ impl AgentRunner {
             docs: &docs,
             doc_refs: &doc_refs,
             plan_check: plan_report,
+            org_home: org_home.as_deref(),
             // The issue is no longer active, so reconciliation may cancel the
             // worker's token; the review uses its own, bounded by `timeout`.
             cancel: CancellationToken::new(),

@@ -50,6 +50,11 @@ fn check(key: TemplateKey, content: &str) -> Result<templates::DocTemplate, WebP
 /// Effective templates with their source and editable text (`content`).
 pub async fn effective(app: &AppState, project: &Project) -> Result<Vec<Value>, WebPlatformError> {
     let spec = project_workspace_spec(app, project, "doc-templates", "unused").await?;
+    let org = app
+        .sdlc
+        .org_config
+        .project_templates(&app.repo, project.id)
+        .await?;
     let mut out = Vec::new();
     for key in TemplateKey::ALL {
         let raw = app
@@ -61,7 +66,7 @@ pub async fn effective(app: &AppState, project: &Project) -> Result<Vec<Value>, 
         let (tpl, content) = match (project_tpl, raw) {
             (Some(t), Some(raw)) => (t, raw),
             _ => {
-                let t = templates::resolve(key, None);
+                let t = templates::resolve(key, None, org.as_ref());
                 let text = templates::editable_text(&t);
                 (t, text)
             }

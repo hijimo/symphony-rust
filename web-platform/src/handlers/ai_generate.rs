@@ -330,7 +330,7 @@ RULES:
 /// The body follows the built-in intent skeleton so the draft passes the
 /// required-section check used at submit time.
 fn build_intent_system_prompt(project_name: &str, repo_name: &str, author: &str) -> String {
-    let skeleton = crate::sdlc::templates::resolve(crate::sdlc::model::DocType::Intent, None)
+    let skeleton = crate::sdlc::templates::resolve(crate::sdlc::model::DocType::Intent, None, None)
         .skeleton
         .replace("<title>", "[same title as the 标题 line]");
     format!(

@@ -115,6 +115,9 @@ async fn apply_org_codex_home(
     )
     .await?
     {
+        if let Some(sha) = home.file_name() {
+            cmd.env("SYMPHONY_ORG_CONFIG_SHA", sha);
+        }
         cmd.env("CODEX_HOME", home);
     }
     Ok(())

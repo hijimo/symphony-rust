@@ -110,7 +110,13 @@ export default function DocTemplatesEditor({ projectId }: { projectId: number })
           data-testid="template-source"
           color={current?.source === 'project' ? 'primary' : 'default'}
           variant="outlined"
-          label={current?.source === 'project' ? `项目模板 · ${current.path}` : '内置模板'}
+          label={
+            current?.source === 'project'
+              ? `项目模板 · ${current.path}`
+              : current?.source === 'org'
+                ? `组织模板 · ${current.templateRef}`
+                : '内置模板'
+          }
         />
       </Box>
 
