@@ -179,19 +179,34 @@ async fn incident_intent_template_is_listed_and_saved_under_its_own_file() {
             json!({"content": content.replace("## Anomaly and evidence", "## Evidence")}),
         )
         .await;
-    assert_eq!(st, StatusCode::BAD_REQUEST, "evidence section is required: {v}");
+    assert_eq!(
+        st,
+        StatusCode::BAD_REQUEST,
+        "evidence section is required: {v}"
+    );
     let edited = content.replace("## Open questions", "## Timeline\n\n## Open questions");
     let (st, v) = app
-        .put(&format!("{}/intent.incident", templates_url(&app)), json!({"content": edited}))
+        .put(
+            &format!("{}/intent.incident", templates_url(&app)),
+            json!({"content": edited}),
+        )
         .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     let branch = v["data"]["branch"].as_str().unwrap();
     assert_eq!(
-        read_branch_file(&app.bare, branch, "docs/changes/_templates/intent.incident.md").as_deref(),
+        read_branch_file(
+            &app.bare,
+            branch,
+            "docs/changes/_templates/intent.incident.md"
+        )
+        .as_deref(),
         Some(edited.as_str())
     );
     let (st, _) = app
-        .put(&format!("{}/spec.incident", templates_url(&app)), json!({"content": "x"}))
+        .put(
+            &format!("{}/spec.incident", templates_url(&app)),
+            json!({"content": "x"}),
+        )
         .await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
 }
