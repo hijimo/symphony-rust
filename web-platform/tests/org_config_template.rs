@@ -39,7 +39,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
         .current_dir(dir)
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -58,7 +62,12 @@ async fn template_passes_the_export_checks_and_builds_a_codex_home() {
     let ws = WorkspaceService::new(tmp.path().to_str().unwrap());
     export_commit(&ws, &root, &git_dir, &sha).await.unwrap();
     let home = build_home(&root, &sha, &tmp.path().join("base")).unwrap();
-    for f in ["AGENTS.md", "REVIEW.md", "config.toml", "skills/security-policy/SKILL.md"] {
+    for f in [
+        "AGENTS.md",
+        "REVIEW.md",
+        "config.toml",
+        "skills/security-policy/SKILL.md",
+    ] {
         assert!(home.join(f).is_file(), "{f}");
     }
 }
