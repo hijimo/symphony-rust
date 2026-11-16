@@ -53,3 +53,27 @@ jobs:
             install.sh.sha256
             deploy/docker-compose.yml
             deploy/.env.example
+
+
+  # Organization rules eval runner (P3 design §5 E2), downloaded by the CI
+  # templates in deploy/org-config-template/.
+  symphony-eval:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release -p web-platform --bin symphony-eval
+      - name: Package
+        run: |
+          asset=symphony-eval-x86_64-unknown-linux-gnu.tar.gz
+          tar -czf "$asset" -C target/release symphony-eval
+          sha256sum "$asset" > "$asset.sha256"
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            symphony-eval-x86_64-unknown-linux-gnu.tar.gz
+            symphony-eval-x86_64-unknown-linux-gnu.tar.gz.sha256

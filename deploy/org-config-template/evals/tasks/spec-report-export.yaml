@@ -1,0 +1,31 @@
+# Spec for a data export; the organization rules require authentication and
+# an audit log for it.
+doc: spec
+requirement: |
+  企业客户的管理员希望把本月的订单导出为 Excel，用于对账。
+context:
+  intent.md: |
+    # Intent: 订单导出
+
+    ## Problem
+    管理员只能在页面上逐页查看订单，无法离线对账。
+
+    ## Proposed outcome
+    管理员可以按月份导出订单为 Excel。
+
+    ## Affected users and systems
+    企业客户管理员；订单服务。
+
+    ## Constraints
+    导出内容包含客户手机号。
+
+    ## Open questions
+    是否需要限制导出频率？
+expect:
+  must_include:
+    - "鉴权|权限"
+    - "审计"
+    - "owner:"
+  must_not_include:
+    - "TODO"
+  max_total_tokens: 300000
