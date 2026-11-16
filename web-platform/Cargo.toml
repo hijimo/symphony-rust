@@ -2,6 +2,7 @@
 name = "web-platform"
 version = "0.1.0"
 edition = "2021"
+default-run = "web-platform"
 
 [dependencies]
 axum = { version = "0.8", features = ["macros", "ws"] }
@@ -42,6 +43,7 @@ sha2 = "0.11.0"
 notify = "6"
 serde_yaml = "0.9"
 toml = "0.8"
+tempfile = "3"
 
 [dev-dependencies]
 tokio-test = "0.4"

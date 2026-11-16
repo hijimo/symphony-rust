@@ -454,86 +454,7 @@ impl OrgConfigService {
 
     /// Export `sha` to its version directory after checking every entry.
     async fn export(&self, mirror: &Path, sha: &str) -> Result<(), String> {
-        let dest = self.version_dir(sha);
-        if dest.is_dir() {
-            return Ok(());
-        }
-        let listing = self
-            .workspaces
-            .git(mirror, &["ls-tree", "-r", "-l", "-z", sha], None)
-            .await
-            .map_err(|e| e.to_string())?;
-        let mut files = Vec::new();
-        let mut total = 0i64;
-        for entry in listing.split('\0').filter(|e| !e.is_empty()) {
-            // `<mode> <type> <object> <size>\t<path>`
-            let (meta, path) = entry.split_once('\t').ok_or("无法读取文件列表")?;
-            let parts: Vec<&str> = meta.split_whitespace().collect();
-            let (mode, kind, object, size) = (
-                parts[0],
-                parts[1],
-                parts[2],
-                parts.get(3).copied().unwrap_or("0"),
-            );
-            if mode == "120000" {
-                return Err(format!("不允许符号链接：{path}"));
-            }
-            if kind != "blob" {
-                return Err(format!("不允许子模块：{path}"));
-            }
-            let rel = Path::new(path);
-            if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
-                return Err(format!("路径无效：{path}"));
-            }
-            let name = rel
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if forbidden(&name) {
-                return Err(format!("仓库中不能有凭据文件：{path}"));
-            }
-            let size: i64 = size.parse().unwrap_or(0);
-            if size > MAX_FILE_BYTES {
-                return Err(format!("文件超过 1 MB：{path}"));
-            }
-            total += size;
-            if total > MAX_TOTAL_BYTES {
-                return Err("仓库内容超过 20 MB".to_string());
-            }
-            files.push((path.to_string(), object.to_string()));
-        }
-        let tmp = self
-            .root
-            .join(format!(".tmp-{sha}-{}", uuid::Uuid::new_v4().simple()));
-        let write = async {
-            for (path, object) in &files {
-                let bytes = blob(mirror, object).await?;
-                if let Some(m) = super::content::find_secret(&String::from_utf8_lossy(&bytes), &[])
-                {
-                    return Err(format!("{path} 疑似包含凭据（{m}）"));
-                }
-                let target = tmp.join(path);
-                if let Some(parent) = target.parent() {
-                    tokio::fs::create_dir_all(parent)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                }
-                tokio::fs::write(&target, &bytes)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
-            tokio::fs::create_dir_all(&tmp)
-                .await
-                .map_err(|e| e.to_string())?;
-            tokio::fs::rename(&tmp, &dest)
-                .await
-                .map_err(|e| e.to_string())
-        }
-        .await;
-        if write.is_err() {
-            let _ = tokio::fs::remove_dir_all(&tmp).await;
-        }
-        write
+        export_commit(&self.workspaces, &self.root, mirror, sha).await
     }
 
     /// Remove exports that are neither kept nor among the newest few.
@@ -796,6 +717,93 @@ pub async fn project_codex_home(
         .map_err(|e| WebPlatformError::Internal(e.to_string()))?
         .map_err(|e| WebPlatformError::Internal(format!("无法生成组织规则 CODEX_HOME：{e}")))?;
     Ok(Some(home))
+}
+
+/// Export commit `sha` of the repository at `git_dir` to `<root>/<sha>/`
+/// after checking every entry (no symlinks, submodules, credentials or
+/// oversized files); nothing from the repository is executed.
+pub async fn export_commit(
+    workspaces: &WorkspaceService,
+    root: &Path,
+    git_dir: &Path,
+    sha: &str,
+) -> Result<(), String> {
+    let dest = root.join(sha);
+    if dest.is_dir() {
+        return Ok(());
+    }
+    let listing = workspaces
+        .git(git_dir, &["ls-tree", "-r", "-l", "-z", sha], None)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut files = Vec::new();
+    let mut total = 0i64;
+    for entry in listing.split('\0').filter(|e| !e.is_empty()) {
+        // `<mode> <type> <object> <size>\t<path>`
+        let (meta, path) = entry.split_once('\t').ok_or("无法读取文件列表")?;
+        let parts: Vec<&str> = meta.split_whitespace().collect();
+        let (mode, kind, object, size) = (
+            parts[0],
+            parts[1],
+            parts[2],
+            parts.get(3).copied().unwrap_or("0"),
+        );
+        if mode == "120000" {
+            return Err(format!("不允许符号链接：{path}"));
+        }
+        if kind != "blob" {
+            return Err(format!("不允许子模块：{path}"));
+        }
+        let rel = Path::new(path);
+        if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
+            return Err(format!("路径无效：{path}"));
+        }
+        let name = rel
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if forbidden(&name) {
+            return Err(format!("仓库中不能有凭据文件：{path}"));
+        }
+        let size: i64 = size.parse().unwrap_or(0);
+        if size > MAX_FILE_BYTES {
+            return Err(format!("文件超过 1 MB：{path}"));
+        }
+        total += size;
+        if total > MAX_TOTAL_BYTES {
+            return Err("仓库内容超过 20 MB".to_string());
+        }
+        files.push((path.to_string(), object.to_string()));
+    }
+    let tmp = root.join(format!(".tmp-{sha}-{}", uuid::Uuid::new_v4().simple()));
+    let write = async {
+        for (path, object) in &files {
+            let bytes = blob(git_dir, object).await?;
+            if let Some(m) = super::content::find_secret(&String::from_utf8_lossy(&bytes), &[]) {
+                return Err(format!("{path} 疑似包含凭据（{m}）"));
+            }
+            let target = tmp.join(path);
+            if let Some(parent) = target.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            tokio::fs::write(&target, &bytes)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        tokio::fs::create_dir_all(&tmp)
+            .await
+            .map_err(|e| e.to_string())?;
+        tokio::fs::rename(&tmp, &dest)
+            .await
+            .map_err(|e| e.to_string())
+    }
+    .await;
+    if write.is_err() {
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+    write
 }
 
 /// Raw bytes of a blob in a bare repository.

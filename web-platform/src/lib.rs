@@ -5,6 +5,7 @@ pub mod config;
 pub mod crypto;
 pub mod db;
 pub mod error;
+pub mod eval;
 pub mod git_url;
 pub mod handlers;
 pub mod middleware;
