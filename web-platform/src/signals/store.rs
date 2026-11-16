@@ -487,4 +487,65 @@ mod tests {
         assert!(s.active_keys(p, "generic").await.unwrap().is_empty());
         assert!(s.list_keys(p).await.unwrap()[0].revoked_at.is_some());
     }
+
+    #[tokio::test]
+    async fn intent_claims_are_exclusive_and_reversible() {
+        let (_d, s, p) = store().await;
+        s.upsert(p, "generic", sig("a"), 10).await.unwrap();
+        let id = s.list(p, None).await.unwrap()[0].id;
+        let claimed = s.claim_for_intent(p, id, 900).await.unwrap().unwrap();
+        assert_eq!(
+            (claimed.status.as_str(), claimed.triaged_by),
+            ("intent", Some(900))
+        );
+        assert!(
+            s.claim_for_intent(p, id, 900).await.unwrap().is_none(),
+            "only once"
+        );
+        assert!(
+            s.claim_for_intent(p + 1, id, 900).await.unwrap().is_none(),
+            "other project"
+        );
+
+        s.release_claim(id).await.unwrap();
+        let back = s.get(p, id).await.unwrap().unwrap();
+        assert_eq!((back.status.as_str(), back.triaged_by), ("new", None));
+
+        s.claim_for_intent(p, id, 900).await.unwrap().unwrap();
+        let flow_id = {
+            let c = s.pool.get().unwrap();
+            c.execute(
+                "INSERT INTO change_flows (project_id, issue_iid, track, branch, created_by) VALUES (?1, 31, 'full', 'b', 900)",
+                params![p],
+            )
+            .unwrap();
+            c.last_insert_rowid()
+        };
+        s.link_intent(id, flow_id, 31).await.unwrap();
+        let upd = s.upsert(p, "generic", sig("a"), 10).await.unwrap();
+        assert!(
+            matches!(
+                upd,
+                Upsert::Updated {
+                    linked_issue: Some(31),
+                    ..
+                }
+            ),
+            "{upd:?}"
+        );
+        s.mark_recurred(id).await.unwrap();
+        let rec = s.get(p, id).await.unwrap().unwrap();
+        assert_eq!((rec.status.as_str(), rec.issue_iid), ("new", Some(31)));
+        assert!(
+            matches!(
+                s.upsert(p, "generic", sig("a"), 10).await.unwrap(),
+                Upsert::Updated {
+                    linked_issue: None,
+                    ..
+                }
+            ),
+            "recurred signals are untriaged again"
+        );
+        assert!(s.get(p + 1, id).await.unwrap().is_none());
+    }
 }
