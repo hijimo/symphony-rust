@@ -240,6 +240,7 @@ symphony-eval --org-config . --tasks evals/tasks --codex "codex app-server" \
 - 提供 `deploy/org-config-template/`：组织仓库的目录骨架（第 4 节各文件的示例）、`evals/tasks/` 的两个示例任务，以及 GitHub Actions 和 GitLab CI 各一份工作流：安装 Codex CLI 和 `symphony-eval`（从 Release 下载），模型凭据用 CI secret 注入，运行 eval 并把报告作为 PR 评论或产物。
 - “通过率下降先审再合”由组织仓库的分支保护实现：eval 检查设为必需，失败时需要指定审查人批准后才能合并。Symphony 只提供检查结果，不参与合并。
 - 文档说明如何从真实 issue 整理任务样本：去掉人名、客户名和内部地址，只保留需求本身。
+- Release 发布 `symphony-eval-x86_64-unknown-linux-gnu.tar.gz` 和对应的 `.sha256`（`release.yml` 的 `symphony-eval` 任务），两份 CI 模板下载后校验 sha256。`web-platform/tests/org_config_template.rs` 检查模板目录能通过同步时的导出检查、模板和任务有效、`config.toml` 没有被丢弃的项，以及工作流与 release 的资产名一致。
 
 ## 6. 数据与配置变更
 

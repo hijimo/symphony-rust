@@ -1,0 +1,13 @@
+# Incident intent from an alert: facts under evidence, no invented root cause.
+doc: intent.incident
+requirement: |
+  告警：结账接口 5xx 比例从 08:00 起超过 5%，持续 20 分钟，影响移动端下单。
+  告警链接：监控面板“checkout”。
+expect:
+  must_include:
+    - "## Anomaly and evidence"
+    - "08:00"
+    - "5xx"
+  must_not_include:
+    - "根因是"
+  max_total_tokens: 200000

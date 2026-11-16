@@ -1,0 +1,16 @@
+# Only model settings are used (decision D6). Anything else, e.g.
+# mcp_servers, sandbox_mode, approval_policy or shell_environment_policy,
+# is dropped and listed on the Symphony admin page.
+model = "gpt-5.5"
+model_reasoning_effort = "medium"
+
+# Example of an OpenAI-compatible gateway. `env_key` is the name of the
+# environment variable holding the key; the value is injected by the
+# deployment (`codex.env_passthrough`) or the CI secret, never stored here.
+# model_provider = "corp"
+#
+# [model_providers.corp]
+# name = "Corp gateway"
+# base_url = "https://llm-gateway.example.com/v1"
+# env_key = "CORP_LLM_API_KEY"
+# wire_api = "responses"

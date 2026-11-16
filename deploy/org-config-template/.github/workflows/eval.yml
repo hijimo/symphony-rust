@@ -1,0 +1,83 @@
+# Run symphony-eval on every change of the organization rules. Make the
+# `eval` check required in the branch protection of `main` so a drop in the
+# pass rate needs a reviewer's approval before merging.
+name: eval
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Install symphony-eval
+        shell: bash
+        env:
+          SYMPHONY_VERSION: ${{ vars.SYMPHONY_VERSION || 'latest' }}
+        run: |
+          asset=symphony-eval-x86_64-unknown-linux-gnu.tar.gz
+          if [ "$SYMPHONY_VERSION" = latest ]; then
+            base=https://github.com/hijimo/symphony-rust/releases/latest/download
+          else
+            base=https://github.com/hijimo/symphony-rust/releases/download/$SYMPHONY_VERSION
+          fi
+          curl -fsSL -o "$asset" "$base/$asset"
+          curl -fsSL -o "$asset.sha256" "$base/$asset.sha256"
+          sha256sum -c "$asset.sha256"
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf "$asset" -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Codex login
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: printenv OPENAI_API_KEY | codex login --with-api-key
+
+      - name: Run eval
+        shell: bash
+        run: |
+          args=()
+          if [ -f evals/baseline.json ]; then args+=(--baseline evals/baseline.json); fi
+          symphony-eval --org-config . --out eval-report.json "${args[@]}" | tee eval-summary.txt
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: |
+            eval-report.json
+            eval-summary.txt
+          if-no-files-found: ignore
+
+      - name: Comment on the pull request
+        if: always() && github.event_name == 'pull_request' && hashFiles('eval-summary.txt') != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo '### symphony-eval'
+            echo
+            echo '```'
+            cat eval-summary.txt
+            echo '```'
+          } > comment.md
+          gh pr comment "$PR" --body-file comment.md

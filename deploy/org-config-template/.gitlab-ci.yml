@@ -1,0 +1,40 @@
+# Run symphony-eval on every merge request of the organization rules. Enable
+# "Pipelines must succeed" so a drop in the pass rate needs an approval rule
+# reviewer before merging. Set OPENAI_API_KEY as a masked CI/CD variable.
+eval:
+  image: node:22-bookworm
+  stage: test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "web"
+  variables:
+    SYMPHONY_VERSION: latest
+  timeout: 1h
+  before_script:
+    - npm install -g @openai/codex
+    - |
+      asset=symphony-eval-x86_64-unknown-linux-gnu.tar.gz
+      if [ "$SYMPHONY_VERSION" = latest ]; then
+        base=https://github.com/hijimo/symphony-rust/releases/latest/download
+      else
+        base=https://github.com/hijimo/symphony-rust/releases/download/$SYMPHONY_VERSION
+      fi
+      curl -fsSL -o "$asset" "$base/$asset"
+      curl -fsSL -o "$asset.sha256" "$base/$asset.sha256"
+      sha256sum -c "$asset.sha256"
+      tar -xzf "$asset" -C /usr/local/bin
+    - printenv OPENAI_API_KEY | codex login --with-api-key
+  script:
+    - |
+      set -o pipefail
+      if [ -f evals/baseline.json ]; then
+        symphony-eval --org-config . --out eval-report.json --baseline evals/baseline.json | tee eval-summary.txt
+      else
+        symphony-eval --org-config . --out eval-report.json | tee eval-summary.txt
+      fi
+  artifacts:
+    when: always
+    paths:
+      - eval-report.json
+      - eval-summary.txt
+    expire_in: 30 days
