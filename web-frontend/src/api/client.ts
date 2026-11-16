@@ -48,7 +48,9 @@ client.interceptors.response.use(
       return Promise.reject(error);
     }
     if (error.response?.status === 429) {
-      return Promise.reject(new Error('登录尝试过于频繁，请稍后再试'));
+      // Every rate-limited endpoint answers 429, not only login.
+      const msg = (error.response.data as ResponseData<unknown> | undefined)?.retMsg;
+      return Promise.reject(new Error(msg || '请求过于频繁，请稍后再试'));
     }
     if (!error.response) {
       return Promise.reject(new Error('网络连接失败，请检查网络后重试'));
