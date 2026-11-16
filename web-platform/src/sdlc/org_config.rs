@@ -169,6 +169,20 @@ impl OrgConfigService {
         project_codex_home(&self.root, repo, project_id, &self.base_home).await
     }
 
+    /// Organization templates layer of a project (design §4 O3).
+    pub async fn project_templates(
+        &self,
+        repo: &SqliteRepository,
+        project_id: i64,
+    ) -> Result<Option<super::templates::OrgTemplates>, WebPlatformError> {
+        Ok(project_version(&self.root, repo, project_id)
+            .await?
+            .map(|sha| super::templates::OrgTemplates {
+                dir: self.version_dir(&sha).join("templates"),
+                sha,
+            }))
+    }
+
     async fn settings(&self, repo: &SqliteRepository) -> Result<Settings, WebPlatformError> {
         settings(repo).await
     }
@@ -626,16 +640,15 @@ pub fn build_home(root: &Path, sha: &str, base_home: &Path) -> std::io::Result<P
     result.map(|()| dest)
 }
 
-/// CODEX_HOME for a project's Codex sessions (document drafting and the
-/// orchestrator): the pinned version when the project is pinned, else the
-/// followed one. `None` when the organization repository is not configured
-/// or the version is not exported yet (behaviour unchanged).
-pub async fn project_codex_home(
+/// Organization rules version (commit sha) in effect for a project: the
+/// pinned one when the project is pinned, else the followed one. `None`
+/// when the organization repository is not configured or the version is not
+/// exported (yet).
+pub async fn project_version(
     root: &Path,
     repo: &SqliteRepository,
     project_id: i64,
-    base_home: &Path,
-) -> Result<Option<PathBuf>, WebPlatformError> {
+) -> Result<Option<String>, WebPlatformError> {
     let st = settings(repo).await?;
     if st.url.is_none() {
         return Ok(None);
@@ -663,11 +676,25 @@ pub async fn project_codex_home(
         }
         None => st.current,
     };
-    let Some(sha) = sha.filter(|s| root.join(s).is_dir()) else {
+    let sha = sha.filter(|s| root.join(s).is_dir());
+    if sha.is_none() {
         tracing::warn!(
             project_id,
-            "organization rules version of the project is not available; using the default CODEX_HOME"
+            "organization rules version of the project is not available; using the defaults"
         );
+    }
+    Ok(sha)
+}
+
+/// CODEX_HOME for a project's Codex sessions (document drafting and the
+/// orchestrator), see [`project_version`]. `None` keeps the inherited one.
+pub async fn project_codex_home(
+    root: &Path,
+    repo: &SqliteRepository,
+    project_id: i64,
+    base_home: &Path,
+) -> Result<Option<PathBuf>, WebPlatformError> {
+    let Some(sha) = project_version(root, repo, project_id).await? else {
         return Ok(None);
     };
     let (root, base) = (root.to_path_buf(), base_home.to_path_buf());

@@ -891,7 +891,11 @@ async fn create_document(
     let key = key.into();
     let doc = key.doc;
     let repo_root = s.workspaces.primary_dir(spec);
-    let tpl = templates::resolve(key, Some(&repo_root));
+    let org = s
+        .org_config
+        .project_templates(&app.repo, flow.project_id)
+        .await?;
+    let tpl = templates::resolve(key, Some(&repo_root), org.as_ref());
     let text = format!(
         "{}{}",
         content::frontmatter(
@@ -2225,7 +2229,13 @@ pub fn spawn_draft_with_context(
                 doc,
                 d.template_ref.as_deref().unwrap_or(""),
             );
-            templates::resolve(key, root.as_deref()).prompt
+            let org = s
+                .org_config
+                .project_templates(&app.repo, project.id)
+                .await
+                .ok()
+                .flatten();
+            templates::resolve(key, root.as_deref(), org.as_ref()).prompt
         };
         let writable = match workspace_spec(&app, &project, &flow).await {
             Ok(sp) => writable_dir(&sp, flow.issue_iid),

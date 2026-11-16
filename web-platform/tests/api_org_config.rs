@@ -426,3 +426,66 @@ async fn drafting_sessions_run_with_the_org_codex_home() {
     trial(&app).await;
     assert_eq!(codex_homes(&app)[4], "-");
 }
+
+/// P3 O3: project template → organization `templates/<doc>.md` → built-in.
+#[tokio::test]
+async fn organization_templates_sit_between_project_and_builtin() {
+    let app = SdlcApp::new().await;
+    let bare = make_bare(app.dir.path(), "org", &org_files());
+    configure(&app, bare.to_str().unwrap()).await;
+    let sha = sync(&app).await["currentSha"].as_str().unwrap().to_string();
+    let org_ref = format!("spec@org:{}", &sha[..8]);
+
+    let (st, v) = app
+        .get(&format!("/api/projects/{}/doc-templates", app.project_id))
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let by_key = |v: &Value, k: &str| {
+        v["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["key"] == k)
+            .cloned()
+            .unwrap()
+    };
+    let spec = by_key(&v, "spec");
+    assert_eq!(spec["source"], "org", "{spec}");
+    assert_eq!(spec["templateRef"], org_ref);
+    assert!(spec["content"]
+        .as_str()
+        .unwrap()
+        .contains("# Spec: <title>"));
+    assert_eq!(by_key(&v, "plan")["source"], "builtin");
+
+    // A new spec document is created from the organization template.
+    let (_, v) = app
+        .post(
+            &app.base(),
+            json!({"track": "full", "title": "Org tpl", "initialContent": INTENT_OK}),
+        )
+        .await;
+    let iid = v["data"]["flow"]["issueIid"].as_i64().unwrap();
+    let base = format!("{}/{iid}", app.base());
+    app.post(&format!("{base}/docs/intent/submit"), json!({}))
+        .await;
+    let (st, v) = app
+        .post(
+            &format!("{base}/docs/intent/decision"),
+            json!({"action": "approve"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    app.wait_flow(iid, |f| SdlcApp::doc_status(f, "spec") == "in_review")
+        .await;
+    let spec = std::fs::read_to_string(
+        app.primary_ws(iid)
+            .join(format!("docs/changes/{iid}/spec.md")),
+    )
+    .unwrap();
+    assert!(spec.contains(&format!("template: {org_ref}")), "{spec}");
+    let (_, v) = app.get(&format!("{base}/templates")).await;
+    let list = v["data"].as_array().unwrap();
+    assert_eq!(list[1]["source"], "org", "{v}");
+    assert_eq!(list[0]["source"], "builtin");
+}

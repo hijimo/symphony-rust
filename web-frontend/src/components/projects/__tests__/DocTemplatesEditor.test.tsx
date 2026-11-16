@@ -10,12 +10,12 @@ import DocTemplatesEditor from '../DocTemplatesEditor';
 const PID = 3;
 const ok = (data: unknown) => HttpResponse.json({ success: true, retCode: '0', retMsg: 'ok', data });
 
-function tpl(docType: string, source: 'builtin' | 'project', key = docType) {
+function tpl(docType: string, source: 'builtin' | 'org' | 'project', key = docType) {
   return {
     docType,
     key,
     source,
-    templateRef: `${docType}@1`,
+    templateRef: source === 'org' ? `${key}@org:0123abcd` : `${docType}@1`,
     skeleton: `# ${docType}\n`,
     prompt: 'p',
     checklist: ['c'],
@@ -42,7 +42,7 @@ describe('DocTemplatesEditor', () => {
     trials = [];
     server.use(
       http.get(`*/api/projects/${PID}/doc-templates`, () =>
-        ok([tpl('intent', 'builtin'), tpl('intent', 'builtin', 'intent.incident'), tpl('spec', 'builtin'), tpl('plan', 'project')]),
+        ok([tpl('intent', 'builtin'), tpl('intent', 'builtin', 'intent.incident'), tpl('spec', 'org'), tpl('plan', 'project')]),
       ),
       http.put(`*/api/projects/${PID}/doc-templates/:doc`, async ({ request, params }) => {
         saved.push({ doc: params.doc, ...((await request.json()) as object) });
@@ -63,6 +63,8 @@ describe('DocTemplatesEditor', () => {
     expect(screen.getByTestId('template-source')).toHaveTextContent('内置模板');
     await user.click(screen.getByRole('button', { name: 'plan' }));
     expect(screen.getByTestId('template-source')).toHaveTextContent('项目模板 · docs/changes/_templates/plan.md');
+    await user.click(screen.getByRole('button', { name: 'spec' }));
+    expect(screen.getByTestId('template-source')).toHaveTextContent('组织模板 · spec@org:0123abcd');
   });
 
   it('saves through an MR and links to it', async () => {

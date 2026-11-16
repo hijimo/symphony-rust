@@ -929,6 +929,9 @@ async fn spawned_worker_gets_the_org_codex_home() {
             .any(|l| l == format!("CODEX_HOME={}", home.display())),
         "{dump}"
     );
+    assert!(dump
+        .lines()
+        .any(|l| l == format!("SYMPHONY_ORG_CONFIG_SHA={sha}")));
     assert_eq!(
         std::fs::read_to_string(home.join("AGENTS.md")).unwrap(),
         "org rules\n"

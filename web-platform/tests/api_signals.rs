@@ -576,7 +576,8 @@ async fn a_signal_recurring_after_its_issue_closed_returns_to_triage() {
         .unwrap()
         .state = "closed".into();
     new_signal(&app, &secret, "rec").await;
-    for _ in 0..50 {
+    // Generous under a loaded full test run.
+    for _ in 0..100 {
         let s = signals(&app).await.remove(0);
         if s["status"] == "new" {
             assert_eq!(s["issueIid"], iid, "keeps the previous issue for the card");

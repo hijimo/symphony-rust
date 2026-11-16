@@ -369,6 +369,7 @@ fn input<'a>(e: &'a Env, repos: &'a [ReviewRepo], docs: &'a [PathBuf]) -> Review
         docs,
         doc_refs: &[],
         plan_check: None,
+        org_home: None,
         cancel: CancellationToken::new(),
     }
 }
@@ -472,6 +473,67 @@ async fn test_run_skips_when_heads_already_reviewed_and_increments_round_otherwi
     assert!(fake.pr_comments.lock().unwrap()[0]
         .0
         .contains("审查政策：内置默认"));
+}
+
+#[test]
+fn test_org_home_needs_the_org_config_sha() {
+    use symphony_platform::agent::ai_review::org_home;
+    let env = |pairs: &'static [(&'static str, &'static str)]| {
+        move |k: &str| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| std::ffi::OsString::from(v))
+        }
+    };
+    assert_eq!(org_home(env(&[("CODEX_HOME", "/home/u/.codex")])), None);
+    assert_eq!(
+        org_home(env(&[
+            ("CODEX_HOME", "/ws/org-config/homes/abc"),
+            ("SYMPHONY_ORG_CONFIG_SHA", "abc"),
+        ])),
+        Some(PathBuf::from("/ws/org-config/homes/abc"))
+    );
+    assert_eq!(org_home(env(&[("SYMPHONY_ORG_CONFIG_SHA", "abc")])), None);
+}
+
+/// P3 O3: repository REVIEW.md → organization `CODEX_HOME/REVIEW.md` → built-in.
+#[tokio::test]
+async fn test_organization_policy_applies_without_a_repository_policy() {
+    let org = TempDir::new().unwrap();
+    std::fs::write(org.path().join("REVIEW.md"), "ORG-POLICY-TEXT\n").unwrap();
+
+    let e = env(None, false);
+    let repos = review_repo(&e);
+    let fake = Fake::default();
+    let mut inp = input(&e, &repos, &[]);
+    inp.org_home = Some(org.path());
+    run(&fake, &inp).await.expect("review");
+    let dev = record(&e)["thread_start"][0]["developerInstructions"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(dev.contains("ORG-POLICY-TEXT"), "{dev}");
+    assert!(!dev.contains(DEFAULT_POLICY.lines().next().unwrap()));
+    assert!(fake.pr_comments.lock().unwrap()[0]
+        .0
+        .contains("审查政策：REVIEW.md（组织）"));
+
+    // The repository policy wins.
+    let e = env(Some("REPO-POLICY-TEXT\n"), false);
+    let repos = review_repo(&e);
+    let fake = Fake::default();
+    let mut inp = input(&e, &repos, &[]);
+    inp.org_home = Some(org.path());
+    run(&fake, &inp).await.expect("review");
+    let dev = record(&e)["thread_start"][0]["developerInstructions"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(dev.contains("REPO-POLICY-TEXT") && !dev.contains("ORG-POLICY-TEXT"));
+    assert!(fake.pr_comments.lock().unwrap()[0]
+        .0
+        .contains("审查政策：REVIEW.md（仓库）"));
 }
 
 #[tokio::test]

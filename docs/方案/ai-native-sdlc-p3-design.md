@@ -190,7 +190,7 @@ stateDiagram-v2
 ### O3 模板与审查政策的组织层
 
 - **文档模板**：优先级为 项目 `docs/changes/_templates/<doc>.md` → 组织仓库 `templates/<doc>.md` → 内置（ORG R5）。`template_ref` 增加 `<doc>@org:<sha8>`，`source` 增加 `org`。组织模板格式与项目模板相同（A7 的 `symphony_template` front matter）。`resolve`、`doc_templates::effective`、试生成都改为三层，A7 设置页显示来源“组织”。incident 变体同样支持组织层 `templates/intent.incident.md`。
-- **审查政策**：AI 审查的政策来源为 仓库 `REVIEW.md` → 组织仓库 `REVIEW.md` → 内置默认。rust-platform 从 `CODEX_HOME/REVIEW.md` 读取组织层（编排器已经拿到对应的 `CODEX_HOME`），审查评论里的来源标注增加“组织”。
+- **审查政策**：AI 审查的政策来源为 仓库 `REVIEW.md` → 组织仓库 `REVIEW.md` → 内置默认。rust-platform 从 `CODEX_HOME/REVIEW.md` 读取组织层（编排器已经拿到对应的 `CODEX_HOME`），审查评论里的来源标注增加“组织”。编排器同时收到 `SYMPHONY_ORG_CONFIG_SHA`，只有设置了它才读组织层，避免把部署机 `~/.codex` 里的文件当成组织政策。
 - 组织仓库提供的规则都放在 `SAFETY_RULES` 之后，并写明不能覆盖安全规则，与 P2 B1 的做法一致。
 
 ### O4 版本追溯与项目设置
