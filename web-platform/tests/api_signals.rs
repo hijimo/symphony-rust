@@ -331,3 +331,124 @@ async fn alertmanager_batches_create_one_signal_per_alert() {
     assert_eq!(disk["resolved"], true);
     assert_eq!(disk["severity"], "warning");
 }
+
+// ------------------------------------------------------------ S3 triage board
+
+fn maintain(board: &Value) -> Value {
+    board["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["key"] == "maintain")
+        .cloned()
+        .unwrap()
+}
+
+async fn ignore(app: &SdlcApp, id: i64, days: Value) -> (StatusCode, Value) {
+    app.post(
+        &format!("/api/projects/{}/signals/{id}/ignore", app.project_id),
+        json!({"days": days}),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn pending_signals_show_in_the_maintain_column_by_severity() {
+    let app = SdlcApp::new().await;
+    let (_, secret) = new_key(&app, "generic").await;
+    for (fp, sev) in [("a", "info"), ("b", "critical"), ("c", "warning")] {
+        push(
+            &app,
+            &secret,
+            &json!({"title": fp, "fingerprint": fp, "severity": sev}),
+        )
+        .await;
+    }
+    let (_, b) = app
+        .get(&format!("/api/projects/{}/kanban/stages", app.project_id))
+        .await;
+    let m = maintain(&b["data"]);
+    assert_eq!(m["hint"], "近期完成 · 待分诊");
+    assert_eq!(m["signalCount"], 3, "{m}");
+    assert_eq!(m["totalCount"], 0, "issues only");
+    let order: Vec<&str> = m["signals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["fingerprint"].as_str().unwrap())
+        .collect();
+    assert_eq!(order, vec!["b", "c", "a"]);
+
+    // Global board carries the project on each signal card.
+    rusqlite::Connection::open(app.dir.path().join("test.db"))
+        .unwrap()
+        .execute(
+            "UPDATE projects SET service_status = 'running' WHERE id = ?1",
+            [app.project_id],
+        )
+        .unwrap();
+    let (_, g) = app.get("/api/overview/kanban/stages").await;
+    let gm = maintain(&g["data"]);
+    assert_eq!(gm["signals"][0]["projectId"], app.project_id, "{gm}");
+    assert_eq!(gm["signalCount"], 3);
+}
+
+#[tokio::test]
+async fn ignored_signals_return_only_after_the_ignore_period() {
+    let app = SdlcApp::new().await;
+    let (_, secret) = new_key(&app, "generic").await;
+    let body = |fp: &str| json!({"title": fp, "fingerprint": fp});
+    push(&app, &secret, &body("short")).await;
+    push(&app, &secret, &body("forever")).await;
+    let list = signals(&app).await;
+    let id = |fp: &str| {
+        list.iter().find(|s| s["fingerprint"] == fp).unwrap()["id"]
+            .as_i64()
+            .unwrap()
+    };
+
+    let (st, v) = ignore(&app, id("short"), json!(3)).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "only 1, 7 or permanent: {v}");
+    let (st, v) = ignore(&app, id("short"), json!(1)).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["data"]["status"], "ignored");
+    assert!(v["data"]["ignoredUntil"].is_string());
+    assert!(v["data"]["triagedBy"].as_i64().is_some());
+    ignore(&app, id("forever"), Value::Null).await;
+    let (st, _) = ignore(&app, 99999, json!(7)).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+
+    // Re-triggered inside the ignore period: stays ignored.
+    push(&app, &secret, &body("short")).await;
+    push(&app, &secret, &body("forever")).await;
+    assert_eq!(pending_count(&app).await, 0);
+
+    // After the period the next trigger brings it back; permanent stays.
+    rusqlite::Connection::open(app.dir.path().join("test.db"))
+        .unwrap()
+        .execute("UPDATE signals SET ignored_until = datetime('now', '-1 minute') WHERE ignored_until IS NOT NULL", [])
+        .unwrap();
+    assert_eq!(
+        pending_count(&app).await,
+        0,
+        "expiry alone does not resurface it"
+    );
+    push(&app, &secret, &body("short")).await;
+    push(&app, &secret, &body("forever")).await;
+    let back = app
+        .get(&format!(
+            "/api/projects/{}/signals?status=new",
+            app.project_id
+        ))
+        .await
+        .1;
+    let back = back["data"].as_array().unwrap();
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0]["fingerprint"], "short");
+    assert!(back[0]["ignoredUntil"].is_null());
+}
+
+async fn pending_count(app: &SdlcApp) -> usize {
+    let url = format!("/api/projects/{}/signals?status=new", app.project_id);
+    app.get(&url).await.1["data"].as_array().unwrap().len()
+}

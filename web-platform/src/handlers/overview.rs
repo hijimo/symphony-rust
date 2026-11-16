@@ -552,7 +552,7 @@ pub async fn get_overview_stages(
         .iter()
         .map(|c| {
             serde_json::json!({"key": c, "title": c.title(), "hint": c.hint(),
-                "issues": [], "mergeRequests": [], "totalCount": 0})
+                "issues": [], "mergeRequests": [], "signals": [], "totalCount": 0})
         })
         .collect();
     let mut entries = Vec::with_capacity(projects.len());
@@ -574,7 +574,7 @@ pub async fn get_overview_stages(
                 entry["error"] = board["prError"].clone();
                 let src = board["columns"].as_array().cloned().unwrap_or_default();
                 for (dst, src) in columns.iter_mut().zip(src) {
-                    for key in ["issues", "mergeRequests"] {
+                    for key in ["issues", "mergeRequests", "signals"] {
                         let items = src[key].as_array().cloned().unwrap_or_default();
                         dst[key]
                             .as_array_mut()
@@ -589,6 +589,9 @@ pub async fn get_overview_stages(
     }
     for c in columns.iter_mut() {
         c["totalCount"] = serde_json::json!(c["issues"].as_array().map_or(0, |a| a.len()));
+        if c["key"] == "maintain" {
+            c["signalCount"] = serde_json::json!(c["signals"].as_array().map_or(0, |a| a.len()));
+        }
     }
 
     Ok(Json(ResponseData::success(serde_json::json!({

@@ -794,6 +794,9 @@ pub struct StageKanbanQuery {
     pub maintain_days: Option<i64>,
 }
 
+/// Signals shown in 运维 per project.
+const MAX_BOARD_SIGNALS: i64 = 100;
+
 /// Upper bound of label-event lookups per board load.
 const MAX_REVIEW_WAIT_LOOKUPS: usize = 30;
 const REVIEW_WAIT_TTL: std::time::Duration = std::time::Duration::from_secs(60);
@@ -992,6 +995,15 @@ pub(crate) async fn build_stage_columns(
             .unwrap()
             .push(serde_json::to_value(mr).unwrap_or_default());
     }
+    // Untriaged external signals (P3 §3 S3), from the local table.
+    let pending = state
+        .sdlc
+        .signals
+        .pending(project_id, MAX_BOARD_SIGNALS)
+        .await?;
+    let maintain = idx(StageColumn::Maintain);
+    columns[maintain]["signalCount"] = serde_json::json!(pending.len());
+    columns[maintain]["signals"] = serde_json::to_value(pending).unwrap_or_default();
     for c in columns.iter_mut() {
         let n = c["issues"].as_array().map(|a| a.len()).unwrap_or(0);
         c["totalCount"] = serde_json::json!(n);

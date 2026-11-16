@@ -18,3 +18,8 @@ export async function createSignalKey(
 export async function revokeSignalKey(projectId: number, keyId: number): Promise<void> {
   await client.delete(`/projects/${projectId}/signal-keys/${keyId}`);
 }
+
+/** `days`: 1 or 7; null ignores permanently. */
+export async function ignoreSignal(projectId: number, signalId: number, days: 1 | 7 | null): Promise<void> {
+  await client.post(`/projects/${projectId}/signals/${signalId}/ignore`, { days });
+}
