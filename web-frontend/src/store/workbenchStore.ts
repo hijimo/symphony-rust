@@ -478,7 +478,7 @@ export function currentStage(flow: FlowView): DocType {
 }
 
 function connect(projectId: number, iid: number, gen: number) {
-  const { setState } = useWorkbenchStore;
+  const { getState, setState } = useWorkbenchStore;
   const alive = () => gen === sessionGen;
   api
     .wsTicket(projectId, iid)
@@ -491,7 +491,11 @@ function connect(projectId: number, iid: number, gen: number) {
       const ws = new WebSocket(api.wsUrl(projectId, iid, ticket));
       socket = ws;
       ws.onopen = () => {
-        if (alive()) setState({ connected: true });
+        if (!alive()) return;
+        setState({ connected: true });
+        // Changes made before the socket opened (e.g. a background draft
+        // finishing right after the page loaded) sent no event to us.
+        void getState().refreshFlow();
       };
       ws.onclose = () => {
         if (socket === ws) socket = null;
