@@ -159,11 +159,11 @@ stateDiagram-v2
 
 - **配置**：系统配置新增 `org_config.url`（仓库地址，`-` 表示未启用）、`org_config.ref`（默认 `main`）、`org_config.sync_interval_secs`（默认 300）。系统配置的值不能为空，所以用 `-` 占位，由迁移预置。只读克隆凭据通过环境变量 `SYMPHONY_ORG_CONFIG_TOKEN` 提供，不进数据库。
 - **同步**：后台任务按间隔对仓库做 bare 镜像 `fetch`（复用 `sdlc/workspace.rs` 的 git 调用、askpass 和脱敏，镜像放在 `editor/mirrors/_org/`，用独立的锁）。
-- **导出**：每个需要的 commit 用 `git archive <sha>` 导出到 `<workspace_root>/org-config/<sha>/`，不检出、不运行 hook、submodule、LFS 和 `.gitattributes` 过滤器。导出时检查：
-  - 拒绝 `..` 路径、符号链接、单文件 > 1 MB、总量 > 20 MB；
+- **导出**：每个需要的 commit 导出到 `<workspace_root>/org-config/<sha>/`：先用 `git ls-tree -r -l` 列出全部条目并检查，再逐个 `git cat-file blob` 写出，写完后原子改名。不检出、不运行 hook、submodule、LFS 和 `.gitattributes` 过滤器（`git archive` 会套用 `.gitattributes` 的 export 规则，所以没有用它）。导出时检查：
+  - 拒绝 `..` 路径、符号链接、子模块、单文件 > 1 MB、总量 > 20 MB；
   - 拒绝 `auth.json`、`.env`、`*.pem`、`*.key`，并对文本文件跑 `find_secret`；
   - 任一检查失败，本次同步失败，继续使用上一次成功的版本（ORG 2.3），在管理页显示失败原因。
-- **版本**：项目可以“跟随最新”或“锁定到某个 tag / commit”（ORG R3）。新列 `projects.org_config_pin`（V028，空表示跟随）。被引用的版本目录保留，其余只保留最近 5 个。
+- **版本**：最近一次成功导出的跟随版本记在内部系统配置 `org_config.current_sha`，重启后不丢。仓库地址只接受 `https://`、`http://`、`ssh://`、`git@` 和本机绝对路径，ref 和锁定版本只允许字母、数字和 `._/-`，避免把参数注入 git。项目可以“跟随最新”或“锁定到某个 tag / commit”（ORG R3）。新列 `projects.org_config_pin`（V028，空表示跟随）。被引用的版本目录保留，其余只保留最近 5 个。
 - **状态接口**：`GET /api/admin/org-config` 返回当前 ref 对应的 commit、最近一次同步时间与结果、已导出版本；`POST /api/admin/org-config/sync` 立即同步。
 
 ### O2 CODEX_HOME 接入
