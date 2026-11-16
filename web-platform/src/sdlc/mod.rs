@@ -8,6 +8,7 @@ pub mod doc_templates;
 pub mod kanban;
 pub mod metrics;
 pub mod model;
+pub mod org_config;
 pub mod platform;
 pub mod service;
 pub mod state;
@@ -25,6 +26,8 @@ pub struct SdlcState {
     pub store: store::SdlcStore,
     /// External signals (P3 §3).
     pub signals: crate::signals::SignalStore,
+    /// Organization rules repository (P3 §4).
+    pub org_config: org_config::OrgConfigService,
     pub workspaces: workspace::WorkspaceService,
     pub agents: Arc<agent::AgentManager>,
     pub platforms: Arc<dyn platform::PlatformFactory>,
@@ -45,6 +48,11 @@ impl SdlcState {
         platforms: Arc<dyn platform::PlatformFactory>,
     ) -> Self {
         let signals = crate::signals::SignalStore::new(pool.clone());
+        let org_config = org_config::OrgConfigService::new(
+            workspace_root,
+            workspace::WorkspaceService::new(workspace_root),
+            pool.clone(),
+        );
         let store = store::SdlcStore::new(pool);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<agent::TokenUsageRecord>();
         agents.set_usage_sink(tx);
@@ -62,6 +70,7 @@ impl SdlcState {
         });
         Self {
             signals,
+            org_config,
             store,
             workspaces: workspace::WorkspaceService::new(workspace_root),
             agents,

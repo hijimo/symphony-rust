@@ -228,6 +228,8 @@ async fn main() {
         std::sync::Arc::new(web_platform::sdlc::platform::DefaultPlatformFactory),
     );
 
+    sdlc.org_config.clone().spawn(repo.clone());
+
     match sdlc.store.reset_stale_drafts().await {
         Ok(n) if n > 0 => info!("Reset {} interrupted document drafts", n),
         Ok(_) => {}

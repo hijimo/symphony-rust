@@ -13,7 +13,7 @@ use utoipa_swagger_ui::SwaggerUi;
 use crate::auth::middleware::{jwt_auth, require_admin};
 use crate::handlers::{
     admin_config, admin_users, ai_generate, alerts, auth, change_docs, concurrency, contributors,
-    gate_approvers, issue_mrs, issues, kanban, merge_requests, network_proxy, overview,
+    gate_approvers, issue_mrs, issues, kanban, merge_requests, network_proxy, org_config, overview,
     project_members, project_repos, project_service, project_workflow, projects, signals,
     token_validation, user_profile,
 };
@@ -95,6 +95,11 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
         .layer(middleware::from_fn_with_state(state.clone(), jwt_auth));
 
     let admin_routes = Router::new()
+        .route("/api/admin/org-config", get(org_config::get_org_config))
+        .route(
+            "/api/admin/org-config/sync",
+            post(org_config::sync_org_config),
+        )
         .route("/api/admin/users", get(admin_users::list_users))
         .route("/api/admin/users", post(admin_users::create_user))
         .route("/api/admin/users/{id}", delete(admin_users::delete_user))

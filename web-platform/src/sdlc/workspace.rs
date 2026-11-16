@@ -232,6 +232,40 @@ impl WorkspaceService {
         token: Option<&str>,
     ) -> Result<PathBuf, WebPlatformError> {
         let mirror = self.mirror_dir(project_id, repo.alias.as_deref());
+        self.ensure_mirror_at(mirror, &repo.clone_url, token).await
+    }
+
+    /// Bare mirror of a repository that is not a project's
+    /// (`editor/mirrors/_shared/<name>.git`), fetched now. Serialized per name.
+    pub async fn sync_shared_mirror(
+        &self,
+        name: &str,
+        clone_url: &str,
+        token: Option<&str>,
+    ) -> Result<PathBuf, WebPlatformError> {
+        static LOCKS: std::sync::OnceLock<
+            dashmap::DashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
+        > = std::sync::OnceLock::new();
+        let lock = LOCKS
+            .get_or_init(dashmap::DashMap::new)
+            .entry(name.to_string())
+            .or_default()
+            .clone();
+        let _g = lock.lock().await;
+        let mirror = self
+            .root
+            .join("mirrors")
+            .join("_shared")
+            .join(format!("{}.git", sanitize_key(name)));
+        self.ensure_mirror_at(mirror, clone_url, token).await
+    }
+
+    async fn ensure_mirror_at(
+        &self,
+        mirror: PathBuf,
+        clone_url: &str,
+        token: Option<&str>,
+    ) -> Result<PathBuf, WebPlatformError> {
         if mirror.join("HEAD").exists() {
             self.git(&mirror, &["fetch", "--prune", "origin"], token)
                 .await?;
@@ -241,7 +275,7 @@ impl WorkspaceService {
                 .await
                 .map_err(|e| WebPlatformError::Internal(e.to_string()))?;
             let name = mirror.file_name().unwrap().to_string_lossy().to_string();
-            self.git(&parent, &["clone", "--bare", &repo.clone_url, &name], token)
+            self.git(&parent, &["clone", "--bare", "--", clone_url, &name], token)
                 .await?;
             // A bare clone does not configure a fetch refspec for remote branches.
             self.git(
