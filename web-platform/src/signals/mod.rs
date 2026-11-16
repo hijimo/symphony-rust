@@ -3,6 +3,7 @@
 //! Signals are pushed by monitoring sources, de-duplicated by fingerprint
 //! and stored redacted. People triage them on the board (S3/S4).
 
+pub mod notify;
 pub mod sanitize;
 pub mod sources;
 pub mod store;

@@ -70,6 +70,22 @@ pub struct AlertEvent {
     pub fired_at: DateTime<Utc>,
 }
 
+impl From<&crate::models::alert::AlertEvent> for AlertEvent {
+    fn from(a: &crate::models::alert::AlertEvent) -> Self {
+        Self {
+            id: a.id.clone(),
+            rule_id: a.rule_id.clone(),
+            severity: Severity::parse_optional(&a.severity.to_string()).unwrap_or(Severity::Info),
+            project_id: a.project_id,
+            project_name: a.project_name.clone(),
+            title: a.title.clone(),
+            message: a.message.clone(),
+            context: a.context.clone(),
+            fired_at: a.fired_at,
+        }
+    }
+}
+
 /// Error type for notification operations.
 #[derive(Debug, thiserror::Error)]
 pub enum NotificationError {

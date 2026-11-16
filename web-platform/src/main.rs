@@ -175,6 +175,7 @@ async fn main() {
     )
     .evaluation_interval_secs(alert_eval_interval)
     .runtime_state(runtime_state.clone())
+    .dispatcher(dispatcher.clone())
     .build()
     .await;
 
