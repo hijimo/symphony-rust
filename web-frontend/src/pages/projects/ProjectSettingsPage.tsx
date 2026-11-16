@@ -24,6 +24,7 @@ import ServiceControlPanel from '../../components/ServiceControlPanel';
 import ProjectReposEditor from '../../components/projects/ProjectReposEditor';
 import GateApproversEditor from '../../components/projects/GateApproversEditor';
 import DocTemplatesEditor from '../../components/projects/DocTemplatesEditor';
+import SignalKeysEditor from '../../components/projects/SignalKeysEditor';
 import { useAuthStore } from '../../store/auth';
 import ProjectTokenAlert from '../../components/projects/ProjectTokenAlert';
 import { getProject, updateProject, deleteProject, getServiceStatus, startService, stopService, restartService } from '../../api/projects';
@@ -384,6 +385,7 @@ export default function ProjectSettingsPage() {
             <Tab label="Agent 配置" />
             <Tab label="关联仓库" />
             <Tab label="文档模板" />
+            <Tab label="信号接入" />
             <Tab label="危险操作" />
           </Tabs>
 
@@ -661,7 +663,12 @@ export default function ProjectSettingsPage() {
           </TabPanel>
 
           {/* Tab 7: Danger Zone */}
+          {/* Tab 7: Signal ingestion */}
           <TabPanel value={tab} index={6}>
+            {tab === 6 && <SignalKeysEditor projectId={projectId} />}
+          </TabPanel>
+
+          <TabPanel value={tab} index={7}>
             <Box
               sx={{
                 p: 3,

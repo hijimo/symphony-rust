@@ -77,7 +77,7 @@ stateDiagram-v2
 **接口**：`POST /api/ingest/{project_id}/{source}`，不走 JWT。`source` 为 `sentry`、`alertmanager`、`generic`（S2）。
 
 **鉴权**：每个项目可以生成多个“接入密钥”，每个密钥绑定一个 `source`。
-- 明文只在生成时显示一次，库里存 SHA-256；比较用常量时间。
+- 明文只在生成时显示一次，库里存 SHA-256；比较用常量时间。Sentry 的签名校验需要密钥原文，`sentry` 来源的密钥另外加密保存一份（与平台 Token 相同的加密方式），其余来源只存哈希。
 - `alertmanager` 和 `generic` 用 `Authorization: Bearer <密钥>`。
 - `sentry` 不能自定义请求头，改为校验 `Sentry-Hook-Signature`：用该密钥作为 HMAC-SHA256 的 key，对原始请求体签名。Sentry 内部集成里的 Client Secret 就填这个密钥。
 - 鉴权失败统一返回 401，不区分“项目不存在”和“密钥错误”。
@@ -99,7 +99,9 @@ stateDiagram-v2
 | `flow_id, issue_iid` | 生成 intent 后关联 |
 | `ignored_until, triaged_by, triaged_at` | |
 
-另建 `signal_ingest_keys(id, project_id, source, name, key_hash, created_by, created_at, last_used_at, revoked_at)`。
+另建 `signal_ingest_keys(id, project_id, source, name, key_hash, secret_enc, created_by, created_at, last_used_at, revoked_at)`。
+
+**查询**：`GET /api/projects/{id}/signals?status=` 列出信号（S1 提供，S3 在看板上使用）；接入密钥的管理在项目设置“信号接入”页（`GET/POST /api/projects/{id}/signal-keys`、`DELETE …/{key_id}`，生成和吊销要求项目 owner）。
 
 **脱敏**：落库前对所有文本字段跑 `content::find_secret`，命中的值替换为 `[已脱敏]`；去掉 HTML；单字段截断。来源 payload 一律视为不可信输入（第 7 节）。
 

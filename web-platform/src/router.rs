@@ -14,8 +14,8 @@ use crate::auth::middleware::{jwt_auth, require_admin};
 use crate::handlers::{
     admin_config, admin_users, ai_generate, alerts, auth, change_docs, concurrency, contributors,
     gate_approvers, issue_mrs, issues, kanban, merge_requests, network_proxy, overview,
-    project_members, project_repos, project_service, project_workflow, projects, token_validation,
-    user_profile,
+    project_members, project_repos, project_service, project_workflow, projects, signals,
+    token_validation, user_profile,
 };
 use crate::AppState;
 
@@ -286,6 +286,15 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
             post(change_docs::trial_doc_template),
         )
         .route(
+            "/api/projects/{id}/signal-keys",
+            get(signals::list_keys).post(signals::create_key),
+        )
+        .route(
+            "/api/projects/{id}/signal-keys/{key_id}",
+            delete(signals::revoke_key),
+        )
+        .route("/api/projects/{id}/signals", get(signals::list_signals))
+        .route(
             "/api/projects/{id}/gate-approvers",
             get(gate_approvers::get_gate_approvers).put(gate_approvers::put_gate_approvers),
         )
@@ -399,6 +408,13 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
         )
         .layer(middleware::from_fn_with_state(state.clone(), jwt_auth));
 
+    // External signal ingestion (ingest key / Sentry signature, no JWT).
+    let ingest_routes = Router::new()
+        .route("/api/ingest/{project_id}/{source}", post(signals::ingest))
+        .layer(axum::extract::DefaultBodyLimit::max(
+            crate::signals::MAX_BODY_BYTES,
+        ));
+
     // Phase 4: SSE endpoint (uses ticket auth, no JWT middleware)
     let sse_routes = Router::new().route(
         "/api/admin/concurrency/events",
@@ -414,6 +430,7 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
         .merge(overview_routes)
         .merge(sse_routes)
         .merge(workbench_ws_routes)
+        .merge(ingest_routes)
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .with_state(state);
 

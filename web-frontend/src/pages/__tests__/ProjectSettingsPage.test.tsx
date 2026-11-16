@@ -53,6 +53,7 @@ describe('ProjectSettingsPage', () => {
     expect(screen.getByRole('tab', { name: '工作流' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: '服务控制' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: '文档模板' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: '信号接入' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: '危险操作' })).toBeInTheDocument();
   });
 
