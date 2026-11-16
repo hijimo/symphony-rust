@@ -546,6 +546,10 @@ pub struct StartRequest {
     pub summary: Option<String>,
     /// Initial intent body (e.g. from the quick-generate entry).
     pub initial_content: Option<String>,
+    /// Start intent from the incident template (P3 §3 S4).
+    pub incident: bool,
+    /// Extra labels on a newly created issue (e.g. `source:signal`).
+    pub extra_labels: Vec<String>,
 }
 
 /// Labels showing the orchestrator already picked the issue up; the track
@@ -752,10 +756,11 @@ pub async fn start_flow(ctx: &Ctx, req: StartRequest) -> Result<FlowView, WebPla
                         title: title.clone(),
                         description: req.summary.clone(),
                         // Avoid the default `Todo` label: the orchestrator must not pick it up.
-                        labels: vec![
-                            req.track.label().to_string(),
-                            first_label(req.track).to_string(),
-                        ],
+                        labels: [req.track.label(), first_label(req.track)]
+                            .iter()
+                            .map(|l| l.to_string())
+                            .chain(req.extra_labels.iter().cloned())
+                            .collect(),
                         assignee: None,
                         add_default_todo: false,
                     },
@@ -791,7 +796,11 @@ pub async fn start_flow(ctx: &Ctx, req: StartRequest) -> Result<FlowView, WebPla
             )));
         }
         let first = req.track.doc_types()[0];
-        create_document(app, &spec, &flow, first, &title, req.initial_content.as_deref(), ctx.user_id, status.base_sha.as_deref()).await?;
+        let key = templates::TemplateKey {
+            doc: first,
+            incident: req.incident && first == DocType::Intent,
+        };
+        create_document(app, &spec, &flow, key, &title, req.initial_content.as_deref(), ctx.user_id, status.base_sha.as_deref()).await?;
         let msg = format!("docs({iid}): start {} document", first);
         s.workspaces
             .commit_and_push(&spec, &issue_changes_dir(iid), &msg, &format!("human ({})", username(app, ctx.user_id).await), &credential_values())
@@ -872,15 +881,17 @@ async fn create_document(
     app: &AppState,
     spec: &WorkspaceSpec,
     flow: &ChangeFlow,
-    doc: DocType,
+    key: impl Into<templates::TemplateKey>,
     title: &str,
     body: Option<&str>,
     by: i64,
     base_sha: Option<&str>,
 ) -> Result<ChangeDocument, WebPlatformError> {
     let s = sdlc(app);
+    let key = key.into();
+    let doc = key.doc;
     let repo_root = s.workspaces.primary_dir(spec);
-    let tpl = templates::resolve(doc, Some(&repo_root));
+    let tpl = templates::resolve(key, Some(&repo_root));
     let text = format!(
         "{}{}",
         content::frontmatter(
@@ -2182,6 +2193,19 @@ pub fn spawn_draft(
     doc: DocType,
     feedback: Option<String>,
 ) {
+    spawn_draft_with_context(app, project, flow_id, doc, feedback, None)
+}
+
+/// [`spawn_draft`] with extra prompt context, e.g. the evidence of an
+/// external signal (already fenced as untrusted data by the caller).
+pub fn spawn_draft_with_context(
+    app: AppState,
+    project: Project,
+    flow_id: i64,
+    doc: DocType,
+    feedback: Option<String>,
+    context: Option<String>,
+) {
     // Take the draft generation synchronously so a manual takeover issued
     // right after (before the task runs) cancels this draft (verify r4 C-4).
     let gen = app.sdlc.bump_draft(flow_id, doc);
@@ -2198,7 +2222,11 @@ pub fn spawn_draft(
                 .await
                 .ok()
                 .map(|sp| s.workspaces.primary_dir(&sp));
-            templates::resolve(doc, root.as_deref()).prompt
+            let key = templates::TemplateKey::of_template_ref(
+                doc,
+                d.template_ref.as_deref().unwrap_or(""),
+            );
+            templates::resolve(key, root.as_deref()).prompt
         };
         let writable = match workspace_spec(&app, &project, &flow).await {
             Ok(sp) => writable_dir(&sp, flow.issue_iid),
@@ -2210,7 +2238,11 @@ pub fn spawn_draft(
                 return;
             }
         };
-        let prompt = draft_prompt(doc, &writable, feedback.as_deref(), &tpl_prompt);
+        let mut prompt = draft_prompt(doc, &writable, feedback.as_deref(), &tpl_prompt);
+        if let Some(c) = &context {
+            prompt.push_str("\n\n");
+            prompt.push_str(c);
+        }
         if !s.draft_current(flow.id, doc, gen) {
             return;
         }

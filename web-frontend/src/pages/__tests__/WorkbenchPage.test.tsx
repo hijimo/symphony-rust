@@ -275,6 +275,24 @@ describe('WorkbenchPage', () => {
     expect(screen.queryByText('AI 正在修改文档，本轮结束后可以编辑')).not.toBeInTheDocument();
   });
 
+  it('WS: reloads the flow when the socket opens (changes before connecting are not lost)', async () => {
+    let gets = 0;
+    const drafted = makeFlow({ state: 'intent', documents: [{ ...makeFlow().documents[0], status: 'draft' }] });
+    server.use(...workbenchHandlers(drafted, calls));
+    server.use(
+      http.get(base, () => {
+        gets += 1;
+        // The background draft finished between the first load and the socket opening.
+        const f = gets === 1 ? drafted : makeFlow();
+        return HttpResponse.json({ success: true, retCode: '0', retMsg: 'ok', data: f });
+      }),
+    );
+    renderPage();
+    await socket();
+    await waitFor(() => expect(screen.getByTestId('flow-state')).toHaveTextContent('待审 intent（G1）'));
+    expect(gets).toBeGreaterThanOrEqual(2);
+  });
+
   it('WS: failed turn shows the error status line', async () => {
     server.use(...workbenchHandlers(makeFlow(), calls));
     renderPage();

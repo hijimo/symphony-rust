@@ -94,7 +94,16 @@ describe('API Client', () => {
       }),
     );
 
-    await expect(client.get('/test')).rejects.toThrow('登录尝试过于频繁，请稍后再试');
+    await expect(client.get('/test')).rejects.toThrow('请求过于频繁，请稍后再试');
+  });
+
+  it('uses the server message for rate limits when there is one', async () => {
+    server.use(
+      http.post('*/api/auth/login', () =>
+        HttpResponse.json({ success: false, retCode: 'AUTH_004', retMsg: '登录尝试过于频繁，请 1 分钟后再试' }, { status: 429 }),
+      ),
+    );
+    await expect(client.post('/auth/login', {})).rejects.toThrow('登录尝试过于频繁，请 1 分钟后再试');
   });
 
   it('returns generic error for non-AUTH_001 failures', async () => {

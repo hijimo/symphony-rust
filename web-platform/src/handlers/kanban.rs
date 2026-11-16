@@ -1012,6 +1012,9 @@ pub(crate) async fn build_stage_columns(
 }
 
 /// GET /api/projects/:id/kanban/stages
+///
+/// Own rate-limit budget: the board page also loads the classic kanban
+/// (author filter), which counts against `kanban`.
 pub async fn get_kanban_stages(
     State(state): State<AppState>,
     claims: axum::Extension<Claims>,
@@ -1022,7 +1025,10 @@ pub async fn get_kanban_stages(
         .sub
         .parse()
         .map_err(|_| WebPlatformError::Internal("invalid user id in token".to_string()))?;
-    if let Err(retry_after) = state.phase3_rate_limiter.check("kanban", user_id, 30) {
+    if let Err(retry_after) = state
+        .phase3_rate_limiter
+        .check("kanban_stages", user_id, 30)
+    {
         return Err(WebPlatformError::RateLimited(retry_after));
     }
     let ctx = resolve_project_context(&state, &claims, user_id, project_id).await?;

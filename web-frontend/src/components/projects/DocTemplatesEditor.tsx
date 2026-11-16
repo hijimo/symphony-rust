@@ -14,9 +14,15 @@ import {
 } from '@mui/material';
 import { getDocTemplates, saveDocTemplate, trialDocTemplate } from '../../api/changes';
 import MarkdownPreview from '../workbench/MarkdownPreview';
-import type { DocType, ProjectDocTemplate, SavedDocTemplate, TemplateTrialResult } from '../../types/changes';
+import type { ProjectDocTemplate, SavedDocTemplate, TemplateTrialResult } from '../../types/changes';
 
-const DOCS: DocType[] = ['intent', 'spec', 'plan'];
+/** Template keys; `intent.incident` is the incident variant of intent (P3 §3 S4). */
+const KEYS: { key: string; label: string }[] = [
+  { key: 'intent', label: 'intent' },
+  { key: 'intent.incident', label: 'intent（事故）' },
+  { key: 'spec', label: 'spec' },
+  { key: 'plan', label: 'plan' },
+];
 
 /**
  * Project document templates (P2 §5 A7): effective template of the default
@@ -25,8 +31,8 @@ const DOCS: DocType[] = ['intent', 'spec', 'plan'];
 export default function DocTemplatesEditor({ projectId }: { projectId: number }) {
   const [templates, setTemplates] = useState<ProjectDocTemplate[] | null>(null);
   const [loadError, setLoadError] = useState('');
-  const [doc, setDoc] = useState<DocType>('intent');
-  const [drafts, setDrafts] = useState<Partial<Record<DocType, string>>>({});
+  const [doc, setDoc] = useState<string>('intent');
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<SavedDocTemplate | null>(null);
   const [error, setError] = useState('');
@@ -47,11 +53,11 @@ export default function DocTemplatesEditor({ projectId }: { projectId: number })
   if (loadError) return <Alert severity="error">{loadError}</Alert>;
   if (!templates) return <CircularProgress size={24} />;
 
-  const current = templates.find((t) => t.docType === doc);
+  const current = templates.find((t) => (t.key ?? t.docType) === doc);
   const content = drafts[doc] ?? current?.content ?? '';
   const changed = current !== undefined && content !== current.content;
 
-  const switchDoc = (d: DocType) => {
+  const switchDoc = (d: string) => {
     setDoc(d);
     setSaved(null);
     setError('');
@@ -92,10 +98,10 @@ export default function DocTemplatesEditor({ projectId }: { projectId: number })
         保存时会新建分支并创建 MR，合并后才生效。
       </Typography>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-        <ToggleButtonGroup size="small" exclusive value={doc} onChange={(_, v: DocType | null) => v && switchDoc(v)}>
-          {DOCS.map((d) => (
-            <ToggleButton key={d} value={d} sx={{ textTransform: 'none', px: 2 }}>
-              {d}
+        <ToggleButtonGroup size="small" exclusive value={doc} onChange={(_, v: string | null) => v && switchDoc(v)}>
+          {KEYS.filter((k) => templates.some((t) => (t.key ?? t.docType) === k.key)).map((k) => (
+            <ToggleButton key={k.key} value={k.key} sx={{ textTransform: 'none', px: 2 }}>
+              {k.label}
             </ToggleButton>
           ))}
         </ToggleButtonGroup>

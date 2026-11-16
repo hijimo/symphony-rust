@@ -11,10 +11,81 @@ use super::model::{DocType, TEMPLATES_DIR};
 /// Built-in template version. Bump when the built-in skeleton changes.
 pub const BUILTIN_VERSION: u32 = 1;
 
+/// A template: one per document type, plus the incident variant of intent
+/// (P3 design §3 S4). The variant reuses the intent document, gate and
+/// labels; only skeleton, prompt and checklist differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TemplateKey {
+    pub doc: DocType,
+    pub incident: bool,
+}
+
+impl From<DocType> for TemplateKey {
+    fn from(doc: DocType) -> Self {
+        Self {
+            doc,
+            incident: false,
+        }
+    }
+}
+
+impl TemplateKey {
+    pub const INCIDENT: TemplateKey = TemplateKey {
+        doc: DocType::Intent,
+        incident: true,
+    };
+    pub const ALL: [TemplateKey; 4] = [
+        TemplateKey {
+            doc: DocType::Intent,
+            incident: false,
+        },
+        TemplateKey::INCIDENT,
+        TemplateKey {
+            doc: DocType::Spec,
+            incident: false,
+        },
+        TemplateKey {
+            doc: DocType::Plan,
+            incident: false,
+        },
+    ];
+
+    /// `intent`, `spec`, `plan` or `intent.incident`.
+    pub fn parse(s: &str) -> Result<Self, crate::error::WebPlatformError> {
+        match s.strip_suffix(".incident") {
+            Some("intent") => Ok(Self::INCIDENT),
+            Some(_) => Err(crate::error::WebPlatformError::BadRequest(format!(
+                "unknown template: {s}"
+            ))),
+            None => Ok(s.parse::<DocType>()?.into()),
+        }
+    }
+
+    pub fn as_str(self) -> String {
+        if self.incident {
+            format!("{}.incident", self.doc)
+        } else {
+            self.doc.to_string()
+        }
+    }
+
+    pub fn file_name(self) -> String {
+        format!("{}.md", self.as_str())
+    }
+
+    /// The key a document was created with, from its `template_ref`.
+    pub fn of_template_ref(doc: DocType, template_ref: &str) -> Self {
+        let incident = doc == DocType::Intent && template_ref.starts_with("intent.incident@");
+        Self { doc, incident }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DocTemplate {
     pub doc_type: DocType,
+    /// `intent`, `spec`, `plan` or `intent.incident`.
+    pub key: String,
     /// `builtin` or `project`.
     pub source: String,
     /// e.g. `spec@1` or `spec@project:<hash8>`.
@@ -30,6 +101,10 @@ const SPEC_SKELETON: &str = "# Spec: <title>\n\n## Requirements\n<!-- 需求：�
 
 const PLAN_SKELETON: &str = "# Plan: <title>\n\n## Files\n<!-- 每行一个 Markdown 列表项，以 \"- \" 开头，写工作区相对路径，可在路径后加说明；多仓库项目以仓库别名开头。例如：\n- src/pages/Example.tsx 新增页面\n- backend/src/api.rs 增加接口\n-->\n\n## Steps\n<!-- 工作顺序 -->\n\n## Tests\n<!-- 证明改动有效的测试 -->\n\n## Risks\n<!-- 可能弄坏什么、风险最大的一步 -->\n\n## Alternatives considered\n<!-- 放弃了哪些方案、为什么 -->\n";
 
+const INCIDENT_SKELETON: &str = "# Intent: <title>\n\n## Problem\n<!-- 出了什么问题、谁受影响。按信号证据写，不要猜测原因 -->\n\n## Anomaly and evidence\n<!-- 异常与证据：现象、影响范围、开始时间与时间线、证据链接（告警、错误、堆栈摘要） -->\n\n## Proposed outcome\n<!-- 处理后应达到的状态：止血、修复、防止复发 -->\n\n## Affected users and systems\n<!-- 受影响的用户和系统 -->\n\n## Constraints\n<!-- 约束：变更窗口、回滚要求、合规等 -->\n\n## Open questions\n<!-- 还不确定的事：根因、影响范围、是否需要先止血 -->\n";
+
+const INCIDENT_PROMPT: &str = "Turn the external signal below into intent.md for an incident. State the problem and its impact from the evidence only; put the observed facts (symptoms, scope, start time, timeline, links) under ## Anomaly and evidence and anything you infer or do not know under ## Open questions. Do not invent root causes. Keep every section of the template.";
+
 const INTENT_PROMPT: &str = "Help the proposer write intent.md in their own words: what they want, why, under which constraints, and what is still open. Ask the questions an analyst would ask (scope, users, constraints, what success looks like). Keep the section structure of the template.";
 
 /// Playbook Design-stage prompt (verbatim), plus Symphony output rules.
@@ -37,8 +112,19 @@ const SPEC_PROMPT: &str = "Read the attached intent.md and produce a requirement
 
 const PLAN_PROMPT: &str = "Read the approved intent.md (if any) and spec.md and produce an implementation plan as plan.md: which files to change (in ## Files, one Markdown bullet per file: a line starting with \"- \" followed by the workspace-relative path, e.g. \"- src/app.ts\"; for multi-repo projects start the path with the repository alias), the order of work, the tests that prove it works, the risks, and the alternatives you rejected. Iterate until an engineer who never saw this conversation could implement the change from the plan alone.";
 
-fn builtin(doc: DocType) -> DocTemplate {
+fn builtin(key: TemplateKey) -> DocTemplate {
+    let doc = key.doc;
     let (skeleton, prompt, checklist): (&str, &str, &[&str]) = match doc {
+        DocType::Intent if key.incident => (
+            INCIDENT_SKELETON,
+            INCIDENT_PROMPT,
+            &[
+                "影响范围和严重度判断是否有证据支持？",
+                "是否需要先止血、由谁负责？",
+                "是否与已有 Issue 重复？",
+                "推测的原因是否标明为推测并放在 Open questions？",
+            ],
+        ),
         DocType::Intent => (
             INTENT_SKELETON,
             INTENT_PROMPT,
@@ -70,8 +156,9 @@ fn builtin(doc: DocType) -> DocTemplate {
     };
     DocTemplate {
         doc_type: doc,
+        key: key.as_str(),
         source: "builtin".to_string(),
-        template_ref: format!("{doc}@{BUILTIN_VERSION}"),
+        template_ref: format!("{}@{BUILTIN_VERSION}", key.as_str()),
         skeleton: skeleton.to_string(),
         prompt: prompt.to_string(),
         checklist: checklist.iter().map(|s| s.to_string()).collect(),
@@ -102,11 +189,12 @@ fn split_front_matter(text: &str) -> Option<(&str, &str)> {
 /// Project template from its file text. A leading front matter with a
 /// `symphony_template` key overrides prompt and checklist; the rest is the
 /// skeleton. Without that key the whole text is the skeleton.
-pub fn from_project_text(doc: DocType, text: &str) -> Result<DocTemplate, String> {
-    let mut tpl = builtin(doc);
+pub fn from_project_text(key: impl Into<TemplateKey>, text: &str) -> Result<DocTemplate, String> {
+    let key = key.into();
+    let mut tpl = builtin(key);
     let hash = super::content::content_version(text.as_bytes());
     tpl.source = "project".to_string();
-    tpl.template_ref = format!("{doc}@project:{}", &hash[..8]);
+    tpl.template_ref = format!("{}@project:{}", key.as_str(), &hash[..8]);
     tpl.skeleton = text.to_string();
     let Some((yaml, body)) = split_front_matter(text) else {
         return Ok(tpl);
@@ -129,16 +217,17 @@ pub fn from_project_text(doc: DocType, text: &str) -> Result<DocTemplate, String
 }
 
 /// Problems that block saving a project template.
-pub fn validate_template(doc: DocType, text: &str) -> Vec<String> {
+pub fn validate_template(key: impl Into<TemplateKey>, text: &str) -> Vec<String> {
+    let key = key.into();
     if text.trim().is_empty() {
         return vec!["模板不能为空".to_string()];
     }
-    let tpl = match from_project_text(doc, text) {
+    let tpl = match from_project_text(key, text) {
         Ok(t) => t,
         Err(e) => return vec![e],
     };
-    let mut out: Vec<String> = super::content::required_sections(doc)
-        .iter()
+    let mut out: Vec<String> = super::content::required_sections_for(key.doc, key.incident)
+        .into_iter()
         .filter(|r| !tpl.skeleton.contains(&format!("## {r}")))
         .map(|r| format!("骨架缺少必填章节 ## {r}"))
         .collect();
@@ -163,28 +252,30 @@ pub fn editable_text(tpl: &DocTemplate) -> String {
 
 /// Resolve the effective template: project override when
 /// `<repo_root>/docs/changes/_templates/<doc>.md` exists, else built-in.
-pub fn resolve(doc: DocType, repo_root: Option<&Path>) -> DocTemplate {
+pub fn resolve(key: impl Into<TemplateKey>, repo_root: Option<&Path>) -> DocTemplate {
+    let key = key.into();
     if let Some(root) = repo_root {
-        let path = root.join(TEMPLATES_DIR).join(doc.file_name());
+        let path = root.join(TEMPLATES_DIR).join(key.file_name());
         if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Some(t) = resolve_text(doc, &text) {
+            if let Some(t) = resolve_text(key, &text) {
                 return t;
             }
         }
     }
-    builtin(doc)
+    builtin(key)
 }
 
 /// Project template from file text; `None` (built-in applies) when empty or
 /// unparseable.
-pub fn resolve_text(doc: DocType, text: &str) -> Option<DocTemplate> {
+pub fn resolve_text(key: impl Into<TemplateKey>, text: &str) -> Option<DocTemplate> {
+    let key = key.into();
     if text.trim().is_empty() {
         return None;
     }
-    match from_project_text(doc, text) {
+    match from_project_text(key, text) {
         Ok(t) => Some(t),
         Err(e) => {
-            tracing::warn!(%doc, "ignoring invalid project template: {e}");
+            tracing::warn!(template = %key.as_str(), "ignoring invalid project template: {e}");
             None
         }
     }
@@ -263,11 +354,11 @@ mod tests {
         let only_prompt = "---\nsymphony_template:\n  prompt: P\n---\n# Plan\n";
         let t = from_project_text(DocType::Plan, only_prompt).unwrap();
         assert_eq!(t.prompt, "P");
-        assert_eq!(t.checklist, builtin(DocType::Plan).checklist);
+        assert_eq!(t.checklist, builtin(DocType::Plan.into()).checklist);
 
         // No front matter: skeleton only (P1 behaviour).
         let t = from_project_text(DocType::Plan, "# Plan\n## Files\n").unwrap();
-        assert_eq!(t.prompt, builtin(DocType::Plan).prompt);
+        assert_eq!(t.prompt, builtin(DocType::Plan.into()).prompt);
         assert_eq!(t.skeleton, "# Plan\n## Files\n");
     }
 
@@ -299,7 +390,7 @@ mod tests {
 
     #[test]
     fn editable_text_round_trips() {
-        for d in DocType::ALL {
+        for d in TemplateKey::ALL {
             let b = builtin(d);
             let text = editable_text(&b);
             let t = from_project_text(d, &text).unwrap();
@@ -309,5 +400,70 @@ mod tests {
             );
             assert!(validate_template(d, &text).is_empty());
         }
+    }
+
+    #[test]
+    fn incident_is_an_intent_variant() {
+        let k = TemplateKey::parse("intent.incident").unwrap();
+        assert_eq!((k.doc, k.incident), (DocType::Intent, true));
+        assert_eq!(k.as_str(), "intent.incident");
+        assert_eq!(k.file_name(), "intent.incident.md");
+        assert!(TemplateKey::parse("spec.incident").is_err());
+        assert!(TemplateKey::parse("nope").is_err());
+        assert_eq!(
+            TemplateKey::parse("plan").unwrap(),
+            TemplateKey::from(DocType::Plan)
+        );
+        assert_eq!(TemplateKey::ALL.len(), 4);
+
+        let t = resolve(TemplateKey::INCIDENT, None);
+        assert_eq!(t.doc_type, DocType::Intent);
+        assert_eq!(t.key, "intent.incident");
+        assert_eq!(t.template_ref, "intent.incident@1");
+        let problem = t.skeleton.find("## Problem").unwrap();
+        let anomaly = t.skeleton.find("## Anomaly and evidence").unwrap();
+        let outcome = t.skeleton.find("## Proposed outcome").unwrap();
+        assert!(problem < anomaly && anomaly < outcome, "{}", t.skeleton);
+        assert!(
+            t.checklist.iter().any(|c| c.contains("止血")),
+            "triage checklist"
+        );
+        assert_ne!(t.prompt, builtin(DocType::Intent.into()).prompt);
+        assert_eq!(
+            TemplateKey::of_template_ref(DocType::Intent, &t.template_ref),
+            TemplateKey::INCIDENT
+        );
+        assert_eq!(
+            TemplateKey::of_template_ref(DocType::Intent, "intent@1"),
+            DocType::Intent.into()
+        );
+        assert_eq!(
+            TemplateKey::of_template_ref(DocType::Intent, "intent.incident@project:abcd1234"),
+            TemplateKey::INCIDENT
+        );
+    }
+
+    #[test]
+    fn incident_templates_require_the_evidence_section() {
+        let k = TemplateKey::INCIDENT;
+        let plain = editable_text(&builtin(DocType::Intent.into()));
+        let errs = validate_template(k, &plain);
+        assert!(
+            errs.iter().any(|e| e.contains("Anomaly and evidence")),
+            "{errs:?}"
+        );
+        assert!(validate_template(k, &editable_text(&builtin(k))).is_empty());
+        let dir = tempfile::tempdir().unwrap();
+        let tdir = dir.path().join(TEMPLATES_DIR);
+        std::fs::create_dir_all(&tdir).unwrap();
+        std::fs::write(tdir.join("intent.incident.md"), "# Incident\n## Problem\n").unwrap();
+        let t = resolve(k, Some(dir.path()));
+        assert_eq!(t.source, "project");
+        assert!(
+            t.template_ref.starts_with("intent.incident@project:"),
+            "{}",
+            t.template_ref
+        );
+        assert_eq!(resolve(DocType::Intent, Some(dir.path())).source, "builtin");
     }
 }

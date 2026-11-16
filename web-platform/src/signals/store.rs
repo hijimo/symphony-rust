@@ -115,7 +115,11 @@ fn row_signal(r: &rusqlite::Row) -> rusqlite::Result<Signal> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Upsert {
     Created,
-    Updated,
+    /// `linked_issue`: the signal already produced an intent for this issue.
+    Updated {
+        id: i64,
+        linked_issue: Option<i64>,
+    },
     /// New fingerprint dropped: too many untriaged signals.
     Dropped,
 }
@@ -212,15 +216,15 @@ impl SignalStore {
         blocking(self.pool.clone(), move |c| {
             let tx = c.unchecked_transaction()?;
             let evidence = s.evidence.to_string();
-            let existing: Option<i64> = tx
+            let existing: Option<(i64, String, Option<i64>)> = tx
                 .query_row(
-                    "SELECT id FROM signals WHERE project_id = ?1 AND source = ?2 AND fingerprint = ?3",
+                    "SELECT id, status, issue_iid FROM signals WHERE project_id = ?1 AND source = ?2 AND fingerprint = ?3",
                     params![project_id, source, s.fingerprint],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()?;
             let out = match existing {
-                Some(id) => {
+                Some((id, status, issue_iid)) => {
                     // An ignore period that has passed ends with this trigger.
                     tx.execute(
                         "UPDATE signals SET status = 'new', ignored_until = NULL
@@ -242,7 +246,10 @@ impl SignalStore {
                             s.external_url
                         ],
                     )?;
-                    Upsert::Updated
+                    Upsert::Updated {
+                        id,
+                        linked_issue: issue_iid.filter(|_| status == "intent"),
+                    }
                 }
                 None => {
                     let pending: i64 = tx.query_row(
@@ -300,6 +307,65 @@ impl SignalStore {
                 row_signal,
             )
             .optional()?)
+        })
+        .await
+    }
+
+    /// Atomically move a `new` signal to `intent` (prevents double starts).
+    /// `None` when it is not untriaged (or does not exist).
+    pub async fn claim_for_intent(
+        &self,
+        project_id: i64,
+        id: i64,
+        user_id: i64,
+    ) -> Result<Option<Signal>> {
+        let claimed = blocking(self.pool.clone(), move |c| {
+            Ok(c.execute(
+                "UPDATE signals SET status = 'intent', triaged_by = ?3, triaged_at = datetime('now')
+                 WHERE id = ?1 AND project_id = ?2 AND status = 'new'",
+                params![id, project_id, user_id],
+            )? > 0)
+        })
+        .await?;
+        if claimed {
+            self.get(project_id, id).await
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Undo [`claim_for_intent`] after a failed start.
+    pub async fn release_claim(&self, id: i64) -> Result<()> {
+        blocking(self.pool.clone(), move |c| {
+            c.execute(
+                "UPDATE signals SET status = 'new', triaged_by = NULL, triaged_at = NULL WHERE id = ?1 AND status = 'intent'",
+                params![id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn link_intent(&self, id: i64, flow_id: i64, issue_iid: i64) -> Result<()> {
+        blocking(self.pool.clone(), move |c| {
+            c.execute(
+                "UPDATE signals SET flow_id = ?2, issue_iid = ?3 WHERE id = ?1",
+                params![id, flow_id, issue_iid],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// The intent's issue was closed and the signal fired again: back to
+    /// triage. The previous issue stays linked for the card.
+    pub async fn mark_recurred(&self, id: i64) -> Result<()> {
+        blocking(self.pool.clone(), move |c| {
+            c.execute(
+                "UPDATE signals SET status = 'new', triaged_by = NULL, triaged_at = NULL WHERE id = ?1 AND status = 'intent'",
+                params![id],
+            )?;
+            Ok(())
         })
         .await
     }
@@ -390,9 +456,14 @@ mod tests {
             s.upsert(p, "generic", sig("c"), 2).await.unwrap(),
             Upsert::Dropped
         );
-        assert_eq!(
-            s.upsert(p, "generic", sig("a"), 2).await.unwrap(),
-            Upsert::Updated,
+        assert!(
+            matches!(
+                s.upsert(p, "generic", sig("a"), 2).await.unwrap(),
+                Upsert::Updated {
+                    linked_issue: None,
+                    ..
+                }
+            ),
             "known fingerprints still update"
         );
         assert_eq!(
@@ -415,5 +486,66 @@ mod tests {
         assert!(s.revoke_key(p, k.id).await.unwrap());
         assert!(s.active_keys(p, "generic").await.unwrap().is_empty());
         assert!(s.list_keys(p).await.unwrap()[0].revoked_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn intent_claims_are_exclusive_and_reversible() {
+        let (_d, s, p) = store().await;
+        s.upsert(p, "generic", sig("a"), 10).await.unwrap();
+        let id = s.list(p, None).await.unwrap()[0].id;
+        let claimed = s.claim_for_intent(p, id, 900).await.unwrap().unwrap();
+        assert_eq!(
+            (claimed.status.as_str(), claimed.triaged_by),
+            ("intent", Some(900))
+        );
+        assert!(
+            s.claim_for_intent(p, id, 900).await.unwrap().is_none(),
+            "only once"
+        );
+        assert!(
+            s.claim_for_intent(p + 1, id, 900).await.unwrap().is_none(),
+            "other project"
+        );
+
+        s.release_claim(id).await.unwrap();
+        let back = s.get(p, id).await.unwrap().unwrap();
+        assert_eq!((back.status.as_str(), back.triaged_by), ("new", None));
+
+        s.claim_for_intent(p, id, 900).await.unwrap().unwrap();
+        let flow_id = {
+            let c = s.pool.get().unwrap();
+            c.execute(
+                "INSERT INTO change_flows (project_id, issue_iid, track, branch, created_by) VALUES (?1, 31, 'full', 'b', 900)",
+                params![p],
+            )
+            .unwrap();
+            c.last_insert_rowid()
+        };
+        s.link_intent(id, flow_id, 31).await.unwrap();
+        let upd = s.upsert(p, "generic", sig("a"), 10).await.unwrap();
+        assert!(
+            matches!(
+                upd,
+                Upsert::Updated {
+                    linked_issue: Some(31),
+                    ..
+                }
+            ),
+            "{upd:?}"
+        );
+        s.mark_recurred(id).await.unwrap();
+        let rec = s.get(p, id).await.unwrap().unwrap();
+        assert_eq!((rec.status.as_str(), rec.issue_iid), ("new", Some(31)));
+        assert!(
+            matches!(
+                s.upsert(p, "generic", sig("a"), 10).await.unwrap(),
+                Upsert::Updated {
+                    linked_issue: None,
+                    ..
+                }
+            ),
+            "recurred signals are untriaged again"
+        );
+        assert!(s.get(p + 1, id).await.unwrap().is_none());
     }
 }
