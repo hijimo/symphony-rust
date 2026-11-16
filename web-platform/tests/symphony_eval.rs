@@ -39,7 +39,16 @@ impl Env {
         git(&org, &["add", "-A"]).unwrap();
         git(
             &org,
-            &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "c"],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "c",
+            ],
         )
         .unwrap();
         write(&dir.path().join("fake_codex.py"), FAKE_CODEX);
@@ -58,7 +67,12 @@ impl Env {
             self.dir.path().join("fake_codex.py").display()
         );
         Command::new(env!("CARGO_BIN_EXE_symphony-eval"))
-            .args(["--org-config", self.org().to_str().unwrap(), "--codex", &codex])
+            .args([
+                "--org-config",
+                self.org().to_str().unwrap(),
+                "--codex",
+                &codex,
+            ])
             .args(["--turn-timeout", "60"])
             .args(extra)
             .current_dir(self.dir.path())
@@ -83,7 +97,10 @@ fn stdout(o: &Output) -> String {
 #[test]
 fn eval_scores_tasks_and_gates_on_the_baseline() {
     let env = Env::new();
-    let sha = git(&env.org(), &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+    let sha = git(&env.org(), &["rev-parse", "HEAD"])
+        .unwrap()
+        .trim()
+        .to_string();
 
     let out = env.run(&["--baseline", "baseline.json", "--write-baseline"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
@@ -104,15 +121,22 @@ fn eval_scores_tasks_and_gates_on_the_baseline() {
     let log = std::fs::read_to_string(env.dir.path().join("codex.log")).unwrap();
     assert!(log.contains("ORG-SPEC-PROMPT"), "{log}");
     assert!(
-        log.lines()
-            .any(|l| l.starts_with("codex_home ") && l.ends_with(&format!("org-config/homes/{sha}"))),
+        log.lines().any(
+            |l| l.starts_with("codex_home ") && l.ends_with(&format!("org-config/homes/{sha}"))
+        ),
         "{log}"
     );
 
     // Same result: no regression.
     let out = env.run(&["--baseline", "baseline.json", "--repeat", "2"]);
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
-    assert_eq!(env.report("eval-report.json")["tasks"][1]["runs"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        env.report("eval-report.json")["tasks"][1]["runs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 
     // A rule change that breaks a passing task fails the check.
     write(
@@ -122,7 +146,16 @@ fn eval_scores_tasks_and_gates_on_the_baseline() {
     git(&env.org(), &["add", "-A"]).unwrap();
     git(
         &env.org(),
-        &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "c2"],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "-m",
+            "c2",
+        ],
     )
     .unwrap();
     let out = env.run(&["--baseline", "baseline.json", "--out", "r2.json"]);
@@ -151,7 +184,16 @@ fn usage_and_setup_errors_exit_with_2() {
     git(&env.org(), &["add", "-A"]).unwrap();
     git(
         &env.org(),
-        &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "bad"],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "-m",
+            "bad",
+        ],
     )
     .unwrap();
     let out = env.run(&[]);
