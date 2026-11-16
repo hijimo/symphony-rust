@@ -11,6 +11,8 @@ use crate::error::{Result, WebPlatformError};
 #[derive(Clone)]
 pub struct SignalStore {
     pool: DbPool,
+    /// When each signal was last notified (S5 throttle).
+    pub notified: std::sync::Arc<dashmap::DashMap<i64, std::time::Instant>>,
 }
 
 async fn blocking<T, F>(pool: DbPool, f: F) -> Result<T>
@@ -114,7 +116,9 @@ fn row_signal(r: &rusqlite::Row) -> rusqlite::Result<Signal> {
 /// Result of storing one incoming signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Upsert {
-    Created,
+    Created {
+        id: i64,
+    },
     /// `linked_issue`: the signal already produced an intent for this issue.
     Updated {
         id: i64,
@@ -126,7 +130,10 @@ pub enum Upsert {
 
 impl SignalStore {
     pub fn new(pool: DbPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            notified: Default::default(),
+        }
     }
 
     pub async fn create_key(
@@ -274,7 +281,9 @@ impl SignalStore {
                                 s.external_url
                             ],
                         )?;
-                        Upsert::Created
+                        Upsert::Created {
+                            id: tx.last_insert_rowid(),
+                        }
                     }
                 }
             };
@@ -444,14 +453,14 @@ mod tests {
     #[tokio::test]
     async fn new_fingerprints_are_dropped_over_the_pending_cap() {
         let (_d, s, p) = store().await;
-        assert_eq!(
+        assert!(matches!(
             s.upsert(p, "generic", sig("a"), 2).await.unwrap(),
-            Upsert::Created
-        );
-        assert_eq!(
+            Upsert::Created { .. }
+        ));
+        assert!(matches!(
             s.upsert(p, "generic", sig("b"), 2).await.unwrap(),
-            Upsert::Created
-        );
+            Upsert::Created { .. }
+        ));
         assert_eq!(
             s.upsert(p, "generic", sig("c"), 2).await.unwrap(),
             Upsert::Dropped
@@ -466,9 +475,11 @@ mod tests {
             ),
             "known fingerprints still update"
         );
-        assert_eq!(
-            s.upsert(p, "sentry", sig("a"), 3).await.unwrap(),
-            Upsert::Created,
+        assert!(
+            matches!(
+                s.upsert(p, "sentry", sig("a"), 3).await.unwrap(),
+                Upsert::Created { .. }
+            ),
             "fingerprints are per source"
         );
         assert_eq!(s.list(p, Some("new".into())).await.unwrap().len(), 3);

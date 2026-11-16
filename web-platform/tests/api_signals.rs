@@ -586,3 +586,73 @@ async fn a_signal_recurring_after_its_issue_closed_returns_to_triage() {
     }
     panic!("signal did not return to triage");
 }
+
+// ------------------------------------------------------------ S5 notifications
+
+async fn wait_titles(app: &SdlcApp, n: usize) -> Vec<String> {
+    for _ in 0..50 {
+        let t = app.notifications.titles();
+        if t.len() >= n {
+            return t;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    app.notifications.titles()
+}
+
+#[tokio::test]
+async fn new_and_recurring_signals_notify_the_channels() {
+    let app = SdlcApp::new().await;
+    let (_, secret) = new_key(&app, "generic").await;
+    push(
+        &app,
+        &secret,
+        &json!({"title": "DB down", "fingerprint": "db", "severity": "critical"}),
+    )
+    .await;
+    push(
+        &app,
+        &secret,
+        &json!({"title": "Slow page", "fingerprint": "info-1", "severity": "info"}),
+    )
+    .await;
+    push(
+        &app,
+        &secret,
+        &json!({"title": "DB down", "fingerprint": "db", "severity": "critical"}),
+    )
+    .await;
+    let t = wait_titles(&app, 1).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        app.notifications.titles(),
+        vec!["[信号] DB down".to_string()],
+        "{t:?}"
+    );
+    let n = app.notifications.0.lock().unwrap()[0].clone();
+    assert_eq!(n.project_id, Some(app.project_id));
+    assert!(n.message.contains("新信号待分诊"), "{}", n.message);
+
+    // Recurrence after the issue closed notifies (another signal: the
+    // 30-minute window is per signal).
+    let id = new_signal(&app, &secret, "rec-n").await;
+    wait_titles(&app, 2).await;
+    let (_, v) = app
+        .post(
+            &format!("/api/projects/{}/signals/{id}/intent", app.project_id),
+            json!({}),
+        )
+        .await;
+    let iid = v["data"]["flow"]["issueIid"].as_i64().unwrap();
+    app.gitlab
+        .issues
+        .lock()
+        .unwrap()
+        .get_mut(&(iid as u64))
+        .unwrap()
+        .state = "closed".into();
+    let before = app.notifications.titles().len();
+    new_signal(&app, &secret, "rec-n").await;
+    let t = wait_titles(&app, before + 1).await;
+    assert_eq!(t.len(), before, "inside the 30-minute window: {t:?}");
+}

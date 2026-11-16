@@ -711,6 +711,8 @@ pub struct SdlcApp {
     pub workspace_root: PathBuf,
     /// Shared with AppState: tests record rust-platform snapshots here.
     pub runtime: Arc<web_platform::services::runtime_state::RuntimeStateCache>,
+    /// Alerts sent to the notification channels (critical + warning).
+    pub notifications: Arc<Notifications>,
 }
 
 pub struct Opts {
@@ -811,6 +813,16 @@ impl SdlcApp {
             agents,
             Arc::new(factory),
         );
+        let notifications = Arc::new(Notifications::default());
+        let dispatcher = Arc::new(web_platform::notification::NotificationDispatcher::new());
+        dispatcher
+            .add_channel(
+                notifications.clone(),
+                vec!["critical".into(), "warning".into()],
+                true,
+            )
+            .await;
+        let (alert_tx, _alert_rx) = tokio::sync::mpsc::channel(1);
         let state = AppState {
             sdlc,
             repo: repo.clone(),
@@ -825,7 +837,7 @@ impl SdlcApp {
             concurrency_manager: Arc::new(ConcurrencyManager::new(10)),
             symphony_bin: "/usr/bin/false".into(),
             workspace_root: workspace_root.to_string_lossy().to_string(),
-            alert_manager: None,
+            alert_manager: Some(web_platform::AlertManager::new(dispatcher, alert_tx)),
             platform_host_semaphores: Arc::new(PlatformHostSemaphores::new(5)),
             runtime_state: runtime.clone(),
         };
@@ -870,6 +882,7 @@ impl SdlcApp {
 
         Self {
             runtime,
+            notifications,
             addr,
             client,
             token,
@@ -998,3 +1011,58 @@ impl SdlcApp {
 }
 
 pub const INTENT_OK: &str = "# Intent\n\n## Problem\nusers cannot see claim status\n\n## Proposed outcome\nportal shows status\n\n## Affected users and systems\nportal\n\n## Constraints\nno new PII\n\n## Open questions\nadjusters?\n";
+
+/// Notification channel that records what it is asked to send.
+#[derive(Default)]
+pub struct Notifications(pub Mutex<Vec<web_platform::notification::AlertEvent>>);
+
+impl Notifications {
+    pub fn titles(&self) -> Vec<String> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|a| a.title.clone())
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl web_platform::notification::NotificationChannel for Notifications {
+    fn channel_type(&self) -> &str {
+        "test"
+    }
+    fn channel_id(&self) -> &str {
+        "test"
+    }
+    async fn send(
+        &self,
+        alert: &web_platform::notification::AlertEvent,
+    ) -> Result<
+        web_platform::notification::NotificationResult,
+        web_platform::notification::NotificationError,
+    > {
+        self.0.lock().unwrap().push(alert.clone());
+        Ok(web_platform::notification::NotificationResult {
+            channel_id: "test".into(),
+            channel_type: "test".into(),
+            success: true,
+            error_message: None,
+            response_time_ms: 0,
+            sent_at: chrono::Utc::now(),
+        })
+    }
+    async fn send_test(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> Result<
+        web_platform::notification::NotificationResult,
+        web_platform::notification::NotificationError,
+    > {
+        unreachable!()
+    }
+    async fn health_check(&self) -> bool {
+        true
+    }
+}
