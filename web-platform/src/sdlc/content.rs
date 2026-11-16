@@ -6,10 +6,24 @@ use sha2::{Digest, Sha256};
 use super::model::DocType;
 
 /// Frontmatter written once when a document is created (§4.4).
-pub fn frontmatter(doc: DocType, issue_iid: i64, template_ref: &str, base_sha: &str) -> String {
+pub fn frontmatter(
+    doc: DocType,
+    issue_iid: i64,
+    template_ref: &str,
+    org_config_sha: &str,
+    base_sha: &str,
+) -> String {
     format!(
-        "---\nsymphony:\n  doc: {doc}\n  issue: {issue_iid}\n  template: {template_ref}\n  generated_by: {{ org_config_sha: \"\", base_sha: \"{base_sha}\" }}\n---\n"
+        "---\nsymphony:\n  doc: {doc}\n  issue: {issue_iid}\n  template: {template_ref}\n  generated_by: {{ org_config_sha: \"{org_config_sha}\", base_sha: \"{base_sha}\" }}\n---\n"
     )
+}
+
+/// Frontmatter with `generated_by.org_config_sha` set to `sha` (latest AI
+/// draft, P3 O4). Unchanged when the field is missing.
+pub fn with_org_config_sha(frontmatter: &str, sha: &str) -> String {
+    let re = regex::Regex::new(r#"org_config_sha: "[^"\n]*""#).expect("valid regex");
+    re.replace(frontmatter, format!("org_config_sha: \"{sha}\"").as_str())
+        .into_owned()
 }
 
 /// Strip a leading YAML frontmatter block (`---\n ... \n---\n`).
@@ -312,12 +326,12 @@ pub fn plan_files(content: &str) -> Vec<String> {
 mod tests {
     #[test]
     fn incident_intent_requires_the_evidence_section() {
-        let fm = frontmatter(DocType::Intent, 7, "intent.incident@1", "");
+        let fm = frontmatter(DocType::Intent, 7, "intent.incident@1", "", "");
         let body = "## Problem\np\n\n## Proposed outcome\no\n\n## Affected users and systems\na\n\n## Constraints\nc\n\n## Open questions\nq\n";
         let issues = validate(DocType::Intent, &format!("{fm}{body}"), &[]);
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert_eq!(issues[0].section, "Anomaly and evidence");
-        let plain = frontmatter(DocType::Intent, 7, "intent@1", "");
+        let plain = frontmatter(DocType::Intent, 7, "intent@1", "", "");
         assert!(validate(DocType::Intent, &format!("{plain}{body}"), &[]).is_empty());
         let with = format!("{fm}{body}\n## Anomaly and evidence\n5xx since 08:00\n");
         assert!(validate(DocType::Intent, &with, &[]).is_empty());
@@ -329,14 +343,31 @@ mod tests {
     const PLAN: &str = "---\nsymphony:\n  doc: plan\n---\n# Plan\n\n## Files\n- `frontend/src/pages/New.tsx` new page\n- backend/src/api.rs\n\n## Steps\n1. a\n\n## Tests\n- t\n\n## Risks\n- r\n\n## Alternatives considered\n- none\n";
 
     #[test]
+    fn org_config_sha_is_written_and_replaced() {
+        let fm = frontmatter(DocType::Spec, 3, "spec@1", "", "base1");
+        assert!(fm.contains("generated_by: { org_config_sha: \"\", base_sha: \"base1\" }"));
+        let fm = with_org_config_sha(&fm, "abc123");
+        assert!(
+            fm.contains("org_config_sha: \"abc123\", base_sha: \"base1\""),
+            "{fm}"
+        );
+        let fm = with_org_config_sha(&fm, "def456");
+        assert!(fm.contains("org_config_sha: \"def456\"") && !fm.contains("abc123"));
+        assert_eq!(
+            with_org_config_sha("---\nx: 1\n---\n", "a"),
+            "---\nx: 1\n---\n"
+        );
+    }
+
+    #[test]
     fn frontmatter_is_stripped_and_hash_ignores_it() {
         let a = format!(
             "{}# T\nbody\n",
-            frontmatter(DocType::Spec, 1, "spec@1", "abc")
+            frontmatter(DocType::Spec, 1, "spec@1", "", "abc")
         );
         let b = format!(
             "{}# T\nbody\n",
-            frontmatter(DocType::Spec, 1, "spec@9", "zzz")
+            frontmatter(DocType::Spec, 1, "spec@9", "o", "zzz")
         );
         assert_eq!(strip_frontmatter(&a), "# T\nbody\n");
         assert_eq!(body_hash(&a), body_hash(&b));
@@ -358,7 +389,7 @@ mod tests {
 
     #[test]
     fn frontmatter_restore() {
-        let fm = frontmatter(DocType::Plan, 3, "plan@1", "b");
+        let fm = frontmatter(DocType::Plan, 3, "plan@1", "", "b");
         let orig = format!("{fm}# A\n");
         assert_eq!(frontmatter_block(&orig), Some(fm.as_str()));
         assert_eq!(restore_frontmatter(&fm, "# B\n"), format!("{fm}# B\n"));

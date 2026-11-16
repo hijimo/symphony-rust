@@ -196,7 +196,8 @@ stateDiagram-v2
 ### O4 版本追溯与项目设置
 
 - 文档创建和每次 AI 起草时，把当时的组织版本写入 `change_documents.org_config_sha` 和文档 frontmatter 的 `generated_by.org_config_sha`（列已存在，ORG R4）。`agent_token_usage` 增加 `org_config_sha` 列（V029）。
-- 项目设置“基本信息”页显示：当前生效的组织版本、来源仓库、是否锁定，以及“跟随最新 / 锁定到…”的切换（ORG R8）。只有项目 owner 能修改。
+- 项目设置“基本信息”页显示：当前生效的组织版本、来源仓库、是否锁定，以及“跟随最新 / 锁定到…”的切换（ORG R8）。只有项目 owner 能修改。接口 `GET /api/projects/{id}/org-config`（项目成员）、`PUT /api/projects/{id}/org-config` `{"pin": "v1" | null}`（owner）；锁定时立即同步一次以导出该版本，找不到时返回 `pinError`。
+- 起草时记录的是会话进程启动时的版本（进程不切换），写入该阶段文档的数据库列和 frontmatter；未启用组织仓库时保持为空。
 - 管理员“系统配置”旁新增“组织规则”页：仓库地址、ref、同步状态、立即同步、被丢弃的 `config.toml` 配置项。
 
 ## 5. P3-3 组织配置 eval

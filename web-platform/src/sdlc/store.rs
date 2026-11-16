@@ -163,6 +163,7 @@ pub struct NewDocument {
     pub path: String,
     pub blob_sha: Option<String>,
     pub template_ref: String,
+    pub org_config_sha: Option<String>,
     pub base_sha: Option<String>,
     pub updated_by: i64,
 }
@@ -389,8 +390,8 @@ impl SdlcStore {
     pub async fn insert_document(&self, flow_id: i64, d: NewDocument) -> Result<ChangeDocument> {
         blocking(self.pool.clone(), move |c| {
             c.execute(
-                "INSERT INTO change_documents (flow_id, doc_type, status, path, current_blob_sha, template_ref, base_sha, updated_by, status_changed_at) VALUES (?1, ?2, 'draft', ?3, ?4, ?5, ?6, ?7, datetime('now'))",
-                params![flow_id, d.doc_type.as_str(), d.path, d.blob_sha, d.template_ref, d.base_sha, d.updated_by],
+                "INSERT INTO change_documents (flow_id, doc_type, status, path, current_blob_sha, template_ref, base_sha, updated_by, status_changed_at, org_config_sha) VALUES (?1, ?2, 'draft', ?3, ?4, ?5, ?6, ?7, datetime('now'), ?8)",
+                params![flow_id, d.doc_type.as_str(), d.path, d.blob_sha, d.template_ref, d.base_sha, d.updated_by, d.org_config_sha],
             )?;
             let id = c.last_insert_rowid();
             let row = c.query_row(
@@ -616,11 +617,24 @@ impl SdlcStore {
         .await
     }
 
+    /// Organization rules version of the latest AI draft (P3 O4).
+    pub async fn set_document_org_sha(&self, flow_id: i64, doc: DocType, sha: &str) -> Result<()> {
+        let sha = sha.to_string();
+        blocking(self.pool.clone(), move |c| {
+            c.execute(
+                "UPDATE change_documents SET org_config_sha = ?3 WHERE flow_id = ?1 AND doc_type = ?2",
+                params![flow_id, doc.as_str(), sha],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn insert_token_usage(&self, u: super::agent::TokenUsageRecord) -> Result<()> {
         blocking(self.pool.clone(), move |c| {
             c.execute(
-                "INSERT INTO agent_token_usage (flow_id, doc_type, thread_id, turn_id, input, cached_input, output, reasoning, total)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO agent_token_usage (flow_id, doc_type, thread_id, turn_id, input, cached_input, output, reasoning, total, org_config_sha)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     u.flow_id,
                     u.doc_type.as_str(),
@@ -630,7 +644,8 @@ impl SdlcStore {
                     u.cached_input,
                     u.output,
                     u.reasoning,
-                    u.total
+                    u.total,
+                    u.org_config_sha
                 ],
             )?;
             Ok(())

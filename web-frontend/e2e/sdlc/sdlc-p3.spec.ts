@@ -1,3 +1,6 @@
+import { execFileSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
 import { test, expect, type Page } from '@playwright/test';
 import { SDLC_E2E, backendUrl, gitlabUrl } from './env';
 
@@ -101,4 +104,56 @@ test('external signal → 运维 → incident intent at G1', async ({ page }) =>
   await page.goto(`/projects/${projectId}/kanban`);
   await expect(col.locator('[data-testid^="signal-card-"]').filter({ hasText: '结账接口 5xx 激增' })).toHaveCount(0);
   await expect(page.getByTestId(`stage-card-${iid}`)).toBeVisible();
+});
+
+/** Organization rules repository with two commits; `v1` tags the first. */
+function makeOrgRepo(): { bare: string; v1: string; head: string } {
+  const root = path.join(SDLC_E2E.runDir, 'org');
+  fs.rmSync(root, { recursive: true, force: true });
+  const seed = path.join(root, 'seed');
+  fs.mkdirSync(seed, { recursive: true });
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'user.name=e2e', '-c', 'user.email=e2e@local', ...args], { cwd }).toString().trim();
+  git(seed, 'init', '-q', '-b', 'main');
+  fs.writeFileSync(path.join(seed, 'AGENTS.md'), '# Org rules v1\n');
+  fs.writeFileSync(path.join(seed, 'config.toml'), 'model = "gpt-5.5"\n[mcp_servers.x]\ncommand = "sh"\n');
+  git(seed, 'add', '-A');
+  git(seed, 'commit', '-q', '-m', 'v1');
+  git(seed, 'tag', 'v1');
+  const v1 = git(seed, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(seed, 'AGENTS.md'), '# Org rules v2\n');
+  git(seed, 'commit', '-q', '-am', 'v2');
+  const head = git(seed, 'rev-parse', 'HEAD');
+  const bare = path.join(root, 'rules.git');
+  git(root, 'clone', '-q', '--bare', seed, bare);
+  return { bare, v1, head };
+}
+
+test('organization rules: admin sync → project locks a version', async ({ page }) => {
+  test.setTimeout(240_000);
+  const org = makeOrgRepo();
+  await login(page);
+  const list = await api<{ records: { id: number; namespace: string; repoName: string }[] }>(page, 'GET', '/projects?page_size=100');
+  const projectId = list.records.find((p) => `${p.namespace}/${p.repoName}` === slug)!.id;
+
+  await page.goto('/admin/org-config');
+  await expect(page.getByRole('heading', { name: '组织规则' })).toBeVisible();
+  await page.getByLabel('仓库地址').fill(org.bare);
+  await page.getByRole('button', { name: '保存' }).click();
+  await page.getByRole('button', { name: '立即同步' }).click();
+  await expect(page.getByTestId('org-current')).toHaveText(`当前版本：${org.head.slice(0, 8)}`);
+  await expect(page.getByText('mcp_servers', { exact: true })).toBeVisible();
+
+  await page.goto(`/projects/${projectId}/settings`);
+  await expect(page.getByTestId('org-effective')).toHaveText(`当前生效版本：${org.head.slice(0, 8)}（跟随 main）`);
+  await page.getByRole('radio', { name: '锁定到 tag / commit' }).check();
+  await page.getByLabel('锁定版本').fill('v1');
+  await page.getByTestId('org-effective').locator('..').getByRole('button', { name: '保存' }).click();
+  await expect(page.getByTestId('org-effective')).toHaveText(`当前生效版本：${org.v1.slice(0, 8)}（锁定 v1）`);
+
+  // Back to following, then switch the repository off for the other suites.
+  await page.getByRole('radio', { name: '跟随最新' }).check();
+  await page.getByTestId('org-effective').locator('..').getByRole('button', { name: '保存' }).click();
+  await expect(page.getByTestId('org-effective')).toHaveText(`当前生效版本：${org.head.slice(0, 8)}（跟随 main）`);
+  await api(page, 'PUT', '/admin/config', { configs: [{ key: 'org_config.url', value: '-' }] });
 });

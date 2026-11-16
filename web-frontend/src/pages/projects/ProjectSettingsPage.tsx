@@ -25,6 +25,7 @@ import ProjectReposEditor from '../../components/projects/ProjectReposEditor';
 import GateApproversEditor from '../../components/projects/GateApproversEditor';
 import DocTemplatesEditor from '../../components/projects/DocTemplatesEditor';
 import SignalKeysEditor from '../../components/projects/SignalKeysEditor';
+import ProjectOrgConfigPanel from '../../components/projects/ProjectOrgConfigPanel';
 import { useAuthStore } from '../../store/auth';
 import ProjectTokenAlert from '../../components/projects/ProjectTokenAlert';
 import { getProject, updateProject, deleteProject, getServiceStatus, startService, stopService, restartService } from '../../api/projects';
@@ -443,6 +444,10 @@ export default function ProjectSettingsPage() {
               闸门审批人
             </Typography>
             {tab === 0 && <GateApproversEditor projectId={projectId} />}
+            <Typography variant="subtitle1" sx={{ fontWeight: 600, mt: 4, mb: 1 }}>
+              组织规则
+            </Typography>
+            {tab === 0 && <ProjectOrgConfigPanel projectId={projectId} />}
           </TabPanel>
 
           {/* Tab 2: Workflow */}

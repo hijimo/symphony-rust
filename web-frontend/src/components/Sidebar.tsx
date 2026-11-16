@@ -15,6 +15,7 @@ import {
 } from '@mui/material';
 import PeopleOutlineIcon from '@mui/icons-material/PeopleOutline';
 import TuneIcon from '@mui/icons-material/Tune';
+import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import SpeedIcon from '@mui/icons-material/Speed';
@@ -85,6 +86,7 @@ const menuGroups: MenuGroup[] = [
         icon: <NotificationsOutlinedIcon />,
       },
       { path: '/admin/config', label: '系统配置', icon: <TuneIcon /> },
+      { path: '/admin/org-config', label: '组织规则', icon: <AccountTreeOutlinedIcon /> },
     ],
   },
   {
