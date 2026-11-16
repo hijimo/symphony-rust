@@ -110,6 +110,8 @@ pub async fn start(
             title: body.title,
             summary: body.summary,
             initial_content: body.initial_content,
+            incident: false,
+            extra_labels: Vec::new(),
         },
     )
     .await?;
@@ -364,9 +366,25 @@ pub async fn list_templates(
     claims: axum::Extension<Claims>,
     Path((project_id, iid)): Path<(i64, i64)>,
 ) -> ApiResult {
-    let (_, _, spec, _) = flow_spec(&state, &claims, project_id, iid).await?;
+    let (_, flow, spec, _) = flow_spec(&state, &claims, project_id, iid).await?;
     let root = state.sdlc.workspaces.primary_dir(&spec);
-    ok(templates::all(Some(&root)))
+    // Each document keeps the variant it was created with (incident intent).
+    let docs = state.sdlc.store.list_documents(flow.id).await?;
+    let list: Vec<_> = DocType::ALL
+        .iter()
+        .map(|d| {
+            let tref = docs
+                .iter()
+                .find(|x| x.doc_type == *d)
+                .and_then(|x| x.template_ref.clone())
+                .unwrap_or_default();
+            templates::resolve(
+                templates::TemplateKey::of_template_ref(*d, &tref),
+                Some(&root),
+            )
+        })
+        .collect();
+    ok(list)
 }
 
 /// GET /api/projects/{id}/doc-templates — effective templates of the
@@ -393,7 +411,7 @@ pub async fn save_doc_template(
     Path((project_id, doc)): Path<(i64, String)>,
     Json(body): Json<TemplateBody>,
 ) -> ApiResult {
-    let doc = parse_doc(&doc)?;
+    let doc = crate::sdlc::templates::TemplateKey::parse(&doc)?;
     let ctx = ctx(&state, &claims, project_id).await?;
     ok(
         crate::sdlc::doc_templates::save(&state, &ctx.project, ctx.user_id, doc, &body.content)
@@ -415,7 +433,7 @@ pub async fn trial_doc_template(
     Path((project_id, doc)): Path<(i64, String)>,
     Json(body): Json<TrialBody>,
 ) -> ApiResult {
-    let doc = parse_doc(&doc)?;
+    let doc = crate::sdlc::templates::TemplateKey::parse(&doc)?;
     let ctx = ctx(&state, &claims, project_id).await?;
     if let Err(retry_after) = state
         .phase3_rate_limiter

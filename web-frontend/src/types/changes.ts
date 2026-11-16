@@ -142,6 +142,8 @@ export interface ContextStatus {
 
 export interface DocTemplate {
   docType: DocType;
+  /** `intent`, `spec`, `plan` or `intent.incident`. */
+  key?: string;
   source: 'builtin' | 'project';
   templateRef: string;
   skeleton: string;

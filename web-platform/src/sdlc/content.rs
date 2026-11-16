@@ -158,6 +158,25 @@ pub fn required_sections(doc: DocType) -> &'static [&'static str] {
     }
 }
 
+/// Required sections of a template; the incident variant of intent adds
+/// `Anomaly and evidence` (P3 §3 S4).
+pub fn required_sections_for(doc: DocType, incident: bool) -> Vec<&'static str> {
+    let mut v = required_sections(doc).to_vec();
+    if incident && doc == DocType::Intent {
+        v.insert(1, "Anomaly and evidence");
+    }
+    v
+}
+
+/// Whether the document was created from the incident template
+/// (`template: intent.incident@…` in the system frontmatter).
+pub fn is_incident(content: &str) -> bool {
+    frontmatter_block(content).is_some_and(|fm| {
+        fm.lines()
+            .any(|l| l.trim().starts_with("template: intent.incident@"))
+    })
+}
+
 /// Validate a document before it is submitted for review (§5.1).
 ///
 /// `readonly_aliases` are multi-repo aliases that are not writable in the
@@ -165,7 +184,7 @@ pub fn required_sections(doc: DocType) -> &'static [&'static str] {
 pub fn validate(doc: DocType, content: &str, readonly_aliases: &[String]) -> Vec<ValidationIssue> {
     let secs = sections(content);
     let mut issues = Vec::new();
-    for req in required_sections(doc) {
+    for req in required_sections_for(doc, is_incident(content)) {
         match secs.iter().find(|(t, _)| t.eq_ignore_ascii_case(req)) {
             None => issues.push(ValidationIssue {
                 section: req.to_string(),
@@ -291,6 +310,20 @@ pub fn plan_files(content: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn incident_intent_requires_the_evidence_section() {
+        let fm = frontmatter(DocType::Intent, 7, "intent.incident@1", "");
+        let body = "## Problem\np\n\n## Proposed outcome\no\n\n## Affected users and systems\na\n\n## Constraints\nc\n\n## Open questions\nq\n";
+        let issues = validate(DocType::Intent, &format!("{fm}{body}"), &[]);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].section, "Anomaly and evidence");
+        let plain = frontmatter(DocType::Intent, 7, "intent@1", "");
+        assert!(validate(DocType::Intent, &format!("{plain}{body}"), &[]).is_empty());
+        let with = format!("{fm}{body}\n## Anomaly and evidence\n5xx since 08:00\n");
+        assert!(validate(DocType::Intent, &with, &[]).is_empty());
+        assert!(is_incident(&with) && !is_incident(&plain));
+    }
+
     use super::*;
 
     const PLAN: &str = "---\nsymphony:\n  doc: plan\n---\n# Plan\n\n## Files\n- `frontend/src/pages/New.tsx` new page\n- backend/src/api.rs\n\n## Steps\n1. a\n\n## Tests\n- t\n\n## Risks\n- r\n\n## Alternatives considered\n- none\n";

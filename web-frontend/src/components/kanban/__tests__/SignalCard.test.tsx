@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { ThemeProvider } from '@mui/material/styles';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -34,13 +34,27 @@ function signal(id: number, over: Partial<SignalRecord> = {}): SignalRecord {
   };
 }
 
+function Where() {
+  return <div data-testid="location">{useLocation().pathname}</div>;
+}
+
 function renderBoard(signals: SignalRecord[], onChanged = vi.fn()) {
   const data = stageKanban();
   data.columns[4] = { ...data.columns[4], signals, signalCount: signals.length };
   render(
     <ThemeProvider theme={theme}>
-      <MemoryRouter>
-        <StageBoard data={data} projectId={PID} onChanged={onChanged} />
+      <MemoryRouter initialEntries={['/kanban']}>
+        <Routes>
+          <Route
+            path="*"
+            element={
+              <>
+                <StageBoard data={data} projectId={PID} onChanged={onChanged} />
+                <Where />
+              </>
+            }
+          />
+        </Routes>
       </MemoryRouter>
     </ThemeProvider>,
   );
@@ -98,5 +112,36 @@ describe('signal cards in 运维', () => {
     await user.click(await screen.findByRole('menuitem', { name: '永久忽略' }));
     await waitFor(() => expect(ignored).toHaveLength(2));
     expect(ignored[1]).toEqual({ pid: '42', id: '1', days: null });
+  });
+
+  it('generates an intent and opens its workbench', async () => {
+    const user = userEvent.setup();
+    const calls: string[] = [];
+    server.use(
+      http.post(`*/api/projects/:pid/signals/:id/intent`, ({ params }) => {
+        calls.push(`${params.pid}/${params.id}`);
+        return HttpResponse.json({ success: true, retCode: '0', retMsg: 'ok', data: { flow: { issueIid: 31 } } });
+      }),
+    );
+    const { onChanged } = renderBoard([signal(1, { projectId: 42 })]);
+    await user.click(within(screen.getByTestId('signal-card-1')).getByRole('button', { name: '生成 intent' }));
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/projects/42/changes/31'));
+    expect(calls).toEqual(['42/1']);
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it('shows the server error when generation fails and marks recurrences', async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.post(`*/api/projects/:pid/signals/:id/intent`, () =>
+        HttpResponse.json({ success: false, retCode: 'BIZ_003', retMsg: '该信号已处理' }, { status: 409 }),
+      ),
+    );
+    renderBoard([signal(1, { issueIid: 9 })]);
+    const card = screen.getByTestId('signal-card-1');
+    expect(within(card).getByText('复发 · 原 #9')).toBeInTheDocument();
+    await user.click(within(card).getByRole('button', { name: '生成 intent' }));
+    expect(await within(card).findByText('该信号已处理')).toBeInTheDocument();
+    expect(screen.getByTestId('location')).toHaveTextContent('/kanban');
   });
 });

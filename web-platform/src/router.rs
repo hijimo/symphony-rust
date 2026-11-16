@@ -299,6 +299,10 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
             post(signals::ignore_signal),
         )
         .route(
+            "/api/projects/{id}/signals/{signal_id}/intent",
+            post(signals::create_intent),
+        )
+        .route(
             "/api/projects/{id}/gate-approvers",
             get(gate_approvers::get_gate_approvers).put(gate_approvers::put_gate_approvers),
         )

@@ -98,7 +98,10 @@ while True:
             r = request("item/fileChange/requestApproval", {"itemId": "f%d" % n, "threadId": thread, "turnId": turn, "startedAtMs": 0})
             log("file " + rel + " " + json.dumps(r))
             if r and r.get("decision") == "accept":
-                open(path, "w").write(keep_fm(path, DOCS[m.group(2)]))
+                body = DOCS[m.group(2)]
+                if m.group(2) == "intent" and "Anomaly and evidence" in text:
+                    body = body.replace("## Proposed outcome", "## Anomaly and evidence\n结账接口 5xx，08:00 起\n\n## Proposed outcome", 1)
+                open(path, "w").write(keep_fm(path, body))
             send({"jsonrpc": "2.0", "method": "item/completed", "params": {"threadId": thread, "turnId": turn, "completedAtMs": 0, "item": {"type": "fileChange", "id": "f%d" % n, "status": "completed", "changes": ch}}})
         # codex 0.158 reports usage only through this notification.
         usage = {"inputTokens": 1000, "cachedInputTokens": 200, "outputTokens": 234, "reasoningOutputTokens": 30, "totalTokens": 1234}

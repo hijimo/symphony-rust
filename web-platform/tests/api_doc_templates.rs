@@ -160,3 +160,38 @@ async fn trial_draft_returns_the_document_without_committing() {
         .await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn incident_intent_template_is_listed_and_saved_under_its_own_file() {
+    let app = SdlcApp::new().await;
+    let (_, v) = app.get(&templates_url(&app)).await;
+    let list = v["data"].as_array().unwrap();
+    assert_eq!(list.len(), 4, "{v}");
+    let inc = list.iter().find(|t| t["key"] == "intent.incident").unwrap();
+    assert_eq!(inc["docType"], "intent");
+    assert_eq!(inc["path"], "docs/changes/_templates/intent.incident.md");
+    let content = inc["content"].as_str().unwrap().to_string();
+    assert!(content.contains("## Anomaly and evidence"));
+
+    let (st, v) = app
+        .put(
+            &format!("{}/intent.incident", templates_url(&app)),
+            json!({"content": content.replace("## Anomaly and evidence", "## Evidence")}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "evidence section is required: {v}");
+    let edited = content.replace("## Open questions", "## Timeline\n\n## Open questions");
+    let (st, v) = app
+        .put(&format!("{}/intent.incident", templates_url(&app)), json!({"content": edited}))
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let branch = v["data"]["branch"].as_str().unwrap();
+    assert_eq!(
+        read_branch_file(&app.bare, branch, "docs/changes/_templates/intent.incident.md").as_deref(),
+        Some(edited.as_str())
+    );
+    let (st, _) = app
+        .put(&format!("{}/spec.incident", templates_url(&app)), json!({"content": "x"}))
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+}

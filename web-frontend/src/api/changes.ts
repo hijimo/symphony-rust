@@ -266,14 +266,14 @@ export async function getDocTemplates(projectId: number): Promise<ProjectDocTemp
   return res.data.data;
 }
 
-export async function saveDocTemplate(projectId: number, doc: DocType, content: string): Promise<SavedDocTemplate> {
+export async function saveDocTemplate(projectId: number, doc: string, content: string): Promise<SavedDocTemplate> {
   const res = await client.put<ResponseData<SavedDocTemplate>>(`/projects/${projectId}/doc-templates/${doc}`, { content });
   return res.data.data;
 }
 
 export async function trialDocTemplate(
   projectId: number,
-  doc: DocType,
+  doc: string,
   content: string,
   sample: string,
 ): Promise<TemplateTrialResult> {

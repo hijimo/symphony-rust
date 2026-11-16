@@ -23,3 +23,14 @@ export async function revokeSignalKey(projectId: number, keyId: number): Promise
 export async function ignoreSignal(projectId: number, signalId: number, days: 1 | 7 | null): Promise<void> {
   await client.post(`/projects/${projectId}/signals/${signalId}/ignore`, { days });
 }
+
+/** Start an incident document flow from the signal (P3 §3 S4). */
+export async function createSignalIntent(projectId: number, signalId: number): Promise<{ flow: { issueIid: number } }> {
+  const res = await client.post<ResponseData<{ flow: { issueIid: number } }>>(
+    `/projects/${projectId}/signals/${signalId}/intent`,
+    {},
+    // Creates the issue, branch, workspace and docs MR.
+    { timeout: 120_000 },
+  );
+  return res.data.data;
+}

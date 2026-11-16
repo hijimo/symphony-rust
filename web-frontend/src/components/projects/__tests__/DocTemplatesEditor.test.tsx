@@ -10,16 +10,17 @@ import DocTemplatesEditor from '../DocTemplatesEditor';
 const PID = 3;
 const ok = (data: unknown) => HttpResponse.json({ success: true, retCode: '0', retMsg: 'ok', data });
 
-function tpl(docType: string, source: 'builtin' | 'project') {
+function tpl(docType: string, source: 'builtin' | 'project', key = docType) {
   return {
     docType,
+    key,
     source,
     templateRef: `${docType}@1`,
     skeleton: `# ${docType}\n`,
     prompt: 'p',
     checklist: ['c'],
-    path: `docs/changes/_templates/${docType}.md`,
-    content: `---\nsymphony_template:\n  prompt: p\n---\n# ${docType}\n`,
+    path: `docs/changes/_templates/${key}.md`,
+    content: `---\nsymphony_template:\n  prompt: p\n---\n# ${key}\n`,
   };
 }
 
@@ -41,7 +42,7 @@ describe('DocTemplatesEditor', () => {
     trials = [];
     server.use(
       http.get(`*/api/projects/${PID}/doc-templates`, () =>
-        ok([tpl('intent', 'builtin'), tpl('spec', 'builtin'), tpl('plan', 'project')]),
+        ok([tpl('intent', 'builtin'), tpl('intent', 'builtin', 'intent.incident'), tpl('spec', 'builtin'), tpl('plan', 'project')]),
       ),
       http.put(`*/api/projects/${PID}/doc-templates/:doc`, async ({ request, params }) => {
         saved.push({ doc: params.doc, ...((await request.json()) as object) });
@@ -102,5 +103,16 @@ describe('DocTemplatesEditor', () => {
     expect(trials).toEqual([
       { doc: 'plan', content: '---\nsymphony_template:\n  prompt: p\n---\n# plan\n', sample: '导出报表' },
     ]);
+  });
+
+  it('edits the incident intent template separately', async () => {
+    const user = userEvent.setup();
+    renderEditor();
+    await user.click(await screen.findByRole('button', { name: 'intent（事故）' }));
+    const editor = screen.getByLabelText('模板内容');
+    expect(editor).toHaveValue('---\nsymphony_template:\n  prompt: p\n---\n# intent.incident\n');
+    await user.type(editor, 'x');
+    await user.click(screen.getByRole('button', { name: '保存（创建 MR）' }));
+    await waitFor(() => expect(saved).toEqual([{ doc: 'intent.incident', content: '---\nsymphony_template:\n  prompt: p\n---\n# intent.incident\nx' }]));
   });
 });

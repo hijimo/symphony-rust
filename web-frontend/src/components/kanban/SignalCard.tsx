@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Box, Button, Chip, Drawer, Link, Menu, MenuItem, Paper, Typography } from '@mui/material';
-import { ignoreSignal } from '../../api/signals';
+import { useNavigate } from 'react-router-dom';
+import { createSignalIntent, ignoreSignal } from '../../api/signals';
 import type { SignalRecord, SignalSeverity } from '../../types/signals';
 import { waitedFor } from './StageBoard';
 
@@ -43,7 +44,22 @@ export default function SignalCard({ s, onChanged }: { s: SignalRecord; onChange
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState<HTMLElement | null>(null);
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const navigate = useNavigate();
   const sev = SEVERITY[s.severity];
+  const generate = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      const v = await createSignalIntent(s.projectId, s.id);
+      onChanged();
+      navigate(`/projects/${s.projectId}/changes/${v.flow.issueIid}`);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
   const doIgnore = async (days: 1 | 7 | null) => {
     setMenu(null);
     setError('');
@@ -62,6 +78,9 @@ export default function SignalCard({ s, onChanged }: { s: SignalRecord; onChange
         <Chip size="small" label={sev.label} color={sev.color} sx={{ height: 20, fontSize: 11 }} />
         <Chip size="small" variant="outlined" label={s.source} sx={{ height: 20, fontSize: 10 }} />
         {s.resolved && <Chip size="small" variant="outlined" color="success" label="已恢复" sx={{ height: 20, fontSize: 10 }} />}
+        {s.issueIid != null && (
+          <Chip size="small" variant="outlined" color="warning" label={`复发 · 原 #${s.issueIid}`} sx={{ height: 20, fontSize: 10 }} />
+        )}
       </Box>
       <Link component="button" onClick={() => setOpen(true)} sx={{ fontSize: 13, textAlign: 'left', color: '#191b23' }}>
         {s.title}
@@ -76,8 +95,11 @@ export default function SignalCard({ s, onChanged }: { s: SignalRecord; onChange
               来源
             </Link>
           )}
-          <Button size="small" sx={{ fontSize: 11, py: 0, minWidth: 0 }} onClick={(e) => setMenu(e.currentTarget)}>
+          <Button size="small" sx={{ fontSize: 11, py: 0, minWidth: 0 }} disabled={busy} onClick={(e) => setMenu(e.currentTarget)}>
             忽略
+          </Button>
+          <Button size="small" variant="contained" sx={{ fontSize: 11, py: 0, minWidth: 0 }} disabled={busy} onClick={() => void generate()}>
+            生成 intent
           </Button>
         </Box>
       </Box>

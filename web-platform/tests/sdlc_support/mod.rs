@@ -653,6 +653,7 @@ while True:
         n += 1
         turn = "turn-%d" % n
         text = "".join(i.get("text","") for i in p.get("input", []))
+        open(os.environ.get("FAKE_CODEX_LOG","/tmp/fake-codex.log"), "a").write("turn " + json.dumps(text) + "\n")
         send({"jsonrpc":"2.0","id":mid,"result":{"turn":{"id":turn,"status":"inProgress"}}})
         send({"jsonrpc":"2.0","method":"turn/started","params":{"threadId":thread,"turn":{"id":turn}}})
         send({"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"itemId":"m1","threadId":thread,"turnId":turn,"delta":"working"}})
@@ -672,6 +673,8 @@ while True:
             open(os.environ.get("FAKE_CODEX_LOG","/tmp/fake-codex.log"), "a").write("file " + rel + " " + json.dumps(r) + "\n")
             if r and r.get("decision") == "accept":
                 body = DOCS[m.group(2)]
+                if m.group(2) == "intent" and "Anomaly and evidence" in text:
+                    body = body.replace("## Proposed outcome", "## Anomaly and evidence\n5xx since 08:00\n\n## Proposed outcome", 1)
                 if "Feedback:" in text:
                     body = body.replace("\n## ", "\n<!-- revised -->\n## ", 1)
                 open(path, "w").write(keep_fm(path, body))
