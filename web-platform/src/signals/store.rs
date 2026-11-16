@@ -221,6 +221,13 @@ impl SignalStore {
                 .optional()?;
             let out = match existing {
                 Some(id) => {
+                    // An ignore period that has passed ends with this trigger.
+                    tx.execute(
+                        "UPDATE signals SET status = 'new', ignored_until = NULL
+                         WHERE id = ?1 AND status = 'ignored'
+                           AND ignored_until IS NOT NULL AND ignored_until <= datetime('now')",
+                        params![id],
+                    )?;
                     tx.execute(
                         "UPDATE signals SET title = ?2, severity = COALESCE(?3, severity), resolved = ?4,
                            evidence_json = ?5, external_url = COALESCE(?6, external_url),
@@ -266,6 +273,53 @@ impl SignalStore {
             };
             tx.commit()?;
             Ok(out)
+        })
+        .await
+    }
+
+    /// Untriaged signals for the board: severity first, then most recent.
+    pub async fn pending(&self, project_id: i64, limit: i64) -> Result<Vec<Signal>> {
+        blocking(self.pool.clone(), move |c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT {SIGNAL_COLS} FROM signals WHERE project_id = ?1 AND status = 'new'
+                 ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+                          last_seen_at DESC, id DESC
+                 LIMIT ?2"
+            ))?;
+            let rows = stmt.query_map(params![project_id, limit], row_signal)?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        })
+        .await
+    }
+
+    pub async fn get(&self, project_id: i64, id: i64) -> Result<Option<Signal>> {
+        blocking(self.pool.clone(), move |c| {
+            Ok(c.query_row(
+                &format!("SELECT {SIGNAL_COLS} FROM signals WHERE id = ?1 AND project_id = ?2"),
+                params![id, project_id],
+                row_signal,
+            )
+            .optional()?)
+        })
+        .await
+    }
+
+    /// Ignore a signal for `days` (None = permanently).
+    pub async fn ignore(
+        &self,
+        project_id: i64,
+        id: i64,
+        days: Option<i64>,
+        user_id: i64,
+    ) -> Result<bool> {
+        blocking(self.pool.clone(), move |c| {
+            Ok(c.execute(
+                "UPDATE signals SET status = 'ignored',
+                   ignored_until = CASE WHEN ?3 IS NULL THEN NULL ELSE datetime('now', '+' || ?3 || ' days') END,
+                   triaged_by = ?4, triaged_at = datetime('now')
+                 WHERE id = ?1 AND project_id = ?2",
+                params![id, project_id, days, user_id],
+            )? > 0)
         })
         .await
     }

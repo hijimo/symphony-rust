@@ -1,3 +1,4 @@
+import type { SignalRecord } from './signals';
 // AI-native SDLC document flow + workbench types (camelCase from backend).
 
 export type DocType = 'intent' | 'spec' | 'plan';
@@ -231,6 +232,9 @@ export interface StageColumnData {
     ci_status: string | null;
     author: { username: string };
   })[];
+  /** 运维 only: untriaged external signals (P3 §3 S3). */
+  signals?: SignalRecord[];
+  signalCount?: number;
 }
 
 export interface StageKanban {

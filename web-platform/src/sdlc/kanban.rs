@@ -38,7 +38,7 @@ impl StageColumn {
             StageColumn::Design => "spec",
             StageColumn::Build => "plan → 实现 → 测试",
             StageColumn::Deploy => "代码审查与合并",
-            StageColumn::Maintain => "近期完成",
+            StageColumn::Maintain => "近期完成 · 待分诊",
         }
     }
 }

@@ -126,6 +126,39 @@ pub async fn list_signals(
     )))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct IgnoreBody {
+    /// 1 or 7; `null` ignores permanently.
+    pub days: Option<i64>,
+}
+
+/// POST /api/projects/{id}/signals/{signal_id}/ignore
+pub async fn ignore_signal(
+    State(state): State<AppState>,
+    claims: axum::Extension<Claims>,
+    Path((project_id, signal_id)): Path<(i64, i64)>,
+    Json(body): Json<IgnoreBody>,
+) -> Result<Json<ResponseData<Signal>>, WebPlatformError> {
+    require_project_member(&claims, project_id, &state.repo).await?;
+    if !matches!(body.days, None | Some(1) | Some(7)) {
+        return Err(WebPlatformError::BadRequest(
+            "忽略期只能是 1 天、7 天或永久".into(),
+        ));
+    }
+    let store = &state.sdlc.signals;
+    if !store
+        .ignore(project_id, signal_id, body.days, user_id(&claims)?)
+        .await?
+    {
+        return Err(WebPlatformError::NotFound("信号不存在".into()));
+    }
+    let s = store
+        .get(project_id, signal_id)
+        .await?
+        .ok_or_else(|| WebPlatformError::NotFound("信号不存在".into()))?;
+    Ok(Json(ResponseData::success(s)))
+}
+
 /// The key that authenticates this request, if any.
 async fn authenticate(
     state: &AppState,

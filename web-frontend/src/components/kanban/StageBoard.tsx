@@ -19,6 +19,7 @@ import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { useNavigate } from 'react-router-dom';
 import type { DocStatus, StageIssueCard, StageKanban, Track } from '../../types/changes';
 import { startFast, startFlow } from '../../api/changes';
+import SignalCard from './SignalCard';
 
 const DOC_ICON: Record<DocStatus | 'none', string> = {
   none: '○',
@@ -166,6 +167,9 @@ export default function StageBoard({
                 {c.title} <span style={{ color: '#737686', fontWeight: 400 }}>{c.totalCount}</span>
               </Typography>
               <Typography sx={{ fontSize: 11, color: '#737686' }}>{c.hint}</Typography>
+              {(c.signalCount ?? 0) > 0 && (
+                <Typography sx={{ fontSize: 11, color: '#ac3500', fontWeight: 600 }}>待分诊 {c.signalCount}</Typography>
+              )}
             </Box>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
               {c.issues.map((i) => (
@@ -180,7 +184,10 @@ export default function StageBoard({
                   <Typography sx={{ fontSize: 11, color: '#737686' }}>{mr.source_branch} · CI {mr.ci_status ?? '-'}</Typography>
                 </Paper>
               ))}
-              {c.issues.length === 0 && c.mergeRequests.length === 0 && (
+              {(c.signals ?? []).map((sig) => (
+                <SignalCard key={`sig-${sig.projectId}-${sig.id}`} s={sig} onChanged={onChanged} />
+              ))}
+              {c.issues.length === 0 && c.mergeRequests.length === 0 && (c.signals ?? []).length === 0 && (
                 <Typography sx={{ fontSize: 12, color: '#9aa0b4', textAlign: 'center', py: 2 }}>暂无</Typography>
               )}
             </Box>

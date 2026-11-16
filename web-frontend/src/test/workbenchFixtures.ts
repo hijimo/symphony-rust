@@ -162,7 +162,7 @@ export function stageKanban(): StageKanban {
       { key: 'design', title: '设计', hint: 'spec', totalCount: 0, mergeRequests: [], issues: [] },
       { key: 'build', title: '构建与测试', hint: 'plan → 实现 → 测试', totalCount: 1, mergeRequests: [], issues: [card(3, 'build', '实现中', { placement: { column: 'build', subState: '实现中', anomaly: true, waitingHuman: false } })] },
       { key: 'deploy', title: '部署', hint: '代码审查与合并', totalCount: 0, issues: [], mergeRequests: [{ iid: 9, title: 'feat', web_url: '', source_branch: 'symphony/app-3', ci_status: 'success', author: { username: 'a' } }] },
-      { key: 'maintain', title: '运维', hint: '近期完成', totalCount: 0, mergeRequests: [], issues: [] },
+      { key: 'maintain', title: '运维', hint: '近期完成 · 待分诊', totalCount: 0, mergeRequests: [], issues: [] },
     ],
   };
 }
