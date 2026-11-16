@@ -219,6 +219,7 @@ async fn trial_in(
             std::slice::from_ref(&writable),
         )
         .await?;
+    let codex_home = s.org_config.codex_home(&app.repo, project.id).await?;
     let flow_id = TRIAL_FLOW_ID.fetch_sub(1, Ordering::SeqCst);
     let session = s.agents.get_or_create(SessionSpec {
         flow_id,
@@ -229,6 +230,7 @@ async fn trial_in(
         thread_id: None,
         first_turn_prefix: None,
     });
+    session.set_codex_home(codex_home);
     session.try_begin(Mode::NonInteractive);
     let prompt = format!(
         "{}\n\nThis is a trial run of the template; nothing is committed. Requirement to document:\n{sample}",

@@ -824,6 +824,125 @@ async fn spawned_worker_env_is_whitelisted() {
         .await;
 }
 
+/// P3 O2: the orchestrator gets the organization CODEX_HOME of the project.
+#[tokio::test]
+async fn spawned_worker_gets_the_org_codex_home() {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin_dir = tempfile::TempDir::new().unwrap();
+    let env_out = bin_dir.path().join("env.txt");
+    let script_path = bin_dir.path().join("fake-symphony.sh");
+    {
+        let mut script = std::fs::File::create(&script_path).unwrap();
+        writeln!(
+            script,
+            "#!/bin/sh\n/usr/bin/env > '{0}.tmp' && mv '{0}.tmp' '{0}'\nsleep 5\n",
+            env_out.display(),
+        )
+        .unwrap();
+    }
+    let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script_path, perms).unwrap();
+
+    // Organization repository with one commit.
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let seed = bin_dir.path().join("seed");
+    std::fs::create_dir_all(&seed).unwrap();
+    std::fs::write(seed.join("AGENTS.md"), "org rules\n").unwrap();
+    git(&seed, &["init", "-q", "-b", "main"]);
+    git(&seed, &["add", "-A"]);
+    git(
+        &seed,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "-m",
+            "c",
+        ],
+    );
+    let sha = git(&seed, &["rev-parse", "HEAD"]);
+
+    let app = common::TestApp::new_with_symphony_bin(script_path.to_str().unwrap()).await;
+    let resp = app
+        .put(
+            "/api/admin/config",
+            &json!({"configs": [{"key": "org_config.url", "value": seed.to_str().unwrap()}]}),
+            Some(&app.admin_token),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let resp = app
+        .post(
+            "/api/admin/org-config/sync",
+            &json!({}),
+            Some(&app.admin_token),
+        )
+        .await;
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(v["data"]["currentSha"], sha, "{v}");
+
+    let body = app
+        .create_test_project("https://github.com/owner/org-home", &app.admin_token)
+        .await;
+    let project_id = app.get_project_id(&body);
+    let resp = app
+        .post(
+            &format!("/api/projects/{project_id}/start"),
+            &json!({}),
+            Some(&app.admin_token),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    for _ in 0..200 {
+        if env_out.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let dump = std::fs::read_to_string(&env_out).unwrap();
+    let home = app
+        .db_path
+        .parent()
+        .unwrap()
+        .join("org-config/homes")
+        .join(&sha);
+    assert!(
+        dump.lines()
+            .any(|l| l == format!("CODEX_HOME={}", home.display())),
+        "{dump}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("AGENTS.md")).unwrap(),
+        "org rules\n"
+    );
+
+    let _ = app
+        .post(
+            &format!("/api/projects/{project_id}/stop"),
+            &json!({}),
+            Some(&app.admin_token),
+        )
+        .await;
+}
+
 // ---------------------------------------------------------------------------
 // Regressions found by verification round 1 (web-platform API & security).
 // ---------------------------------------------------------------------------

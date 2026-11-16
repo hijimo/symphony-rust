@@ -1121,15 +1121,13 @@ fn doc_for_path(spec: &WorkspaceSpec, iid: i64, rel: &str) -> Option<DocType> {
 
 /// String values of the codex credential file (never allowed in documents).
 fn credential_values() -> Vec<String> {
-    let home = std::env::var("CODEX_HOME")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| std::path::Path::new(&h).join(".codex"))
-        });
-    let Some(text) = home.and_then(|h| std::fs::read_to_string(h.join("auth.json")).ok()) else {
+    credential_values_in(&super::org_config::default_base_home())
+}
+
+/// Secrets of `<home>/auth.json`. An organization CODEX_HOME links the file,
+/// so reading follows the symlink to the deployment's original.
+fn credential_values_in(home: &std::path::Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(home.join("auth.json")) else {
         return Vec::new();
     };
     fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
@@ -2062,6 +2060,7 @@ pub async fn session_for(
         thread_id: thread,
         first_turn_prefix: prefix,
     });
+    session.set_codex_home(s.org_config.codex_home(&app.repo, project.id).await?);
     Ok((session, spec))
 }
 
@@ -2419,5 +2418,30 @@ mod ci_wait_tests {
             CiWait::Fail(m) => assert!(m.contains("等待 CI 超过 10 分钟"), "{m}"),
             other => panic!("{other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    #[test]
+    fn auth_json_secrets_are_read_through_an_org_home_symlink() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let base = dir.path().join("codex");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(
+            base.join("auth.json"),
+            r#"{"tokens":{"access_token":"sk-abcdefghijklmnop1234","id":"short"}}"#,
+        )
+        .unwrap();
+        let org_home = dir.path().join("homes/abc");
+        std::fs::create_dir_all(&org_home).unwrap();
+        std::os::unix::fs::symlink(base.join("auth.json"), org_home.join("auth.json")).unwrap();
+        assert_eq!(
+            credential_values_in(&org_home),
+            vec!["sk-abcdefghijklmnop1234".to_string()]
+        );
+        assert!(credential_values_in(&dir.path().join("missing")).is_empty());
     }
 }
