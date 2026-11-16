@@ -609,6 +609,7 @@ thread = None
 HOLD = os.path.join(os.path.dirname(os.environ.get("FAKE_CODEX_LOG","/tmp/fake-codex.log")), "hold")
 USAGE = {"inputTokens": 100, "cachedInputTokens": 10, "outputTokens": 20, "reasoningOutputTokens": 5, "totalTokens": 120}
 n = 0
+open(os.environ.get("FAKE_CODEX_LOG","/tmp/fake-codex.log"), "a").write("codex_home " + os.environ.get("CODEX_HOME", "-") + "\n")
 def send(o):
     sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
 pending = {}
@@ -807,12 +808,17 @@ impl SdlcApp {
             opts.max_sessions,
         );
         let workspace_root = dir.path().join("ws");
-        let sdlc = SdlcState::new(
+        let mut sdlc = SdlcState::new(
             repo.pool(),
             workspace_root.to_str().unwrap(),
             agents,
             Arc::new(factory),
         );
+        // Deployment CODEX_HOME of the organization rules homes.
+        sdlc.org_config = sdlc
+            .org_config
+            .clone()
+            .with_base_home(dir.path().join("codex-home"));
         let notifications = Arc::new(Notifications::default());
         let dispatcher = Arc::new(web_platform::notification::NotificationDispatcher::new());
         dispatcher

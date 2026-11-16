@@ -98,6 +98,28 @@ async fn apply_env_whitelist(cmd: &mut Command, repo: &SqliteRepository) {
 
 /// Give the child a loopback port for `GET /api/v1/state` (P2 design §3 F1).
 /// Allocation failure only disables runtime state for this process.
+/// Organization rules (P3 O2): the project's CODEX_HOME, which rust-platform
+/// passes on to codex. Unchanged when the organization repository is off.
+async fn apply_org_codex_home(
+    cmd: &mut Command,
+    repo: &SqliteRepository,
+    project_id: i64,
+    workspace_root: &str,
+) -> Result<(), WebPlatformError> {
+    use crate::sdlc::org_config;
+    if let Some(home) = org_config::project_codex_home(
+        &org_config::root_dir(workspace_root),
+        repo,
+        project_id,
+        &org_config::default_base_home(),
+    )
+    .await?
+    {
+        cmd.env("CODEX_HOME", home);
+    }
+    Ok(())
+}
+
 fn add_state_api_port(cmd: &mut Command) -> Option<u16> {
     match crate::services::runtime_state::allocate_local_port() {
         Ok(port) => {
@@ -212,6 +234,7 @@ pub async fn spawn_symphony(
     apply_env_whitelist(&mut cmd, repo).await;
     cmd.env("RUST_LOG", "info");
     cmd.env("SYMPHONY_SERVICE_INSTANCE_ID", service_instance_id);
+    apply_org_codex_home(&mut cmd, repo, project.id, workspace_root).await?;
 
     proxy_config.apply_to_command(&mut cmd);
     let proxy_config_version = proxy_config.version.clone();
@@ -373,6 +396,7 @@ pub async fn spawn_test_symphony(
     apply_env_whitelist(&mut cmd, repo).await;
     cmd.env("RUST_LOG", "info");
     cmd.env("SYMPHONY_SERVICE_INSTANCE_ID", service_instance_id);
+    apply_org_codex_home(&mut cmd, repo, project.id, workspace_root).await?;
 
     proxy_config.apply_to_command(&mut cmd);
     let proxy_config_version = proxy_config.version.clone();

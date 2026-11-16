@@ -11,6 +11,7 @@ use sdlc_support::*;
 use serde_json::{json, Value};
 
 const URL: &str = "/api/admin/org-config";
+const PLAN_TPL: &str = "---\nsymphony_template:\n  prompt: |\n    Write a short plan.\n---\n# Plan: <title>\n\n## Files\n\n## Steps\n\n## Tests\n\n## Risks\n\n## Alternatives considered\n";
 
 fn org_files() -> Vec<(&'static str, &'static str)> {
     vec![
@@ -305,4 +306,123 @@ async fn only_admins_manage_the_org_repository() {
             .unwrap();
         assert_eq!(r.status().as_u16(), 403);
     }
+}
+
+fn codex_homes(app: &SdlcApp) -> Vec<String> {
+    std::fs::read_to_string(app.codex_log())
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.strip_prefix("codex_home ").map(str::to_string))
+        .collect()
+}
+
+fn home_dir(app: &SdlcApp, sha: &str) -> PathBuf {
+    app.workspace_root.join("org-config/homes").join(sha)
+}
+
+async fn trial(app: &SdlcApp) {
+    let (st, v) = app
+        .post(
+            &format!("/api/projects/{}/doc-templates/plan/trial", app.project_id),
+            json!({"content": PLAN_TPL, "sample": "导出报表"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+}
+
+#[tokio::test]
+async fn drafting_sessions_run_with_the_org_codex_home() {
+    let app = SdlcApp::new().await;
+    // Off: the inherited CODEX_HOME is left alone.
+    trial(&app).await;
+    assert_eq!(codex_homes(&app), ["-"]);
+
+    let base = app.dir.path().join("codex-home");
+    std::fs::create_dir_all(base.join("skills/symphony-push")).unwrap();
+    std::fs::write(base.join("skills/symphony-push/SKILL.md"), "push\n").unwrap();
+    std::fs::write(base.join("auth.json"), "{}").unwrap();
+    let mut files = org_files();
+    files.push((
+        "config.toml",
+        "model = \"gpt-5.5\"\n[mcp_servers.x]\ncommand = \"sh\"\n",
+    ));
+    let bare = make_bare(app.dir.path(), "org", &files);
+    configure(&app, bare.to_str().unwrap()).await;
+    let s = sync(&app).await;
+    let sha = s["currentSha"].as_str().unwrap().to_string();
+    assert_eq!(s["droppedConfig"], json!(["mcp_servers"]), "{s}");
+
+    // Template trial (a new session per run).
+    trial(&app).await;
+    let home = home_dir(&app, &sha);
+    assert_eq!(codex_homes(&app)[1], home.to_string_lossy());
+    assert_eq!(
+        std::fs::read_to_string(home.join("AGENTS.md")).unwrap(),
+        "# Org rules\nUse structured logging.\n"
+    );
+    assert!(home.join("skills/security-policy/SKILL.md").is_file());
+    assert!(home.join("skills/symphony-push/SKILL.md").is_file());
+    assert_eq!(
+        std::fs::read_to_string(home.join("config.toml")).unwrap(),
+        "model = \"gpt-5.5\"\n"
+    );
+    assert!(std::fs::symlink_metadata(home.join("auth.json"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+
+    // Flow stage session: G1 approval starts the spec draft.
+    let (st, v) = app
+        .post(
+            &app.base(),
+            json!({"track": "full", "title": "Org", "initialContent": INTENT_OK}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let iid = v["data"]["flow"]["issueIid"].as_i64().unwrap();
+    let base_url = format!("{}/{iid}", app.base());
+    let (st, v) = app
+        .post(&format!("{base_url}/docs/intent/submit"), json!({}))
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let (st, v) = app
+        .post(
+            &format!("{base_url}/docs/intent/decision"),
+            json!({"action": "approve"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    app.wait_flow(iid, |f| SdlcApp::doc_status(f, "spec") == "in_review")
+        .await;
+    assert_eq!(codex_homes(&app)[2], home.to_string_lossy());
+
+    // A pinned project uses its pinned version.
+    let v1 = commit(&bare, app.dir.path(), &[("AGENTS.md", "v1\n")], Some("v1"));
+    commit(&bare, app.dir.path(), &[("AGENTS.md", "v2\n")], None);
+    rusqlite::Connection::open(app.dir.path().join("test.db"))
+        .unwrap()
+        .execute(
+            "UPDATE projects SET org_config_pin = 'v1' WHERE id = ?1",
+            [app.project_id],
+        )
+        .unwrap();
+    sync(&app).await;
+    trial(&app).await;
+    let pinned = home_dir(&app, &v1);
+    assert_eq!(codex_homes(&app)[3], pinned.to_string_lossy());
+    assert_eq!(
+        std::fs::read_to_string(pinned.join("AGENTS.md")).unwrap(),
+        "v1\n"
+    );
+
+    // An unresolvable pin falls back to the inherited CODEX_HOME.
+    rusqlite::Connection::open(app.dir.path().join("test.db"))
+        .unwrap()
+        .execute(
+            "UPDATE projects SET org_config_pin = 'gone' WHERE id = ?1",
+            [app.project_id],
+        )
+        .unwrap();
+    trial(&app).await;
+    assert_eq!(codex_homes(&app)[4], "-");
 }

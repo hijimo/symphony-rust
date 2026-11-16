@@ -188,9 +188,16 @@ pub struct AgentSession {
     queue_cancel: Notify,
     queue_len: Arc<AtomicUsize>,
     usage_sink: UsageSink,
+    /// CODEX_HOME of the next app-server start (organization rules, P3 O2);
+    /// `None` keeps the inherited one. A running process is not switched.
+    codex_home: StdMutex<Option<PathBuf>>,
 }
 
 impl AgentSession {
+    pub fn set_codex_home(&self, home: Option<PathBuf>) {
+        *self.codex_home.lock().unwrap() = home;
+    }
+
     pub fn is_queued(&self) -> bool {
         self.queued.load(Ordering::SeqCst)
     }
@@ -386,6 +393,9 @@ impl AgentSession {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        if let Some(home) = self.codex_home.lock().unwrap().clone() {
+            cmd.env("CODEX_HOME", home);
+        }
         #[cfg(unix)]
         cmd.process_group(0);
         let mut child = cmd
@@ -1048,6 +1058,7 @@ impl AgentManager {
             queue_cancel: Notify::new(),
             queue_len: self.queued.clone(),
             usage_sink: self.usage_sink.clone(),
+            codex_home: StdMutex::new(None),
         });
         self.sessions.entry(key).or_insert(session).clone()
     }

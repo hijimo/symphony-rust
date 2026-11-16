@@ -174,7 +174,8 @@ stateDiagram-v2
 | 内容 | 来源 |
 |---|---|
 | `AGENTS.md` | 组织仓库 `AGENTS.md` |
-| `skills/` | 组织仓库 `skills/`，再叠加部署自带的 `symphony-*` skills（`deploy/codex-skills/`）；同名时以部署自带的为准，组织仓库不能覆盖 Symphony 自己的 skill |
+| `skills/` | 组织仓库 `skills/`，再叠加部署自带的 `symphony-*` skills（`deploy/codex-skills/`，由 `install-codex-skills.sh` 装进部署机的 `$CODEX_HOME/skills/`，实现从那里复制）；组织仓库里 `symphony-` 开头的 skill 一律不用，组织仓库不能覆盖 Symphony 自己的 skill |
+| `REVIEW.md` | 组织仓库 `REVIEW.md`（供 O3 的审查政策组织层读取） |
 | `config.toml` | 组织仓库 `config.toml` 经过白名单过滤（决策 D6）：只保留 `model`、`model_reasoning_effort`、`model_provider`、`model_providers.<id>` 下的 `name`、`base_url`、`env_key`、`wire_api`（`env_key` 只是环境变量名，值由部署通过 `codex.env_passthrough` 注入），以及 `profiles.<id>` 下同样的键。`mcp_servers`、`shell_environment_policy`、`sandbox_*`、`approval_policy` 等全部丢弃并在同步结果里列出 |
 | `auth.json` | 符号链接，指向部署机原有的 `$CODEX_HOME/auth.json`（未设置时为 `~/.codex/auth.json`），不复制（ORG R2） |
 | `sessions/`、`log/` 等 | 运行时由 Codex 写入 |
@@ -183,7 +184,8 @@ stateDiagram-v2
 - **文档起草会话**：`sdlc/agent.rs` 启动 app-server 时显式设置 `CODEX_HOME`，取项目对应版本。已在运行的会话不切换，下次启动进程时生效。
 - **编排器**：`process_manager/spawn.rs` 启动 rust-platform 时设置 `CODEX_HOME`，rust-platform 启动 codex 时继承。版本变化后项目设置页提示“重启服务后生效”，不自动重启。
 - **凭据扫描**：`service::credential_values()` 读 `$CODEX_HOME/auth.json`，换成组织目录后通过符号链接读取原文件；补测试覆盖符号链接这条路径。
-- 未启用组织仓库时，以上都不设置，行为与现在相同。
+- 未启用组织仓库时，以上都不设置，行为与现在相同。锁定的版本无法解析（标签不存在、尚未导出）时同样不设置，并记录警告，管理页的锁定状态显示原因。
+- 生成目录只建一次（原子改名），之后 Codex 写入的 `sessions/` 等保留；清理旧导出时一并删除对应的 `homes/<sha>/`。`GET /api/admin/org-config` 增加 `droppedConfig`，列出当前版本 `config.toml` 中被丢弃的配置项。
 
 ### O3 模板与审查政策的组织层
 
@@ -261,7 +263,7 @@ symphony-eval --org-config . --tasks evals/tasks --codex "codex app-server" \
 - O-1 不执行仓库内容：`git archive` 导出，不检出、不跑 hook / submodule / LFS / 过滤器，不运行仓库里的脚本。
 - O-2 `config.toml` 白名单过滤（第 1 节约束 4），MCP server 等会执行命令的配置一律丢弃。
 - O-3 仓库内不得有凭据：同步时检查文件名和内容，命中则本次同步失败；`auth.json` 只做符号链接。
-- O-4 编排器启动 codex 时去掉平台 Token（`GITLAB_TOKEN`、`GITHUB_TOKEN`、`GITEA_TOKEN`）。这是第 1 节约束 3 的修复，与组织仓库无直接关系，但 ORG 2.3 依赖它，放在 O2 一起做。需要先确认开发 agent 用 `gh` / `glab` 创建 PR 时拿 token 的方式：若依赖这些环境变量，改为通过 `gh auth`/`glab auth` 的凭据文件或 askpass 提供，在 O2 的第一个 PR 里实测后再定。
+- O-4 编排器启动 codex 时去掉平台 Token（`GITLAB_TOKEN`、`GITHUB_TOKEN`、`GITEA_TOKEN`）。O2 实测结论：**暂不去掉，见决策 D9**。开发 agent 的工作流模板（`web-platform/src/templates/workflow_{gitlab,github,gitea}.md`）直接用这些环境变量调用 `glab` / `gh` / Gitea API 创建 MR/PR、改 label、写评论；`gh auth` / `glab auth` 的凭据文件同样在 agent 可读的 HOME 下，换成凭据文件不减少暴露面。现有缓解：模板禁止输出 token，文档起草会话（`sdlc/agent.rs`）本来就不传平台 Token，A6 凭据扫描拦截提交内容中的 token。
 - 组织规则放在 `SAFETY_RULES` 之后，不能覆盖安全规则。
 
 **E eval**
@@ -298,7 +300,7 @@ symphony-eval --org-config . --tasks evals/tasks --codex "codex app-server" \
 | R1 | 信号量大时运维列被淹没 | 去重 + 每项目待分诊上限 + 按严重度排序 + 忽略期；通知只发 critical / warning |
 | R2 | 外部 payload 里的指令性文字影响起草 | nonce 分隔块 + 声明“是数据”；起草权限不变；生成的 intent 仍要经过 G1 人工审阅 |
 | R3 | Sentry 签名、Alertmanager 格式随版本变化 | 以官方文档样例和实测请求作为夹具；解析失败返回 400 并记录，不落库 |
-| R4 | 去掉编排器的平台 Token 后，开发 agent 无法创建 PR | O2 第一个 PR 先实测 `gh` / `glab` 的取 token 方式，确认替代方案后再去掉；去掉前后各跑一次 `real_*` 测试 |
+| R4 | 去掉编排器的平台 Token 后，开发 agent 无法创建 PR | O2 已实测：开发 agent 依赖这些环境变量，本期保留（D9），另行立项把平台写操作收回到编排器 |
 | R5 | 组织 `config.toml` 过滤后与本地 Codex 行为不一致 | 同步结果列出被丢弃的配置项；管理页显示；文档说明哪些键会生效 |
 | R6 | 切换组织版本需要重启编排器，生效时间不确定 | 项目设置页显示“编排器使用的版本”和“最新版本”，不一致时提示重启 |
 | R7 | eval 使用真实模型，成本和波动不可控 | 任务数 20–50；`--repeat` 只在需要时用；基线比较留容差；成本由组织仓库 CI 预算控制 |
@@ -338,6 +340,7 @@ S 和 O 两条线互不依赖，可以并行。
 | D6 | 组织 `config.toml` 的处理 | (a) 白名单过滤，丢弃 MCP 等执行类配置；(b) 原样使用；(c) 不使用组织 `config.toml` | **a**。b 等于执行仓库内容；c 无法统一模型配置 |
 | D7 | eval 在哪里运行 | (a) 组织仓库 CI 调用 `symphony-eval`；(b) Symphony 服务端定时运行并展示 | **a**，与 ORG 2.4 一致；模型凭据只放在 CI |
 | D8 | teamwork 运行时是否并入 P3 | (a) 不并入，单独立项；(b) 并入 | **a**。它改的是实现阶段的执行者，与 P3 的三块内容没有依赖，且需要外部的 `tw` / teamwork-port |
+| D9 | O-4 编排器是否去掉平台 Token（2026-11-16，O2 实测后补充） | (a) 本期保留，另行立项把 MR/PR、label、评论等平台写操作从 agent 收回到编排器；(b) 本期去掉，改用 `gh auth` / `glab auth` 凭据文件；(c) 本期去掉，不提供替代 | **a**。b 的凭据文件仍在 agent 可读的位置，暴露面不变；c 会让开发 agent 无法创建 MR/PR。代价是 ORG 2.3“凭据不传给工作区内执行的命令”对编排器会话仍未满足，文档起草会话已满足 |
 
 **实施前需要提供的信息**（不影响方案定稿，影响对应子 issue 的验收）：
 
