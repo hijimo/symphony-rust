@@ -489,3 +489,204 @@ async fn organization_templates_sit_between_project_and_builtin() {
     assert_eq!(list[1]["source"], "org", "{v}");
     assert_eq!(list[0]["source"], "builtin");
 }
+
+fn db(app: &SdlcApp) -> rusqlite::Connection {
+    rusqlite::Connection::open(app.dir.path().join("test.db")).unwrap()
+}
+
+/// P3 O4: documents and token usage record the organization version.
+#[tokio::test]
+async fn documents_and_token_usage_record_the_org_version() {
+    let app = SdlcApp::new().await;
+    // Off: nothing is recorded.
+    let (_, v) = app
+        .post(
+            &app.base(),
+            json!({"track": "full", "title": "Off", "initialContent": INTENT_OK}),
+        )
+        .await;
+    let off = v["data"]["flow"]["issueIid"].as_i64().unwrap();
+    let intent = std::fs::read_to_string(
+        app.primary_ws(off)
+            .join(format!("docs/changes/{off}/intent.md")),
+    )
+    .unwrap();
+    assert!(intent.contains("org_config_sha: \"\""), "{intent}");
+
+    let bare = make_bare(app.dir.path(), "org", &org_files());
+    configure(&app, bare.to_str().unwrap()).await;
+    let sha = sync(&app).await["currentSha"].as_str().unwrap().to_string();
+
+    let (_, v) = app
+        .post(
+            &app.base(),
+            json!({"track": "full", "title": "On", "initialContent": INTENT_OK}),
+        )
+        .await;
+    let iid = v["data"]["flow"]["issueIid"].as_i64().unwrap();
+    let base = format!("{}/{iid}", app.base());
+    let doc = |name: &str| {
+        std::fs::read_to_string(
+            app.primary_ws(iid)
+                .join(format!("docs/changes/{iid}/{name}.md")),
+        )
+        .unwrap()
+    };
+    assert!(
+        doc("intent").contains(&format!("org_config_sha: \"{sha}\"")),
+        "{}",
+        doc("intent")
+    );
+    app.post(&format!("{base}/docs/intent/submit"), json!({}))
+        .await;
+    let (st, v) = app
+        .post(
+            &format!("{base}/docs/intent/decision"),
+            json!({"action": "approve"}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let flow = app
+        .wait_flow(iid, |f| SdlcApp::doc_status(f, "spec") == "in_review")
+        .await;
+    assert!(doc("spec").contains(&format!("org_config_sha: \"{sha}\"")));
+    let docs = flow["documents"].as_array().unwrap();
+    for d in docs {
+        assert_eq!(d["orgConfigSha"], sha, "{d}");
+    }
+    let rows: Vec<Option<String>> = {
+        let c = db(&app);
+        let mut stmt = c
+            .prepare(
+                "SELECT u.org_config_sha FROM agent_token_usage u JOIN change_flows f ON f.id = u.flow_id WHERE f.issue_iid = ?1",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([iid], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        rows
+    };
+    assert!(!rows.is_empty());
+    assert!(
+        rows.iter().all(|r| r.as_deref() == Some(sha.as_str())),
+        "{rows:?}"
+    );
+}
+
+/// P3 O4: project owners follow the latest version or lock one.
+#[tokio::test]
+async fn project_owners_lock_or_follow_the_org_version() {
+    let app = SdlcApp::new().await;
+    let url = format!("/api/projects/{}/org-config", app.project_id);
+    let (st, v) = app.get(&url).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["data"]["enabled"], false);
+    assert_eq!(v["data"]["canEdit"], true);
+    let (st, _) = app.put(&url, json!({"pin": "v1"})).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "not enabled");
+
+    let bare = make_bare(app.dir.path(), "org", &org_files());
+    let v1 = commit(&bare, app.dir.path(), &[("AGENTS.md", "v1\n")], Some("v1"));
+    let head = commit(&bare, app.dir.path(), &[("AGENTS.md", "v2\n")], None);
+    configure(&app, bare.to_str().unwrap()).await;
+    sync(&app).await;
+
+    let (_, v) = app.get(&url).await;
+    let d = &v["data"];
+    assert_eq!(d["enabled"], true, "{v}");
+    assert_eq!(d["url"], bare.to_str().unwrap());
+    assert_eq!(d["ref"], "main");
+    assert_eq!(d["followedSha"], head);
+    assert_eq!(d["effectiveSha"], head);
+    assert!(d["pin"].is_null() && d["pinError"].is_null());
+
+    let (st, v) = app.put(&url, json!({"pin": "v1"})).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["data"]["pin"], "v1");
+    assert_eq!(v["data"]["effectiveSha"], v1, "pinned version is exported");
+    assert!(export_dir(&app, &v1).is_dir());
+
+    let (st, _) = app.put(&url, json!({"pin": "-x"})).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    let (st, v) = app.put(&url, json!({"pin": "no-such-tag"})).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert!(v["data"]["effectiveSha"].is_null());
+    assert!(
+        v["data"]["pinError"]
+            .as_str()
+            .unwrap()
+            .contains("no-such-tag"),
+        "{v}"
+    );
+
+    let (st, v) = app.put(&url, json!({"pin": null})).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert!(v["data"]["pin"].is_null());
+    assert_eq!(v["data"]["effectiveSha"], head);
+
+    // Members read but cannot change it; others cannot read.
+    let hash = web_platform::auth::password::hash_password("pw123456").unwrap();
+    use web_platform::repository::{ProjectMemberRepository, UserRepository};
+    let bob = app
+        .repo
+        .create_user("bob", &hash, None, "user")
+        .await
+        .unwrap();
+    let carol = app
+        .repo
+        .create_user("carol", &hash, None, "user")
+        .await
+        .unwrap();
+    app.repo
+        .add_member(app.project_id, bob.id, "member", None)
+        .await
+        .unwrap();
+    let login = |name: &'static str| {
+        let client = app.client.clone();
+        let url = app.url("/api/auth/login");
+        async move {
+            let v: Value = client
+                .post(url)
+                .json(&json!({"username": name, "password": "pw123456"}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            v["data"]["token"].as_str().unwrap().to_string()
+        }
+    };
+    let bob_token = login("bob").await;
+    let r = app
+        .client
+        .get(app.url(&url))
+        .bearer_auth(&bob_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["data"]["canEdit"], false);
+    let r = app
+        .client
+        .put(app.url(&url))
+        .bearer_auth(&bob_token)
+        .json(&json!({"pin": "v1"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+    let _ = carol;
+    let carol_token = login("carol").await;
+    let r = app
+        .client
+        .get(app.url(&url))
+        .bearer_auth(&carol_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+}

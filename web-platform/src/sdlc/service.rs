@@ -896,12 +896,14 @@ async fn create_document(
         .project_templates(&app.repo, flow.project_id)
         .await?;
     let tpl = templates::resolve(key, Some(&repo_root), org.as_ref());
+    let org_sha = org.map(|o| o.sha);
     let text = format!(
         "{}{}",
         content::frontmatter(
             doc,
             flow.issue_iid,
             &tpl.template_ref,
+            org_sha.as_deref().unwrap_or(""),
             base_sha.unwrap_or("")
         ),
         body.map(str::to_string)
@@ -921,6 +923,7 @@ async fn create_document(
                 path: doc_repo_path(flow.issue_iid, doc),
                 blob_sha: Some(content::body_hash(&text)),
                 template_ref: tpl.template_ref,
+                org_config_sha: org_sha,
                 base_sha: base_sha.map(str::to_string),
                 updated_by: by,
             },
@@ -2125,6 +2128,18 @@ pub async fn run_ai_turn(
     let outcome = session.run_turn(&text).await;
     if let Some(t) = session.thread_id() {
         let _ = s.store.set_session_thread(flow.id, stage, &t).await;
+    }
+    // Record the organization rules version the turn ran with (P3 O4): the
+    // stage document's frontmatter is rewritten below with it.
+    let org_sha = session.org_config_sha();
+    if let Some(sha) = &org_sha {
+        let stage_rel = ws_doc_path(&spec, flow.issue_iid, stage);
+        for (rel, fm) in frontmatters.iter_mut() {
+            if *rel == stage_rel {
+                *fm = content::with_org_config_sha(fm, sha);
+            }
+        }
+        s.store.set_document_org_sha(flow.id, stage, sha).await?;
     }
     // Post-turn: git status fallback, commit, reconcile.
     let lock = s.flow_lock(flow.id);

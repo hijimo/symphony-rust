@@ -75,6 +75,8 @@ pub struct TokenUsageRecord {
     pub output: i64,
     pub reasoning: i64,
     pub total: i64,
+    /// Organization rules version of the app-server process (P3 O4).
+    pub org_config_sha: Option<String>,
 }
 
 type UsageSink = Arc<StdMutex<Option<mpsc::UnboundedSender<TokenUsageRecord>>>>;
@@ -191,11 +193,19 @@ pub struct AgentSession {
     /// CODEX_HOME of the next app-server start (organization rules, P3 O2);
     /// `None` keeps the inherited one. A running process is not switched.
     codex_home: StdMutex<Option<PathBuf>>,
+    /// Organization rules version the running process started with.
+    process_org_sha: StdMutex<Option<String>>,
 }
 
 impl AgentSession {
     pub fn set_codex_home(&self, home: Option<PathBuf>) {
         *self.codex_home.lock().unwrap() = home;
+    }
+
+    /// Organization rules version (commit sha) of the running app-server,
+    /// `None` without organization rules.
+    pub fn org_config_sha(&self) -> Option<String> {
+        self.process_org_sha.lock().unwrap().clone()
     }
 
     pub fn is_queued(&self) -> bool {
@@ -393,7 +403,12 @@ impl AgentSession {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        if let Some(home) = self.codex_home.lock().unwrap().clone() {
+        let home = self.codex_home.lock().unwrap().clone();
+        *self.process_org_sha.lock().unwrap() = home
+            .as_deref()
+            .and_then(|h| h.file_name())
+            .map(|n| n.to_string_lossy().to_string());
+        if let Some(home) = home {
             cmd.env("CODEX_HOME", home);
         }
         #[cfg(unix)]
@@ -744,6 +759,7 @@ impl AgentSession {
             output: n("outputTokens"),
             reasoning: n("reasoningOutputTokens"),
             total: n("totalTokens"),
+            org_config_sha: self.org_config_sha(),
         };
         if let Some(tx) = self.usage_sink.lock().unwrap().as_ref() {
             let _ = tx.send(record);
@@ -1059,6 +1075,7 @@ impl AgentManager {
             queue_len: self.queued.clone(),
             usage_sink: self.usage_sink.clone(),
             codex_home: StdMutex::new(None),
+            process_org_sha: StdMutex::new(None),
         });
         self.sessions.entry(key).or_insert(session).clone()
     }

@@ -6,6 +6,7 @@ import AdminUsers from './pages/AdminUsers';
 import AdminConcurrency from './pages/AdminConcurrency';
 import AdminAlerts from './pages/AdminAlerts';
 import AdminConfig from './pages/AdminConfig';
+import AdminOrgConfig from './pages/AdminOrgConfig';
 import Settings from './pages/Settings';
 import ProjectListPage from './pages/projects/ProjectListPage';
 import CreateProjectPage from './pages/projects/CreateProjectPage';
@@ -115,6 +116,14 @@ const router = createBrowserRouter([
         element: (
           <ProtectedRoute requireAdmin>
             <AdminConfig />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: 'admin/org-config',
+        element: (
+          <ProtectedRoute requireAdmin>
+            <AdminOrgConfig />
           </ProtectedRoute>
         ),
       },

@@ -101,6 +101,25 @@ struct Settings {
     current: Option<String>,
 }
 
+/// Organization rules as seen by one project (P3 §4 O4).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectOrgConfig {
+    pub enabled: bool,
+    pub url: Option<String>,
+    #[serde(rename = "ref")]
+    pub git_ref: String,
+    /// Latest version of the followed ref.
+    pub followed_sha: Option<String>,
+    /// Tag or commit the project is locked to; `None` follows the ref.
+    pub pin: Option<String>,
+    /// Version new sessions of the project use.
+    pub effective_sha: Option<String>,
+    pub pin_error: Option<String>,
+    /// Project owner or administrator.
+    pub can_edit: bool,
+}
+
 #[derive(Clone)]
 pub struct OrgConfigService {
     root: PathBuf,
@@ -167,6 +186,80 @@ impl OrgConfigService {
         project_id: i64,
     ) -> Result<Option<PathBuf>, WebPlatformError> {
         project_codex_home(&self.root, repo, project_id, &self.base_home).await
+    }
+
+    fn pin_of(&self, project_id: i64) -> Result<Option<String>, WebPlatformError> {
+        let c = self.pool.get()?;
+        Ok(c.query_row(
+            "SELECT org_config_pin FROM projects WHERE id = ?1",
+            params![project_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+        .filter(|p| !p.is_empty()))
+    }
+
+    /// Organization rules state of a project.
+    pub async fn project_state(
+        &self,
+        repo: &SqliteRepository,
+        project_id: i64,
+        can_edit: bool,
+    ) -> Result<ProjectOrgConfig, WebPlatformError> {
+        let st = self.settings(repo).await?;
+        let pin = self.pin_of(project_id)?;
+        let effective_sha = project_version(&self.root, repo, project_id).await?;
+        let pin_error = match (&pin, &effective_sha) {
+            (Some(p), None) if st.url.is_some() => {
+                Some(format!("找不到锁定的版本 {p}，或尚未同步成功"))
+            }
+            _ => None,
+        };
+        Ok(ProjectOrgConfig {
+            enabled: st.url.is_some(),
+            url: st.url,
+            git_ref: st.git_ref,
+            followed_sha: st.current,
+            pin,
+            effective_sha,
+            pin_error,
+            can_edit,
+        })
+    }
+
+    /// Lock a project to a tag / commit (`None` follows the ref) and export
+    /// the version right away.
+    pub async fn set_pin(
+        &self,
+        repo: &SqliteRepository,
+        project_id: i64,
+        pin: Option<&str>,
+    ) -> Result<(), WebPlatformError> {
+        if self.settings(repo).await?.url.is_none() {
+            return Err(WebPlatformError::BadRequest(
+                "未启用组织规则仓库".to_string(),
+            ));
+        }
+        let pin = pin.map(str::trim).filter(|p| !p.is_empty());
+        if let Some(p) = pin {
+            if !valid_ref(p) {
+                return Err(WebPlatformError::BadRequest(format!(
+                    "版本无效：{p}（只允许字母、数字和 ._/-）"
+                )));
+            }
+        }
+        {
+            let c = self.pool.get()?;
+            c.execute(
+                "UPDATE projects SET org_config_pin = ?2 WHERE id = ?1",
+                params![project_id, pin],
+            )?;
+        }
+        if pin.is_some() {
+            self.sync(repo).await?;
+        }
+        Ok(())
     }
 
     /// Organization templates layer of a project (design §4 O3).

@@ -164,6 +164,10 @@ pub fn create_router_with_static_dir(state: AppState, static_dir: Option<PathBuf
         .route("/api/projects/{id}", get(projects::get_project))
         .route("/api/projects/{id}", put(projects::update_project))
         .route("/api/projects/{id}", delete(projects::delete_project))
+        .route(
+            "/api/projects/{id}/org-config",
+            get(org_config::get_project_org_config).put(org_config::put_project_org_config),
+        )
         // Service control
         .route(
             "/api/projects/{id}/start",
