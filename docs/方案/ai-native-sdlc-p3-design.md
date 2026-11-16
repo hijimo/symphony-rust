@@ -231,7 +231,9 @@ symphony-eval --org-config . --tasks evals/tasks --codex "codex app-server" \
 - **执行**：每个任务建一个临时 git 工作区，按组织层模板（O3）用该仓库生成的 `CODEX_HOME`（O2 的同一套导出与过滤代码）非交互起草一次，与 A7 试生成相同。
 - **评分**：任务通过 = `content::validate` 无阻断问题 + `expect` 全部满足 + 起草成功。报告记录每个任务的结果、失败原因、token 用量、组织 commit、Codex 版本。
 - **对比**：有 `--baseline` 时，通过率比基线低超过 `--tolerance`（默认 5 个百分点），或任何基线中通过的任务变为失败，退出码为 1。`--write-baseline` 用当前结果更新基线。
-- 同一任务默认跑 1 次，`--repeat N` 用于评估波动。
+- 同一任务默认跑 1 次，`--repeat N` 用于评估波动。任务在 `--repeat` 次中全部通过才算通过，通过率按全部运行计算。
+- 参数或环境错误（任务文件无效、组织仓库未通过导出检查、读不到基线）退出码为 2；`--turn-timeout` 控制单次起草的超时（默认 1200 秒）。
+- `web-platform` crate 设置 `default-run = "web-platform"`，`cargo run -p web-platform` 行为不变。
 
 ### E2 组织仓库 CI 模板
 
