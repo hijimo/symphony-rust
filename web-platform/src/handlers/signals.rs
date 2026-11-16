@@ -17,6 +17,7 @@ use crate::error::WebPlatformError;
 use crate::middleware::project_access::{require_project_member, require_project_owner};
 use crate::models::ResponseData;
 use crate::repository::ProjectRepository;
+use crate::signals::notify::Reason;
 use crate::signals::sources::{self, ParseError};
 use crate::signals::store::{IngestKey, Signal, Upsert};
 use crate::signals::{MAX_PENDING_PER_PROJECT, PER_KEY_PER_MINUTE, SOURCES};
@@ -179,10 +180,45 @@ fn spawn_recurrence_check(state: AppState, project_id: i64, signal_id: i64, issu
             Ok(issue) if issue.state == "closed" => {
                 if let Err(e) = state.sdlc.signals.mark_recurred(signal_id).await {
                     tracing::warn!(signal_id, "failed to reopen recurring signal: {e}");
+                    return;
                 }
+                notify_now(&state, &project, signal_id, Reason::Recurred).await;
             }
             Ok(_) => {}
             Err(e) => tracing::debug!(signal_id, error = %e, "recurrence check skipped"),
+        }
+    });
+}
+
+/// Notify the project's channels about a signal (S5).
+async fn notify_now(
+    state: &AppState,
+    project: &crate::models::Project,
+    signal_id: i64,
+    reason: Reason,
+) {
+    let Some(manager) = state.alert_manager.as_ref() else {
+        return;
+    };
+    if let Ok(Some(s)) = state.sdlc.signals.get(project.id, signal_id).await {
+        crate::signals::notify::notify(
+            &manager.dispatcher,
+            &state.sdlc.signals.notified,
+            &project.name,
+            &s,
+            reason,
+        )
+        .await;
+    }
+}
+
+fn spawn_notify(state: AppState, project_id: i64, signal_id: i64, reason: Reason) {
+    if state.alert_manager.is_none() {
+        return;
+    }
+    tokio::spawn(async move {
+        if let Ok(Some(project)) = state.repo.get_project(project_id).await {
+            notify_now(&state, &project, signal_id, reason).await;
         }
     });
 }
@@ -376,9 +412,10 @@ pub async fn ingest(
             .upsert(project_id, &source, s, MAX_PENDING_PER_PROJECT)
             .await?
         {
-            Upsert::Created => {
+            Upsert::Created { id } => {
                 accepted += 1;
                 created += 1;
+                spawn_notify(state.clone(), project_id, id, Reason::New);
             }
             Upsert::Updated { id, linked_issue } => {
                 accepted += 1;

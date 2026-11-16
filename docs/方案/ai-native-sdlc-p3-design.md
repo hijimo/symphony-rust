@@ -150,6 +150,7 @@ stateDiagram-v2
 新指纹首次落库、或复发时，按项目已配置的通知渠道发一条消息（钉钉，现有 `NotificationChannel` 实现），带看板链接。
 - 需要先把 `AlertDispatcher` 接进告警引擎（`engine.rs:91-96` 的 TODO），信号通知走同一个 dispatcher。这也让 P1 以来已有的告警规则真正能发出通知。
 - 同一指纹 30 分钟内最多通知一次；只通知 `critical` 和 `warning`，`info` 只进看板。
+- 通知走告警管理里已配置的渠道和严重度过滤，规则 id 为 `external_signal`；消息带信号标题、来源、触发次数和看板路径，复发时注明原 issue 已关闭。30 分钟的限制记在内存里，服务重启后重新计时。
 
 ## 4. P3-2 组织规则仓库
 

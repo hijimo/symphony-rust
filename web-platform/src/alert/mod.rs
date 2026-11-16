@@ -22,6 +22,7 @@ pub struct AlertEngineBuilder {
     repo: SqliteRepository,
     evaluation_interval_secs: u64,
     runtime_state: Option<Arc<crate::services::runtime_state::RuntimeStateCache>>,
+    dispatcher: Option<Arc<crate::notification::NotificationDispatcher>>,
 }
 
 /// Handle returned by the builder, containing the components needed by AppState/AlertManager.
@@ -48,6 +49,7 @@ impl AlertEngineBuilder {
             repo,
             evaluation_interval_secs: 30,
             runtime_state: None,
+            dispatcher: None,
         }
     }
 
@@ -57,6 +59,12 @@ impl AlertEngineBuilder {
         cache: Arc<crate::services::runtime_state::RuntimeStateCache>,
     ) -> Self {
         self.runtime_state = Some(cache);
+        self
+    }
+
+    /// Channels that receive fired alerts.
+    pub fn dispatcher(mut self, d: Arc<crate::notification::NotificationDispatcher>) -> Self {
+        self.dispatcher = Some(d);
         self
     }
 
@@ -103,7 +111,8 @@ impl AlertEngineBuilder {
             self.repo.clone(),
             std::time::Duration::from_secs(self.evaluation_interval_secs),
             shutdown_rx,
-        );
+        )
+        .with_dispatcher(self.dispatcher.clone());
 
         tokio::spawn(async move {
             engine.run().await;

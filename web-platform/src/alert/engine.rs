@@ -22,6 +22,21 @@ pub struct AlertEngine {
     repo: SqliteRepository,
     evaluation_interval: Duration,
     shutdown_rx: mpsc::Receiver<()>,
+    /// Sends fired alerts to the configured channels (P3 §3 S5).
+    dispatcher: Option<Arc<crate::notification::NotificationDispatcher>>,
+}
+
+/// Send fired alerts to the channels; returns how many were dispatched.
+pub async fn dispatch_alerts(
+    dispatcher: &crate::notification::NotificationDispatcher,
+    alerts: &[AlertEvent],
+) -> usize {
+    for a in alerts {
+        dispatcher
+            .dispatch(&crate::notification::AlertEvent::from(a))
+            .await;
+    }
+    alerts.len()
 }
 
 impl AlertEngine {
@@ -38,7 +53,16 @@ impl AlertEngine {
             repo,
             evaluation_interval,
             shutdown_rx,
+            dispatcher: None,
         }
+    }
+
+    pub fn with_dispatcher(
+        mut self,
+        dispatcher: Option<Arc<crate::notification::NotificationDispatcher>>,
+    ) -> Self {
+        self.dispatcher = dispatcher;
+        self
     }
 
     /// Run the alert engine main loop. This method blocks until a shutdown
@@ -91,9 +115,10 @@ impl AlertEngine {
             }
         }
 
-        // 4. Notification dispatch will be handled by the NotificationDispatcher
-        //    (implemented by Agent 3). For now, alerts are persisted and logged.
-        //    The dispatcher integration point is the alert event list returned here.
+        // 4. Notify the configured channels (severity filters apply).
+        if let Some(d) = &self.dispatcher {
+            dispatch_alerts(d, &alerts).await;
+        }
     }
 
     /// Persist a single alert event to the alert_history table.
@@ -117,5 +142,87 @@ impl AlertEngine {
         self.repo.insert_alert_history(&record).await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::alert::Severity;
+    use crate::notification::{NotificationChannel, NotificationDispatcher};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    struct Rec(Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl NotificationChannel for Rec {
+        fn channel_type(&self) -> &str {
+            "test"
+        }
+        fn channel_id(&self) -> &str {
+            "rec"
+        }
+        async fn send(
+            &self,
+            a: &crate::notification::AlertEvent,
+        ) -> Result<crate::notification::NotificationResult, crate::notification::NotificationError>
+        {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("{}:{}", a.severity, a.title));
+            Ok(crate::notification::NotificationResult {
+                channel_id: "rec".into(),
+                channel_type: "test".into(),
+                success: true,
+                error_message: None,
+                response_time_ms: 0,
+                sent_at: chrono::Utc::now(),
+            })
+        }
+        async fn send_test(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<crate::notification::NotificationResult, crate::notification::NotificationError>
+        {
+            unreachable!()
+        }
+        async fn health_check(&self) -> bool {
+            true
+        }
+    }
+
+    fn alert(sev: Severity, title: &str) -> AlertEvent {
+        AlertEvent {
+            id: "1".into(),
+            rule_id: "service_crash".into(),
+            severity: sev,
+            project_id: Some(1),
+            project_name: Some("p".into()),
+            title: title.into(),
+            message: "m".into(),
+            context: HashMap::new(),
+            fired_at: chrono::Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn fired_alerts_reach_channels_matching_their_severity() {
+        let rec = Arc::new(Rec(Mutex::new(Vec::new())));
+        let d = NotificationDispatcher::new();
+        d.add_channel(rec.clone(), vec!["critical".into()], true)
+            .await;
+        let n = dispatch_alerts(
+            &d,
+            &[
+                alert(Severity::Critical, "crash"),
+                alert(Severity::Warning, "slow"),
+            ],
+        )
+        .await;
+        assert_eq!(n, 2);
+        assert_eq!(*rec.0.lock().unwrap(), vec!["critical:crash".to_string()]);
     }
 }
