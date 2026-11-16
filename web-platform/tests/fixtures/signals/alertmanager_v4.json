@@ -1,0 +1,31 @@
+{
+  "receiver": "symphony",
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {"alertname": "HighErrorRate", "service": "checkout", "severity": "critical"},
+      "annotations": {"summary": "Checkout 5xx rate above 5%", "description": "5xx ratio is 7.2% over 10m"},
+      "startsAt": "2026-11-14T08:00:00Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "http://prometheus.local/graph?g0.expr=rate",
+      "fingerprint": "c0ffee1234567890"
+    },
+    {
+      "status": "resolved",
+      "labels": {"alertname": "DiskFull", "instance": "db-1"},
+      "annotations": {},
+      "startsAt": "2026-11-14T07:00:00Z",
+      "endsAt": "2026-11-14T07:30:00Z",
+      "generatorURL": "http://prometheus.local/graph?g0.expr=disk",
+      "fingerprint": "d15cfu11"
+    }
+  ],
+  "groupLabels": {"alertname": "HighErrorRate"},
+  "commonLabels": {},
+  "commonAnnotations": {},
+  "externalURL": "http://alertmanager.local",
+  "version": "4",
+  "groupKey": "{}:{alertname=\"HighErrorRate\"}",
+  "truncatedAlerts": 0
+}

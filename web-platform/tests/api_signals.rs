@@ -252,3 +252,82 @@ async fn sentry_requests_are_verified_by_signature() {
     let r = send(sign(&secret)).await.unwrap();
     assert_ne!(r.status().as_u16(), 401);
 }
+
+fn fixture(name: &str) -> Vec<u8> {
+    std::fs::read(format!(
+        "{}/tests/fixtures/signals/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn sentry_issue_and_alert_webhooks_become_one_signal_each() {
+    let app = SdlcApp::new().await;
+    let (_, secret) = new_key(&app, "sentry").await;
+    let send = |resource: &'static str, body: Vec<u8>| {
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(&body);
+        let sig = hex::encode(mac.finalize().into_bytes());
+        app.client
+            .post(ingest_url(&app, app.project_id, "sentry"))
+            .header("Sentry-Hook-Resource", resource)
+            .header("Sentry-Hook-Signature", sig)
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+    };
+    let r = send("issue", fixture("sentry_issue_created.json"))
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 202);
+    let r = send("event_alert", fixture("sentry_event_alert.json"))
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 202);
+    // Installation webhooks are acknowledged and ignored.
+    let r = send("installation", br#"{"action":"created"}"#.to_vec())
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 202);
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["data"]["accepted"], 0);
+
+    let list = signals(&app).await;
+    assert_eq!(list.len(), 2, "{list:?}");
+    let s = list
+        .iter()
+        .find(|s| s["fingerprint"] == "1234567890")
+        .unwrap();
+    assert_eq!(s["source"], "sentry");
+    assert_eq!(s["severity"], "critical");
+    assert_eq!(
+        s["externalUrl"],
+        "https://example-org.sentry.io/issues/1234567890/"
+    );
+}
+
+#[tokio::test]
+async fn alertmanager_batches_create_one_signal_per_alert() {
+    let app = SdlcApp::new().await;
+    let (_, secret) = new_key(&app, "alertmanager").await;
+    let r = app
+        .client
+        .post(ingest_url(&app, app.project_id, "alertmanager"))
+        .bearer_auth(&secret)
+        .header("Content-Type", "application/json")
+        .body(fixture("alertmanager_v4.json"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 202);
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["data"], json!({"accepted": 2, "created": 2}));
+    let list = signals(&app).await;
+    let disk = list
+        .iter()
+        .find(|s| s["fingerprint"] == "d15cfu11")
+        .unwrap();
+    assert_eq!(disk["resolved"], true);
+    assert_eq!(disk["severity"], "warning");
+}

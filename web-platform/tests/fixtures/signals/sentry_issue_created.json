@@ -1,0 +1,31 @@
+{
+  "action": "created",
+  "installation": {"uuid": "24b397fc-a86e-43ef-9297-949e21b82480"},
+  "data": {
+    "issue": {
+      "url": "https://sentry.io/api/0/organizations/example-org/issues/1234567890/",
+      "web_url": "https://example-org.sentry.io/issues/1234567890/",
+      "project_url": "https://example-org.sentry.io/issues/?project=4509877862268928",
+      "id": "1234567890",
+      "shortId": "PYTHON-Y",
+      "title": "ZeroDivisionError: division by zero",
+      "culprit": "app.billing in compute_invoice",
+      "permalink": "https://example-org.sentry.io/issues/1234567890/",
+      "level": "fatal",
+      "status": "unresolved",
+      "substatus": "new",
+      "platform": "python",
+      "project": {"id": "112313123123134", "name": "python", "slug": "python", "platform": "python"},
+      "type": "default",
+      "metadata": {"title": "ZeroDivisionError: division by zero", "severity": 1},
+      "issueType": "error",
+      "issueCategory": "error",
+      "priority": "high",
+      "count": "3",
+      "userCount": 3,
+      "firstSeen": "2025-11-10T20:56:00.679000+00:00",
+      "lastSeen": "2025-11-10T20:56:00.738000+00:00"
+    }
+  },
+  "actor": {"type": "application", "id": "sentry", "name": "Sentry"}
+}
