@@ -1099,11 +1099,7 @@ impl AgentRunner {
                     .unzip(),
                 _ => (Vec::new(), Vec::new()),
             };
-        // web-platform points CODEX_HOME at the organization rules and sets
-        // SYMPHONY_ORG_CONFIG_SHA when they are in use (P3 O2/O3).
-        let org_home = std::env::var_os("SYMPHONY_ORG_CONFIG_SHA")
-            .and(std::env::var_os("CODEX_HOME"))
-            .map(std::path::PathBuf::from);
+        let org_home = super::ai_review::org_home(|k| std::env::var_os(k));
         let input = super::ai_review::ReviewInput {
             issue_id: &issue.id,
             repos: &review_repos,

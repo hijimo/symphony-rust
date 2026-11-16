@@ -475,6 +475,28 @@ async fn test_run_skips_when_heads_already_reviewed_and_increments_round_otherwi
         .contains("审查政策：内置默认"));
 }
 
+#[test]
+fn test_org_home_needs_the_org_config_sha() {
+    use symphony_platform::agent::ai_review::org_home;
+    let env = |pairs: &'static [(&'static str, &'static str)]| {
+        move |k: &str| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| std::ffi::OsString::from(v))
+        }
+    };
+    assert_eq!(org_home(env(&[("CODEX_HOME", "/home/u/.codex")])), None);
+    assert_eq!(
+        org_home(env(&[
+            ("CODEX_HOME", "/ws/org-config/homes/abc"),
+            ("SYMPHONY_ORG_CONFIG_SHA", "abc"),
+        ])),
+        Some(PathBuf::from("/ws/org-config/homes/abc"))
+    );
+    assert_eq!(org_home(env(&[("SYMPHONY_ORG_CONFIG_SHA", "abc")])), None);
+}
+
 /// P3 O3: repository REVIEW.md → organization `CODEX_HOME/REVIEW.md` → built-in.
 #[tokio::test]
 async fn test_organization_policy_applies_without_a_repository_policy() {

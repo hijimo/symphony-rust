@@ -317,6 +317,14 @@ async fn base_branch(repo: &ReviewRepo) -> Option<String> {
     .filter(|b| !b.is_empty())
 }
 
+/// Organization rules CODEX_HOME: web-platform points `CODEX_HOME` at the
+/// organization rules and sets `SYMPHONY_ORG_CONFIG_SHA` when they are in
+/// use (P3 O2/O3). A plain `CODEX_HOME` is not an organization layer.
+pub fn org_home(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
+    var("SYMPHONY_ORG_CONFIG_SHA")?;
+    var("CODEX_HOME").map(PathBuf::from)
+}
+
 async fn read_policy(dir: &Path) -> Option<String> {
     tokio::fs::read_to_string(dir.join(REVIEW_FILE))
         .await
