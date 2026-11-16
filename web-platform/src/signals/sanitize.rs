@@ -41,7 +41,13 @@ fn patterns() -> &'static [(Regex, &'static str)] {
 
 fn html_tags() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"<[^>]*>").unwrap())
+    // Known HTML tags only: stack traces contain `<anonymous>`, `<module>`.
+    R.get_or_init(|| {
+        Regex::new(
+            r"(?i)</?(?:a|b|i|u|p|br|hr|em|strong|span|div|font|img|iframe|script|style|code|pre|ul|ol|li|table|tr|td|th|h[1-6]|svg|object|embed|form|input|button|link|meta)\b[^>]*>",
+        )
+        .unwrap()
+    })
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {
@@ -123,6 +129,11 @@ mod tests {
         assert_eq!(clean_text("<b>Disk</b> full", 100), "Disk full");
         assert_eq!(clean_text("abcdef", 3), "abc…");
         assert_eq!(clean_text("  x  ", 10), "x");
+        assert_eq!(
+            clean_text("at <anonymous>:3 in <module>", 100),
+            "at <anonymous>:3 in <module>"
+        );
+        assert_eq!(clean_text("<IMG src=x onerror=1>a<br/>b", 100), "ab");
     }
 
     #[test]

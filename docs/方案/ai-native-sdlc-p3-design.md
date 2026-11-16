@@ -117,6 +117,11 @@ stateDiagram-v2
 
 `generic` 用来接扫描工具、值班系统等没有专门适配的来源，调用方自己按格式发。
 
+补充约定：
+- Sentry 的 `issue` 只处理 `created`、`unresolved`、`resolved`；`assigned`、`archived` 以及 `installation` 等其他资源返回 202、不落库（Sentry 要求 1 秒内应答，报错会被记为投递失败）。`event_alert` 的证据带触发的规则名、异常类型与内容、最内层 5 个堆栈帧。
+- Alertmanager 的告警没有 `fingerprint` 时，用排序后的 labels 的哈希作为指纹；没有 `alertname` 的告警整批返回 400。
+- 去 HTML 只去掉常见的 HTML 标签，堆栈里的 `<anonymous>`、`<module>` 这类文字保留。
+
 ### S3 运维列待分诊
 
 - `build_stage_columns` 读本地 `signals` 表，状态为 `new` 的放进运维列新增的 `signals` 数组，按严重度、最近触发时间排序。这里不请求平台。全局看板沿用同一函数，信号卡片带 `projectId`、`projectName`。

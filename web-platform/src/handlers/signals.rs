@@ -195,14 +195,12 @@ pub async fn ingest(
     state.sdlc.signals.touch_key(key.id).await?;
     let payload: Value = serde_json::from_slice(&body)
         .map_err(|_| WebPlatformError::BadRequest("请求体不是合法的 JSON".into()))?;
-    let parsed = match sources::parse(&source, &payload) {
+    let resource = headers
+        .get("sentry-hook-resource")
+        .and_then(|v| v.to_str().ok());
+    let parsed = match sources::parse(&source, resource, &payload) {
         Ok(p) => p,
         Err(ParseError::Invalid(msg)) => return Err(WebPlatformError::BadRequest(msg)),
-        Err(ParseError::Unsupported(s)) => {
-            return Err(WebPlatformError::BadRequest(format!(
-                "暂不支持解析 {s} 的请求"
-            )))
-        }
     };
     let (mut accepted, mut created) = (0, 0);
     for s in parsed {

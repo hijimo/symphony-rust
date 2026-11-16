@@ -1,0 +1,38 @@
+{
+  "action": "triggered",
+  "actor": {"id": "sentry", "name": "Sentry", "type": "application"},
+  "data": {
+    "event": {
+      "culprit": "?(<anonymous>)",
+      "datetime": "2019-08-19T21:06:17.677000Z",
+      "event_id": "e4874d664c3540c1a32eab185f12c5ab",
+      "exception": {
+        "values": [
+          {
+            "stacktrace": {
+              "frames": [
+                {"filename": "/js/prod/runner-4.1.7.min.js", "function": null, "lineno": 1, "in_app": false},
+                {"filename": "/js/prod/runner-4.1.7.min.js", "function": "run", "lineno": 1, "in_app": false},
+                {"filename": "<anonymous>", "function": null, "lineno": 3, "in_app": false}
+              ]
+            },
+            "type": "ReferenceError",
+            "value": "heck is not defined"
+          }
+        ]
+      },
+      "issue_url": "https://sentry.io/api/0/issues/1117540176/",
+      "issue_id": "1117540176",
+      "level": "error",
+      "message": "",
+      "metadata": {"filename": "<anonymous>", "type": "ReferenceError", "value": "heck is not defined"},
+      "platform": "javascript",
+      "title": "ReferenceError: heck is not defined",
+      "url": "https://sentry.io/api/0/projects/test-org/front-end/events/e4874d664c3540c1a32eab185f12c5ab/",
+      "web_url": "https://sentry.io/organizations/test-org/issues/1117540176/events/e4874d664c3540c1a32eab185f12c5ab/"
+    },
+    "triggered_rule": "Very Important Alert Rule!",
+    "issue_alert": {"title": "Very Important Alert Rule!", "settings": [{"name": "channel", "value": "#general"}]}
+  },
+  "installation": {"uuid": "a8e5d37a-696c-4c54-adb5-b3f28d64c7de"}
+}
