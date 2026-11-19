@@ -2010,9 +2010,14 @@ pub async fn revert(
 // --------------------------------------------------------------- drafting
 
 pub(crate) fn developer_instructions(writable: &str, doc: DocType) -> String {
+    let scope = if doc == DocType::Intent {
+        "- This is the intent stage. The product owner reviews intent.md to decide whether the idea is worth doing; feasibility is judged in that review. Write at the business level: problem, value, desired outcome, business constraints, open questions. Do not read source code to design a solution, and do not write implementation details (APIs, data tables, files, modules, architecture, technology choices); those belong to spec.md.\n"
+    } else {
+        "- You may read any file in the workspace (all repositories, full history).\n"
+    };
     format!(
         "You are working inside Symphony's document workbench.\n\
-         - You may read any file in the workspace (all repositories, full history).\n\
+         {scope}\
          - You may ONLY create or modify files under `{writable}/`. Writes elsewhere are rejected.\n\
          - The current document is `{writable}/{doc}.md`. Keep its YAML frontmatter unchanged.\n\
          - Other files under `{writable}/` (spreadsheets, images, PDFs, notes, in any subdirectory) are attachments uploaded by people for this issue. Read the relevant ones before writing (for `.xlsx` / `.docx` use a script, e.g. Python `openpyxl` / `zipfile`), and reference them by their relative path in the document instead of copying them in full.\n\
@@ -2050,8 +2055,10 @@ pub async fn session_for(
     let spec = workspace_spec(app, project, flow).await?;
     let writable = writable_dir(&spec, flow.issue_iid);
     let thread = s.store.get_session_thread(flow.id, stage).await?;
-    // Only a new session needs the block (existing ones keep theirs).
-    let prefix = if s.agents.get(flow.id, stage).is_some() {
+    // Only a new session needs the block (existing ones keep theirs). The
+    // intent stage stays at the business level and gets no coding
+    // conventions.
+    let prefix = if stage == DocType::Intent || s.agents.get(flow.id, stage).is_some() {
         None
     } else {
         s.workspaces
@@ -2468,5 +2475,21 @@ mod credential_tests {
             vec!["sk-abcdefghijklmnop1234".to_string()]
         );
         assert!(credential_values_in(&dir.path().join("missing")).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intent_instructions_stay_at_the_business_level() {
+        let intent = developer_instructions("docs/changes/1", DocType::Intent);
+        assert!(intent.contains("This is the intent stage"));
+        assert!(intent.contains("Do not read source code"));
+        assert!(!intent.contains("You may read any file"));
+        let spec = developer_instructions("docs/changes/1", DocType::Spec);
+        assert!(spec.contains("You may read any file"));
+        assert!(!spec.contains("intent stage"));
     }
 }

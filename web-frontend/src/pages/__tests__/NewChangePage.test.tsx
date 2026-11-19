@@ -8,7 +8,7 @@ import theme from '../../theme';
 import { server } from '../../test/mocks/server';
 import { makeFlow } from '../../test/workbenchFixtures';
 import { useIssueStore } from '../../store/issueStore';
-import NewChangePage, { toIntentBody } from '../projects/NewChangePage';
+import NewChangePage, { deriveTitle, toIntentBody } from '../projects/NewChangePage';
 
 const originalIssue = useIssueStore.getState();
 
@@ -34,7 +34,7 @@ describe('toIntentBody', () => {
     const body = toIntentBody('理赔进度', '  客户想看理赔进度  ', '');
     expect(body.split('\n')[0]).toBe('# Intent: 理赔进度');
     const sections = body.split('\n').filter((l) => l.startsWith('## '));
-    expect(sections).toEqual(['## Problem', '## Proposed outcome', '## Affected users and systems', '## Constraints', '## Open questions']);
+    expect(sections).toEqual(['## Problem', '## Value', '## Proposed outcome', '## Affected users and systems', '## Constraints', '## Open questions']);
     expect(body).toContain('## Problem\n客户想看理赔进度\n');
     expect(body.endsWith('\n')).toBe(true);
   });
@@ -75,7 +75,22 @@ describe('toIntentBody', () => {
   });
 
   it('leaves Problem empty when both idea and draft are blank', () => {
-    expect(toIntentBody('T', '  ', '')).toContain('## Problem\n\n\n## Proposed outcome');
+    expect(toIntentBody('T', '  ', '')).toContain('## Problem\n\n\n## Value');
+  });
+});
+
+describe('deriveTitle', () => {
+  it('uses the first sentence of the idea', () => {
+    expect(deriveTitle('  客户想看理赔进度。现在只能打电话问\n第二行')).toBe('客户想看理赔进度');
+    expect(deriveTitle('\n\n导出报表！')).toBe('导出报表');
+  });
+
+  it('caps long titles at 50 characters', () => {
+    expect(deriveTitle('长'.repeat(80))).toBe(`${'长'.repeat(49)}…`);
+  });
+
+  it('is empty for a blank idea', () => {
+    expect(deriveTitle('  \n ')).toBe('');
   });
 });
 
@@ -94,14 +109,15 @@ describe('NewChangePage', () => {
   });
   afterEach(() => useIssueStore.setState(originalIssue, true));
 
-  it('requires a title before creating', async () => {
+  it('has no title field and requires an idea before creating', async () => {
     const user = userEvent.setup();
     renderPage();
+    expect(screen.queryByRole('textbox', { name: '标题' })).not.toBeInTheDocument();
     const create = screen.getByRole('button', { name: '创建并进入工作台' });
     expect(create).toBeDisabled();
-    await user.type(screen.getByRole('textbox', { name: '标题' }), '   ');
+    await user.type(screen.getByRole('textbox', { name: '想法' }), '   ');
     expect(create).toBeDisabled();
-    await user.type(screen.getByRole('textbox', { name: '标题' }), 'x');
+    await user.type(screen.getByRole('textbox', { name: '想法' }), 'x');
     expect(create).toBeEnabled();
   });
 
@@ -116,38 +132,38 @@ describe('NewChangePage', () => {
     expect(gen).toBeEnabled();
   });
 
-  it('creates a track:full flow with intent initial content and navigates to the workbench', async () => {
+  it('creates a track:full flow with a title derived from the idea and navigates to the workbench', async () => {
     const user = userEvent.setup();
     renderPage();
     await user.type(screen.getByRole('textbox', { name: '想法' }), '客户想在门户里看到理赔进度');
-    await user.type(screen.getByRole('textbox', { name: '标题' }), '  理赔进度  ');
+    expect(screen.getByTestId('auto-title')).toHaveTextContent('客户想在门户里看到理赔进度');
     await user.click(screen.getByRole('button', { name: '创建并进入工作台' }));
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/projects/7/changes/31'));
     expect(bodies).toHaveLength(1);
     expect(bodies[0]).toEqual({
       track: 'full',
-      title: '理赔进度',
+      title: '客户想在门户里看到理赔进度',
       summary: '客户想在门户里看到理赔进度',
-      initialContent: toIntentBody('理赔进度', '客户想在门户里看到理赔进度', ''),
+      initialContent: toIntentBody('客户想在门户里看到理赔进度', '客户想在门户里看到理赔进度', ''),
     });
     const ic = String(bodies[0].initialContent);
-    expect(ic).toContain('# Intent: 理赔进度');
+    expect(ic).toContain('# Intent: 客户想在门户里看到理赔进度');
     expect(ic).toContain('## Problem\n客户想在门户里看到理赔进度');
     expect(ic).toContain('## Constraints');
   });
 
-  it('uses the AI draft once generation is done and pre-fills the title', async () => {
+  it('uses the AI draft and its title once generation is done', async () => {
     const user = userEvent.setup();
     renderPage();
+    await user.type(screen.getByRole('textbox', { name: '想法' }), '客户想看理赔进度，现在只能打电话');
     // Simulate the issue AI store finishing a generation.
     useIssueStore.setState({ aiStatus: 'done', generatedContent: '生成的问题描述', generatedTitle: 'AI 标题', aiError: null });
-    const title = (await screen.findByRole('textbox', { name: '标题' })) as HTMLInputElement;
-    await waitFor(() => expect(title.value).toBe('AI 标题'));
+    await waitFor(() => expect(screen.getByTestId('auto-title')).toHaveTextContent('AI 标题'));
     expect(screen.getByText('生成的问题描述')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '创建并进入工作台' }));
     await waitFor(() => expect(bodies).toHaveLength(1));
-    expect(bodies[0].initialContent).toBe(toIntentBody('AI 标题', '', '生成的问题描述'));
-    expect(bodies[0].summary).toBeUndefined();
+    expect(bodies[0].title).toBe('AI 标题');
+    expect(bodies[0].initialContent).toBe(toIntentBody('AI 标题', '客户想看理赔进度，现在只能打电话', '生成的问题描述'));
   });
 
   it('asks the AI for the intent template', async () => {
@@ -168,7 +184,7 @@ describe('NewChangePage', () => {
       ),
     );
     renderPage();
-    await user.type(screen.getByRole('textbox', { name: '标题' }), 'T');
+    await user.type(screen.getByRole('textbox', { name: '想法' }), 'T');
     await user.click(screen.getByRole('button', { name: '创建并进入工作台' }));
     expect(await screen.findByText('项目创建者未配置 GitLab Token')).toBeInTheDocument();
     expect(screen.queryByTestId('location')).not.toBeInTheDocument();
@@ -189,7 +205,7 @@ describe('NewChangePage', () => {
     const dir = screen.getByLabelText('附件目录');
     await user.clear(dir);
     await user.type(dir, 'assets/评分');
-    await user.type(screen.getByRole('textbox', { name: '标题' }), '评分模块');
+    await user.type(screen.getByRole('textbox', { name: '想法' }), '评分模块');
     await user.click(screen.getByRole('button', { name: '创建并进入工作台' }));
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/projects/7/changes/31'));
     expect(uploads).toEqual(['docs/changes/12/assets/评分/评分标准.xlsx']);
@@ -202,7 +218,7 @@ describe('NewChangePage', () => {
     const dir = screen.getByLabelText('附件目录');
     await user.clear(dir);
     await user.type(dir, '../x');
-    await user.type(screen.getByRole('textbox', { name: '标题' }), 'T');
+    await user.type(screen.getByRole('textbox', { name: '想法' }), 'T');
     expect(screen.getByRole('button', { name: '创建并进入工作台' })).toBeDisabled();
     await user.click(screen.getByLabelText('移除 a.pdf'));
     expect(screen.getByRole('button', { name: '创建并进入工作台' })).toBeEnabled();

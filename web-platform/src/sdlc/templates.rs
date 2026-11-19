@@ -9,8 +9,18 @@ use serde::{Deserialize, Serialize};
 
 use super::model::{DocType, TEMPLATES_DIR};
 
-/// Built-in template version. Bump when the built-in skeleton changes.
-pub const BUILTIN_VERSION: u32 = 1;
+/// Built-in template version per template. Bump the template's version
+/// when its built-in skeleton changes. Intent v2 adds `## Value` and keeps
+/// the document at the business level.
+pub fn builtin_version(key: TemplateKey) -> u32 {
+    match key {
+        TemplateKey {
+            doc: DocType::Intent,
+            incident: false,
+        } => 2,
+        _ => 1,
+    }
+}
 
 /// A template: one per document type, plus the incident variant of intent
 /// (P3 design §3 S4). The variant reuses the intent document, gate and
@@ -96,7 +106,7 @@ pub struct DocTemplate {
     pub checklist: Vec<String>,
 }
 
-const INTENT_SKELETON: &str = "# Intent: <title>\n\n## Problem\n<!-- 用提出者自己的话：今天做不到什么、谁受影响。不需要正式语言 -->\n\n## Proposed outcome\n<!-- 更好的状态是什么样 -->\n\n## Affected users and systems\n<!-- 受影响的用户和系统 -->\n\n## Constraints\n<!-- 约束：安全、合规、性能、兼容性等 -->\n\n## Open questions\n<!-- 还没想清楚的问题 -->\n";
+const INTENT_SKELETON: &str = "# Intent: <title>\n\n## Problem\n<!-- 用提出者自己的话：今天做不到什么、谁受影响。不需要正式语言，不写技术方案 -->\n\n## Value\n<!-- 为什么值得做：谁受益、收益多大（省多少时间或钱、多少用户受益、带来多少收入）、为什么是现在。能量化就量化，不能量化就写依据 -->\n\n## Proposed outcome\n<!-- 做成之后用户看到的状态，以及怎么判断做成了。写结果，不写实现 -->\n\n## Affected users and systems\n<!-- 受影响的用户、角色和业务流程。不写接口、数据表、代码模块 -->\n\n## Constraints\n<!-- 业务约束：截止时间、合规要求、预算、不能影响的现有业务等 -->\n\n## Open questions\n<!-- 还没想清楚、需要产品负责人在审阅时判断的问题 -->\n";
 
 const SPEC_SKELETON: &str = "# Spec: <title>\n\n## Requirements\n<!-- 需求：要做什么、验收标准 -->\n\n## Design\n<!-- 设计：如何集成进现有代码库，接口、数据、交互 -->\n\n## Concerns\n<!-- 关注点：每条一行，写明 owner: <负责人> resolution: <结论>；没有则写“无” -->\n";
 
@@ -106,7 +116,7 @@ const INCIDENT_SKELETON: &str = "# Intent: <title>\n\n## Problem\n<!-- 出了什
 
 const INCIDENT_PROMPT: &str = "Turn the external signal below into intent.md for an incident. State the problem and its impact from the evidence only; put the observed facts (symptoms, scope, start time, timeline, links) under ## Anomaly and evidence and anything you infer or do not know under ## Open questions. Do not invent root causes. Keep every section of the template.";
 
-const INTENT_PROMPT: &str = "Help the proposer write intent.md in their own words: what they want, why, under which constraints, and what is still open. Ask the questions an analyst would ask (scope, users, constraints, what success looks like). Keep the section structure of the template.";
+const INTENT_PROMPT: &str = "Help the proposer write intent.md in their own words. The product owner reviews it to decide whether the idea is worth doing and feasible enough to enter the product. Cover the problem and who has it, the value (who benefits, how much, why now), the desired outcome and how we will know it worked, business constraints, and what is still open. Ask the questions a product manager would ask (who has the problem, how often, what it costs today, what success looks like). Stay at the business level: do not describe implementation (APIs, data tables, files, modules, architecture, technology choices) and do not assess technical feasibility; that belongs to the spec. Keep the section structure of the template.";
 
 /// Playbook Design-stage prompt (verbatim), plus Symphony output rules.
 const SPEC_PROMPT: &str = "Read the attached intent.md and produce a requirements and design spec for integrating it into our existing codebase. Apply the skills available to you so the plan conforms to our brand guidelines, security policies and UX standards. Document the spec fully as spec.md, ready to hand to the engineering team. Describe clearly any areas of concern, especially where you cannot satisfy contradicting policies.";
@@ -130,9 +140,11 @@ fn builtin(key: TemplateKey) -> DocTemplate {
             INTENT_SKELETON,
             INTENT_PROMPT,
             &[
-                "问题是否用提出者自己的话写清楚了？",
+                "问题是否用提出者自己的话写清楚了？谁有这个问题？",
+                "价值是否成立：谁受益、收益多大、为什么现在做？",
                 "期望结果是否具体、可判断？",
-                "约束和不在范围内的内容是否写明？",
+                "是否有明显做不到或代价过高的地方？",
+                "是否与已有需求重复？约束和不在范围内的内容是否写明？",
             ],
         ),
         DocType::Spec => (
@@ -159,7 +171,7 @@ fn builtin(key: TemplateKey) -> DocTemplate {
         doc_type: doc,
         key: key.as_str(),
         source: "builtin".to_string(),
-        template_ref: format!("{}@{BUILTIN_VERSION}", key.as_str()),
+        template_ref: format!("{}@{}", key.as_str(), builtin_version(key)),
         skeleton: skeleton.to_string(),
         prompt: prompt.to_string(),
         checklist: checklist.iter().map(|s| s.to_string()).collect(),
@@ -373,6 +385,24 @@ mod tests {
         assert!(resolve(DocType::Spec, None, None)
             .prompt
             .starts_with("Read the attached intent.md"));
+    }
+
+    #[test]
+    fn intent_v2_asks_for_value_and_stays_at_business_level() {
+        let t = resolve(DocType::Intent, None, None);
+        assert_eq!(t.template_ref, "intent@2");
+        let problem = t.skeleton.find("## Problem").unwrap();
+        let value = t.skeleton.find("## Value").unwrap();
+        let outcome = t.skeleton.find("## Proposed outcome").unwrap();
+        assert!(problem < value && value < outcome, "{}", t.skeleton);
+        assert!(t.prompt.contains("do not describe implementation"));
+        assert!(t.checklist.iter().any(|c| c.contains("价值")));
+        // Other templates keep their version.
+        assert_eq!(resolve(DocType::Spec, None, None).template_ref, "spec@1");
+        // Custom intent templates must include Value from now on.
+        let old = "# Intent\n## Problem\n## Proposed outcome\n## Affected users and systems\n## Constraints\n## Open questions\n";
+        let errs = validate_template(DocType::Intent, old);
+        assert_eq!(errs, ["骨架缺少必填章节 ## Value"]);
     }
 
     #[test]

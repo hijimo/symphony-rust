@@ -17,6 +17,9 @@ const INTENT_BODY = [
   '## Problem',
   '客户在门户里看不到理赔进度',
   '',
+  '## Value',
+  '减少客户来电',
+  '',
   '## Proposed outcome',
   '门户展示理赔进度',
   '',
@@ -101,8 +104,8 @@ test.describe.serial('AI-native SDLC document flow', () => {
     await page.goto(`/projects/${projectId}/kanban`);
     await page.getByRole('button', { name: '新建需求' }).click();
     await page.waitForURL(`**/projects/${projectId}/changes/new`);
-    await page.getByLabel('想法').fill('客户想在门户里看到理赔进度');
-    await page.getByRole('textbox', { name: '标题' }).fill('理赔进度');
+    // The title is derived from the first sentence of the idea.
+    await page.getByLabel('想法').fill('理赔进度。客户想在门户里看到理赔进度');
     await page.getByRole('button', { name: '创建并进入工作台' }).click();
     await page.waitForURL(/\/changes\/\d+$/, { timeout: 120_000 });
     const iid = page.url().match(/\/changes\/(\d+)$/)![1];
@@ -214,7 +217,7 @@ test.describe.serial('AI-native SDLC document flow', () => {
       ws.on('close', () => openSockets.delete(ws.url()));
     });
     await page.goto(`/projects/${projectId}/changes/new`);
-    await page.getByRole('textbox', { name: '标题' }).fill('AI 对话');
+    await page.getByLabel('想法').fill('AI 对话');
     await page.getByRole('button', { name: '创建并进入工作台' }).click();
     await page.waitForURL(/\/changes\/\d+$/, { timeout: 120_000 });
 
@@ -248,7 +251,7 @@ test.describe.serial('AI-native SDLC document flow', () => {
       if (r.url().includes('cdn.jsdelivr.net')) cdn.push(r.url());
     });
     await page.goto(`/projects/${projectId}/changes/new`);
-    await page.getByRole('textbox', { name: '标题' }).fill('Monaco 标签');
+    await page.getByLabel('想法').fill('Monaco 标签');
     await page.getByRole('button', { name: '创建并进入工作台' }).click();
     await page.waitForURL(/\/changes\/(\d+)$/, { timeout: 120_000 });
     const iid = Number(/\/changes\/(\d+)$/.exec(page.url())![1]);

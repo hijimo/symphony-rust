@@ -485,7 +485,7 @@ async fn content_change_and_cascade() {
     let text = cur["content"]
         .as_str()
         .unwrap()
-        .replace("template: intent@1", "template: intent@9");
+        .replace("template: intent@2", "template: intent@9");
     let (st, _) = app.put(&format!("{base}/file"), json!({"path": file_path(iid, "intent"), "content": text, "baseVersion": cur["version"]})).await;
     assert_eq!(st, StatusCode::OK);
     let (_, v) = app.get(&base).await;

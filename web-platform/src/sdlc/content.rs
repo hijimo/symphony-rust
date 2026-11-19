@@ -151,11 +151,17 @@ pub struct ValidationIssue {
     pub message: String,
 }
 
+/// Intent section added in built-in intent template v2. Documents created
+/// from older templates (`intent@1`, project or organization templates) may
+/// omit it; when the heading is present it must not be empty.
+pub const VALUE_SECTION: &str = "Value";
+
 /// Required sections per document type (built-in templates).
 pub fn required_sections(doc: DocType) -> &'static [&'static str] {
     match doc {
         DocType::Intent => &[
             "Problem",
+            VALUE_SECTION,
             "Proposed outcome",
             "Affected users and systems",
             "Constraints",
@@ -173,13 +179,28 @@ pub fn required_sections(doc: DocType) -> &'static [&'static str] {
 }
 
 /// Required sections of a template; the incident variant of intent adds
-/// `Anomaly and evidence` (P3 §3 S4).
+/// `Anomaly and evidence` (P3 §3 S4) and drops `Value` (triage is about
+/// impact, not product value).
 pub fn required_sections_for(doc: DocType, incident: bool) -> Vec<&'static str> {
     let mut v = required_sections(doc).to_vec();
     if incident && doc == DocType::Intent {
+        v.retain(|s| *s != VALUE_SECTION);
         v.insert(1, "Anomaly and evidence");
     }
     v
+}
+
+/// Whether the intent was created from built-in intent template v2 or later
+/// (`template: intent@<n>`, n >= 2), which always requires `## Value`.
+fn requires_value(content: &str) -> bool {
+    frontmatter_block(content).is_some_and(|fm| {
+        fm.lines().any(|l| {
+            l.trim()
+                .strip_prefix("template: intent@")
+                .and_then(|v| v.trim().parse::<u32>().ok())
+                .is_some_and(|v| v >= 2)
+        })
+    })
 }
 
 /// Whether the document was created from the incident template
@@ -198,8 +219,10 @@ pub fn is_incident(content: &str) -> bool {
 pub fn validate(doc: DocType, content: &str, readonly_aliases: &[String]) -> Vec<ValidationIssue> {
     let secs = sections(content);
     let mut issues = Vec::new();
+    let legacy_intent = doc == DocType::Intent && !requires_value(content);
     for req in required_sections_for(doc, is_incident(content)) {
         match secs.iter().find(|(t, _)| t.eq_ignore_ascii_case(req)) {
+            None if legacy_intent && req == VALUE_SECTION => {}
             None => issues.push(ValidationIssue {
                 section: req.to_string(),
                 message: format!("缺少必填章节 ## {req}"),
@@ -324,6 +347,29 @@ pub fn plan_files(content: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn value_is_required_from_builtin_intent_v2() {
+        let body = "## Problem\np\n\n## Proposed outcome\no\n\n## Affected users and systems\na\n\n## Constraints\nc\n\n## Open questions\nq\n";
+        let v2 = frontmatter(DocType::Intent, 7, "intent@2", "", "");
+        let issues = validate(DocType::Intent, &format!("{v2}{body}"), &[]);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].section, "Value");
+        let with = format!("{v2}{body}\n## Value\n每天省下 2 小时电话\n");
+        assert!(validate(DocType::Intent, &with, &[]).is_empty());
+
+        // Older templates may omit Value, but a present heading must be filled.
+        for r in ["intent@1", "intent@project:abcd1234", "intent@org:01234567"] {
+            let fm = frontmatter(DocType::Intent, 7, r, "", "");
+            assert!(
+                validate(DocType::Intent, &format!("{fm}{body}"), &[]).is_empty(),
+                "{r}"
+            );
+            let empty = format!("{fm}{body}\n## Value\n<!-- hint -->\n");
+            assert_eq!(validate(DocType::Intent, &empty, &[]).len(), 1, "{r}");
+        }
+        assert!(!required_sections_for(DocType::Intent, true).contains(&"Value"));
+    }
+
     #[test]
     fn incident_intent_requires_the_evidence_section() {
         let fm = frontmatter(DocType::Intent, 7, "intent.incident@1", "", "");

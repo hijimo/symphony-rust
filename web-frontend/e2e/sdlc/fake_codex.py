@@ -44,7 +44,7 @@ def request(method, params):
 
 
 DOCS = {
-    "intent": "# Intent\n\n## Problem\nusers cannot X\n\n## Proposed outcome\nthey can X\n\n## Affected users and systems\nportal\n\n## Constraints\nnone\n\n## Open questions\nnone\n",
+    "intent": "# Intent\n\n## Problem\nusers cannot X\n\n## Value\nsaves time\n\n## Proposed outcome\nthey can X\n\n## Affected users and systems\nportal\n\n## Constraints\nnone\n\n## Open questions\nnone\n",
     "spec": "# Spec\n\n## Requirements\nR1 理赔进度可见\n\n## Design\nD1 门户新增进度页\n\n## Concerns\n- PII. owner: sec. resolution: masked\n",
     "plan": "# Plan\n\n## Files\n- src/new.rs\n\n## Steps\n1. do\n\n## Tests\n- t\n\n## Risks\n- r\n\n## Alternatives considered\n- none\n",
 }

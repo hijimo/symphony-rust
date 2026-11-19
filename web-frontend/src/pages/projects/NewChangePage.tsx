@@ -39,19 +39,34 @@ export function toIntentBody(title: string, idea: string, generated: string): st
     '## Problem',
     problem,
     '',
+    '## Value',
+    '<!-- 为什么值得做：谁受益、收益多大、为什么是现在 -->',
+    '',
     '## Proposed outcome',
-    '<!-- 更好的状态是什么样 -->',
+    '<!-- 做成之后用户看到的状态，以及怎么判断做成了 -->',
     '',
     '## Affected users and systems',
-    '<!-- 受影响的用户和系统 -->',
+    '<!-- 受影响的用户、角色和业务流程 -->',
     '',
     '## Constraints',
-    '<!-- 约束：安全、合规、性能、兼容性等 -->',
+    '<!-- 业务约束：截止时间、合规要求、预算等 -->',
     '',
     '## Open questions',
-    '<!-- 还没想清楚的问题 -->',
+    '<!-- 还没想清楚、需要产品负责人判断的问题 -->',
     '',
   ].join('\n');
+}
+
+const TITLE_MAX = 50;
+
+/**
+ * Title derived from the idea when the AI did not provide one: the first
+ * sentence of the first non-empty line, capped at 50 characters.
+ */
+export function deriveTitle(idea: string): string {
+  const first = idea.trim().split(/[\n。！？!?；;]/)[0]?.trim() ?? '';
+  const chars = Array.from(first);
+  return chars.length > TITLE_MAX ? `${chars.slice(0, TITLE_MAX - 1).join('')}…` : first;
 }
 
 /** "新建需求": quick description → intent.md draft → workbench (§2 入口). */
@@ -60,7 +75,6 @@ export default function NewChangePage() {
   const projectId = Number(id);
   const navigate = useNavigate();
   const { aiStatus, generatedContent, generatedTitle, aiError, startGenerate, stopGenerate, resetAI } = useIssueStore();
-  const [title, setTitle] = useState('');
   const [idea, setIdea] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -70,10 +84,8 @@ export default function NewChangePage() {
   const tooBig = files.filter((f) => f.size > MAX_UPLOAD_BYTES);
   const docClash = dir === '' && files.some((f) => ['intent.md', 'spec.md', 'plan.md'].includes(f.name));
   const filesOk = files.length === 0 || (dir !== null && tooBig.length === 0 && !docClash);
-
-  useEffect(() => {
-    if (aiStatus === 'done' && generatedTitle && !title) setTitle(generatedTitle);
-  }, [aiStatus, generatedTitle, title]);
+  const aiDone = aiStatus === 'done';
+  const title = (aiDone && generatedTitle?.trim()) || deriveTitle(idea);
 
   useEffect(() => () => resetAI(), [resetAI]);
 
@@ -83,9 +95,9 @@ export default function NewChangePage() {
     try {
       const v = await startFlow(projectId, {
         track: 'full',
-        title: title.trim(),
+        title,
         summary: idea.trim() || undefined,
-        initialContent: toIntentBody(title.trim(), idea, aiStatus === 'done' ? generatedContent : ''),
+        initialContent: toIntentBody(title, idea, aiDone ? generatedContent : ''),
       });
       const iid = v.flow.issueIid;
       // Attachments need the flow's workspace, so they go in after creation.
@@ -119,7 +131,7 @@ export default function NewChangePage() {
       <Card sx={{ maxWidth: 800, border: '1px solid #c3c6d7' }}>
         <CardContent sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
           <Typography variant="body2" color="text.secondary">
-            用一句话描述想法，AI 会按 intent 模板生成草稿；创建后进入文档工作台继续完善（路径 track:full）。
+            用一句话描述想法，AI 会按 intent 模板生成草稿；标题在创建时自动生成。创建后进入文档工作台继续完善（路径 track:full）。
           </Typography>
           <TextField
             label="想法"
@@ -193,12 +205,16 @@ export default function NewChangePage() {
             {tooBig.length > 0 && <Alert severity="error">单个文件不能超过 10MB：{tooBig.map((f) => f.name).join('、')}</Alert>}
             {docClash && <Alert severity="error">intent.md / spec.md / plan.md 不能作为附件</Alert>}
           </Box>
-          <TextField label="标题" value={title} onChange={(e) => setTitle(e.target.value)} required inputProps={{ maxLength: 200 }} />
           {error && <Alert severity="error">{error}</Alert>}
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 2 }}>
+            {title && (
+              <Typography variant="caption" color="text.secondary" data-testid="auto-title" sx={{ mr: 'auto' }}>
+                标题（自动生成）：{title}
+              </Typography>
+            )}
             <Button
               variant="contained"
-              disabled={busy || !title.trim() || aiStatus === 'generating' || !filesOk}
+              disabled={busy || !title || aiStatus === 'generating' || !filesOk}
               onClick={create}
               startIcon={busy ? <CircularProgress size={16} color="inherit" /> : undefined}
             >

@@ -353,11 +353,14 @@ Author: J. Ortiz (claims operations). Status: draft.
 Customers phone the contact center to ask where their claim is.
 Handlers spend roughly a third of call time on status-only queries.
 
+## Value
+Fewer status calls frees handler time for complex claims; customers get answers without waiting on the phone.
+
 ## Proposed outcome
-Customers see claim status, next step and expected date in the portal.
+Customers see claim status, next step and expected date in the portal. Status-only calls drop noticeably.
 
 ## Affected users and systems
-Claims handlers, portal team, claims-core API.
+Policyholders, claims handlers, contact center.
 
 ## Constraints
 No new PII in the portal session. Existing authentication only.
@@ -367,7 +370,7 @@ Do third-party loss adjusters need access too?
 
 RULES:
 1. Write section content in the same language as the user's input; keep the "#"/"##" headings in English exactly as in the template.
-2. Use the proposer's own plain words. Keep each section short (1-3 sentences or a few bullets). Describe the problem and desired outcome, not an implementation.
+2. Use the proposer's own plain words. Keep each section short (1-3 sentences or a few bullets). The product owner uses this document to decide whether the idea is worth doing, so stay at the business level: describe the problem, its value (who benefits, how much, why now) and the desired outcome. Do not describe implementation (APIs, data tables, files, modules, architecture, technology choices) and do not assess technical feasibility.
 3. Do not invent facts. When something is unknown, put it under "## Open questions" (Constraints may say "暂无明确约束" if none are given).
 4. Output ONLY the title line and the document. No preamble, no code fences, no meta-commentary."###,
         project = project_name,
@@ -463,6 +466,12 @@ mod tests {
         assert!(prompt.contains("Author: alice. Status: draft."));
         assert!(prompt.contains("标题："));
         assert!(!prompt.contains("<title>"));
+        assert!(prompt.contains("## Value"));
+        assert!(prompt.contains("Do not describe implementation"));
+        assert!(
+            !prompt.contains("claims-core"),
+            "example must not mention systems"
+        );
     }
 
     #[test]

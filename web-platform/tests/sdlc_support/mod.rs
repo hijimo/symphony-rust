@@ -625,7 +625,7 @@ def request(method, params):
         if m.get("id") == rid and "method" not in m:
             return m.get("result")
 DOCS = {
- "intent": "# Intent\n\n## Problem\nusers cannot X\n\n## Proposed outcome\nthey can X\n\n## Affected users and systems\nportal\n\n## Constraints\nnone\n\n## Open questions\nnone\n",
+ "intent": "# Intent\n\n## Problem\nusers cannot X\n\n## Value\nsaves time\n\n## Proposed outcome\nthey can X\n\n## Affected users and systems\nportal\n\n## Constraints\nnone\n\n## Open questions\nnone\n",
  "spec": "# Spec\n\n## Requirements\nR1\n\n## Design\nD1\n\n## Concerns\n- PII. owner: sec. resolution: masked\n",
  "plan": "# Plan\n\n## Files\n- src/new.rs\n\n## Steps\n1. do\n\n## Tests\n- t\n\n## Risks\n- r\n\n## Alternatives considered\n- none\n",
 }
@@ -1016,7 +1016,7 @@ impl SdlcApp {
     }
 }
 
-pub const INTENT_OK: &str = "# Intent\n\n## Problem\nusers cannot see claim status\n\n## Proposed outcome\nportal shows status\n\n## Affected users and systems\nportal\n\n## Constraints\nno new PII\n\n## Open questions\nadjusters?\n";
+pub const INTENT_OK: &str = "# Intent\n\n## Problem\nusers cannot see claim status\n\n## Value\nfewer status calls\n\n## Proposed outcome\nportal shows status\n\n## Affected users and systems\nportal\n\n## Constraints\nno new PII\n\n## Open questions\nadjusters?\n";
 
 /// Notification channel that records what it is asked to send.
 #[derive(Default)]
